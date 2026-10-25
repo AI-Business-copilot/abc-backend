@@ -1,29 +1,10 @@
-// Nguon: 03_data_proposal.md (V3) va ABC_ERD_ELK.html: 34 bang, 87 quan he.
-// Giu nguyen ten bang/cot, nullability, default va ON DELETE theo DDL.
-// CHECK, GENERATED ALWAYS, view SQL va RULE khong duoc Prisma tu tao.
-// Cac khai bao SQL can ap dung rieng duoc luu trong comment o cuoi file.
-// Quan he theo DDL dung FK id; can kiem tra cung business khi ghi du lieu.
-
 generator client {
   provider        = "prisma-client-js"
-  previewFeatures = ["partialIndexes", "views"]
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
   provider = "postgresql"
-}
-
-enum StockTransactionType {
-  OPENING_STOCK
-  PURCHASE_RECEIPT
-  POS_SALE
-  CUSTOMER_RETURN
-  VENDOR_RETURN
-  STOCK_ADJUSTMENT_IN
-  STOCK_ADJUSTMENT_OUT
-  SCRAP_DISPOSAL
-
-  @@map("stock_transaction_type")
 }
 
 model Business {
@@ -34,941 +15,115 @@ model Business {
   industryType String    @map("industry_type") @db.VarChar(50)
   createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  users               User[]               @relation("users_business_id")
-  categories          Category[]           @relation("categories_business_id")
-  productTemplates    ProductTemplate[]    @relation("product_templates_business_id")
-  attributes          Attribute[]          @relation("attributes_business_id")
-  attributeValues     AttributeValue[]     @relation("attribute_values_business_id")
-  productVariants     ProductVariant[]     @relation("product_variants_business_id")
-  suppliers           Supplier[]           @relation("suppliers_business_id")
-  customers           Customer[]           @relation("customers_business_id")
-  productLots         ProductLot[]         @relation("product_lots_business_id")
-  inventoryBalances   InventoryBalance[]   @relation("inventory_balances_business_id")
-  inventoryLedger     InventoryLedger[]    @relation("inventory_ledger_business_id")
-  openingStockSheets  OpeningStockSheet[]  @relation("opening_stock_sheets_business_id")
-  purchaseOrders      PurchaseOrder[]      @relation("purchase_orders_business_id")
-  purchaseReceipts    PurchaseReceipt[]    @relation("purchase_receipts_business_id")
-  vendorReturns       VendorReturn[]       @relation("vendor_returns_business_id")
-  cashShifts          CashShift[]          @relation("cash_shifts_business_id")
-  cashTransactions    CashTransaction[]    @relation("cash_transactions_business_id")
-  orders              Order[]              @relation("orders_business_id")
-  customerReturns     CustomerReturn[]     @relation("customer_returns_business_id")
-  stockAudits         StockAudit[]         @relation("stock_audits_business_id")
-  scrapOrders         ScrapOrder[]         @relation("scrap_orders_business_id")
-  dailyProductMetrics DailyProductMetric[] @relation("daily_product_metrics_business_id")
-  forecastRuns        ForecastRun[]        @relation("forecast_runs_business_id")
+  memberships BusinessMembership[]
+  invitations BusinessInvitation[]
 
   @@map("businesses")
 }
 
 model User {
-  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId   String    @map("business_id") @db.Uuid
-  username     String    @db.VarChar(100)
-  passwordHash String    @map("password_hash") @db.VarChar(255)
-  fullName     String    @map("full_name") @db.VarChar(150)
-  /// SQL CHECK (role IN ('OWNER', 'STAFF', 'SYSTEM_ADMIN')); can ap dung bang SQL rieng.
-  role         String    @db.VarChar(20)
-  isActive     Boolean?  @default(true) @map("is_active")
-  createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  authUserId String    @unique(map: "uq_users_auth_user_id") @map("auth_user_id") @db.Uuid
+  email      String    @unique(map: "uq_users_email") @db.VarChar(320)
+  fullName   String    @map("full_name") @db.VarChar(150)
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business           Business            @relation("users_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  inventoryLedger    InventoryLedger[]   @relation("inventory_ledger_created_by")
-  openingStockSheets OpeningStockSheet[] @relation("opening_stock_sheets_created_by")
-  purchaseOrders     PurchaseOrder[]     @relation("purchase_orders_created_by")
-  purchaseReceipts   PurchaseReceipt[]   @relation("purchase_receipts_created_by")
-  vendorReturns      VendorReturn[]      @relation("vendor_returns_created_by")
-  cashShifts         CashShift[]         @relation("cash_shifts_user_id")
-  cashTransactions   CashTransaction[]   @relation("cash_transactions_created_by")
-  orders             Order[]             @relation("orders_cashier_id")
-  customerReturns    CustomerReturn[]    @relation("customer_returns_cashier_id")
-  stockAudits        StockAudit[]        @relation("stock_audits_approved_by")
-  scrapOrders        ScrapOrder[]        @relation("scrap_orders_created_by")
-  forecastRuns       ForecastRun[]       @relation("forecast_runs_executed_by")
+  memberships     BusinessMembership[]
+  platformRoles   PlatformUserRole[]
+  sentInvitations BusinessInvitation[] @relation("business_invitations_invited_by")
 
-  @@unique([businessId, username], map: "uq_user_tenant_username")
   @@map("users")
 }
 
-model Category {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId String    @map("business_id") @db.Uuid
-  name       String    @db.VarChar(150)
-  parentId   String?   @map("parent_id") @db.Uuid
-  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business         Business          @relation("categories_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  parent           Category?         @relation("categories_parent_id", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  children         Category[]        @relation("categories_parent_id")
-  productTemplates ProductTemplate[] @relation("product_templates_category_id")
-
-  @@unique([businessId, name], map: "uq_category_tenant_name")
-  @@map("categories")
-}
-
-model ProductTemplate {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId     String    @map("business_id") @db.Uuid
-  name           String    @db.VarChar(255)
-  categoryId     String?   @map("category_id") @db.Uuid
-  unitOfMeasure  String?   @default("Cái") @map("unit_of_measure") @db.VarChar(50)
-  description    String?   @db.Text
-  hasLotTracking Boolean?  @default(false) @map("has_lot_tracking")
-  isActive       Boolean?  @default(true) @map("is_active")
-  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
-
-  business        Business         @relation("product_templates_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  category        Category?        @relation("product_templates_category_id", fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  productVariants ProductVariant[] @relation("product_variants_template_id")
-
-  @@unique([businessId, name], map: "uq_template_tenant_name")
-  @@map("product_templates")
-}
-
-model Attribute {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId String    @map("business_id") @db.Uuid
-  name       String    @db.VarChar(100)
-  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business               Business                @relation("attributes_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  attributeValues        AttributeValue[]        @relation("attribute_values_attribute_id")
-  variantAttributeValues VariantAttributeValue[] @relation("variant_attribute_values_attribute_id")
-
-  @@unique([businessId, name], map: "uq_attribute_tenant_name")
-  @@map("attributes")
-}
-
-model AttributeValue {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId  String    @map("business_id") @db.Uuid
-  attributeId String    @map("attribute_id") @db.Uuid
-  value       String    @db.VarChar(100)
-  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business               Business                @relation("attribute_values_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  attribute              Attribute               @relation("attribute_values_attribute_id", fields: [attributeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variantAttributeValues VariantAttributeValue[] @relation("variant_attribute_values_attribute_value_id")
-
-  @@unique([attributeId, value], map: "uq_attribute_value")
-  @@map("attribute_values")
-}
-
-model ProductVariant {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId       String    @map("business_id") @db.Uuid
-  templateId       String    @map("template_id") @db.Uuid
-  sku              String    @db.VarChar(100)
-  barcode          String?   @db.VarChar(100)
-  /// SQL CHECK (base_price >= 0); can ap dung bang SQL rieng.
-  basePrice        Decimal   @map("base_price") @db.Decimal(12, 2)
-  /// SQL CHECK (cost_price >= 0); can ap dung bang SQL rieng.
-  costPrice        Decimal   @default(0) @map("cost_price") @db.Decimal(12, 2)
-  /// SQL CHECK (lead_time_days >= 0); can ap dung bang SQL rieng.
-  leadTimeDays     Int       @default(3) @map("lead_time_days")
-  /// SQL CHECK (review_period_days > 0); can ap dung bang SQL rieng.
-  reviewPeriodDays Int       @default(7) @map("review_period_days")
-  /// SQL CHECK (safety_stock_qty >= 0); can ap dung bang SQL rieng.
-  safetyStockQty   Int       @default(0) @map("safety_stock_qty")
-  /// SQL CHECK (min_order_qty > 0); can ap dung bang SQL rieng.
-  minOrderQty      Int       @default(1) @map("min_order_qty")
-  /// SQL CHECK (pack_size > 0); can ap dung bang SQL rieng.
-  packSize         Int       @default(1) @map("pack_size")
-  isLockedForAudit Boolean   @default(false) @map("is_locked_for_audit")
-  isActive         Boolean?  @default(true) @map("is_active")
-  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
-
-  business               Business                @relation("product_variants_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  template               ProductTemplate         @relation("product_variants_template_id", fields: [templateId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variantAttributeValues VariantAttributeValue[] @relation("variant_attribute_values_variant_id")
-  productLots            ProductLot[]            @relation("product_lots_variant_id")
-  inventoryBalances      InventoryBalance[]      @relation("inventory_balances_variant_id")
-  inventoryLedger        InventoryLedger[]       @relation("inventory_ledger_variant_id")
-  openingStockItems      OpeningStockItem[]      @relation("opening_stock_items_variant_id")
-  purchaseOrderItems     PurchaseOrderItem[]     @relation("purchase_order_items_variant_id")
-  purchaseReceiptItems   PurchaseReceiptItem[]   @relation("purchase_receipt_items_variant_id")
-  vendorReturnItems      VendorReturnItem[]      @relation("vendor_return_items_variant_id")
-  orderItems             OrderItem[]             @relation("order_items_variant_id")
-  customerReturnItems    CustomerReturnItem[]    @relation("customer_return_items_variant_id")
-  stockAuditItems        StockAuditItem[]        @relation("stock_audit_items_variant_id")
-  scrapOrders            ScrapOrder[]            @relation("scrap_orders_variant_id")
-  dailyProductMetrics    DailyProductMetric[]    @relation("daily_product_metrics_variant_id")
-  forecastResults        ForecastResult[]        @relation("forecast_results_variant_id")
-
-  @@unique([businessId, sku], map: "uq_variant_tenant_sku")
-  @@unique([businessId, barcode], map: "uq_variant_tenant_barcode")
-  @@map("product_variants")
-}
-
-model VariantAttributeValue {
-  variantId        String @map("variant_id") @db.Uuid
-  attributeId      String @map("attribute_id") @db.Uuid
-  attributeValueId String @map("attribute_value_id") @db.Uuid
-
-  variant        ProductVariant @relation("variant_attribute_values_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  attribute      Attribute      @relation("variant_attribute_values_attribute_id", fields: [attributeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  attributeValue AttributeValue @relation("variant_attribute_values_attribute_value_id", fields: [attributeValueId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@id([variantId, attributeValueId])
-  @@unique([variantId, attributeId], map: "uq_variant_single_attr_value")
-  @@map("variant_attribute_values")
-}
-
-model Supplier {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId    String    @map("business_id") @db.Uuid
-  name          String    @db.VarChar(255)
-  phone         String?   @db.VarChar(20)
-  contactPerson String?   @map("contact_person") @db.VarChar(100)
-  debtAmount    Decimal?  @default(0) @map("debt_amount") @db.Decimal(12, 2)
-  createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business         Business          @relation("suppliers_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  purchaseOrders   PurchaseOrder[]   @relation("purchase_orders_supplier_id")
-  purchaseReceipts PurchaseReceipt[] @relation("purchase_receipts_supplier_id")
-  vendorReturns    VendorReturn[]    @relation("vendor_returns_supplier_id")
-
-  @@unique([businessId, phone], map: "uq_supplier_tenant_phone")
-  @@map("suppliers")
-}
-
-model Customer {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId String    @map("business_id") @db.Uuid
-  name       String    @db.VarChar(150)
-  phone      String    @db.VarChar(20)
-  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business Business @relation("customers_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  orders   Order[]  @relation("orders_customer_id")
-
-  @@unique([businessId, phone], map: "uq_customer_tenant_phone")
-  @@map("customers")
-}
-
-model ProductLot {
-  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId        String    @map("business_id") @db.Uuid
-  variantId         String    @map("variant_id") @db.Uuid
-  lotNumber         String    @map("lot_number") @db.VarChar(100)
-  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
-  expirationDate    DateTime  @map("expiration_date") @db.Date
-  /// SQL CHECK (alert_days_before >= 0); can ap dung bang SQL rieng.
-  alertDaysBefore   Int?      @default(30) @map("alert_days_before")
-  createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business             Business              @relation("product_lots_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant              ProductVariant        @relation("product_lots_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  inventoryBalances    InventoryBalance[]    @relation("inventory_balances_lot_id")
-  inventoryLedger      InventoryLedger[]     @relation("inventory_ledger_lot_id")
-  openingStockItems    OpeningStockItem[]    @relation("opening_stock_items_lot_id")
-  purchaseReceiptItems PurchaseReceiptItem[] @relation("purchase_receipt_items_lot_id")
-  vendorReturnItems    VendorReturnItem[]    @relation("vendor_return_items_lot_id")
-  orderItems           OrderItem[]           @relation("order_items_lot_id")
-  customerReturnItems  CustomerReturnItem[]  @relation("customer_return_items_lot_id")
-  stockAuditItems      StockAuditItem[]      @relation("stock_audit_items_lot_id")
-  scrapOrders          ScrapOrder[]          @relation("scrap_orders_lot_id")
-
-  @@unique([businessId, variantId, lotNumber], map: "uq_lot_tenant_variant_number")
-  @@map("product_lots")
-}
-
-model InventoryBalance {
-  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId      String    @map("business_id") @db.Uuid
-  variantId       String    @map("variant_id") @db.Uuid
-  lotId           String?   @map("lot_id") @db.Uuid
-  quantityOnHand  Int       @default(0) @map("quantity_on_hand")
-  /// SQL CHECK (damaged_quantity >= 0); can ap dung bang SQL rieng.
-  damagedQuantity Int       @default(0) @map("damaged_quantity")
-  lastCountedAt   DateTime? @map("last_counted_at") @db.Timestamptz(6)
-  outOfStockSince DateTime? @map("out_of_stock_since") @db.Timestamptz(6)
-  updatedAt       DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
-
-  business Business       @relation("inventory_balances_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant  ProductVariant @relation("inventory_balances_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  lot      ProductLot?    @relation("inventory_balances_lot_id", fields: [lotId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@unique([businessId, variantId], map: "uq_inventory_balance_no_lot", where: raw("(lot_id IS NULL)"))
-  @@unique([businessId, variantId, lotId], map: "uq_inventory_balance_with_lot", where: raw("(lot_id IS NOT NULL)"))
-  @@map("inventory_balances")
-}
-
-model InventoryLedger {
-  id               String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId       String               @map("business_id") @db.Uuid
-  variantId        String               @map("variant_id") @db.Uuid
-  lotId            String?              @map("lot_id") @db.Uuid
-  transactionType  StockTransactionType @map("transaction_type")
-  quantityChanged  Int                  @map("quantity_changed")
-  balanceAfter     Int                  @map("balance_after")
-  /// SQL CHECK (unit_cost >= 0); can ap dung bang SQL rieng.
-  unitCost         Decimal              @map("unit_cost") @db.Decimal(12, 2)
-  totalCostValue   Decimal              @map("total_cost_value") @db.Decimal(14, 2)
-  referenceDocType String               @map("reference_doc_type") @db.VarChar(50)
-  referenceDocId   String               @map("reference_doc_id") @db.Uuid
-  createdBy        String?              @map("created_by") @db.Uuid
-  createdAt        DateTime?            @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business      Business       @relation("inventory_ledger_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant       ProductVariant @relation("inventory_ledger_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot           ProductLot?    @relation("inventory_ledger_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser User?          @relation("inventory_ledger_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@map("inventory_ledger")
-}
-
-model OpeningStockSheet {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId String    @map("business_id") @db.Uuid
-  createdBy  String    @map("created_by") @db.Uuid
-  /// SQL CHECK (status IN ('DRAFT', 'APPLIED', 'CANCELLED')); can ap dung bang SQL rieng.
-  status     String    @default("DRAFT") @db.VarChar(30)
-  appliedAt  DateTime? @map("applied_at") @db.Timestamptz(6)
-  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business          Business           @relation("opening_stock_sheets_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser     User               @relation("opening_stock_sheets_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  openingStockItems OpeningStockItem[] @relation("opening_stock_items_sheet_id")
-
-  @@map("opening_stock_sheets")
-}
-
-model OpeningStockItem {
-  id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  sheetId   String  @map("sheet_id") @db.Uuid
-  variantId String  @map("variant_id") @db.Uuid
-  lotId     String? @map("lot_id") @db.Uuid
-  /// SQL CHECK (quantity > 0); can ap dung bang SQL rieng.
-  quantity  Int
-  /// SQL CHECK (unit_cost >= 0); can ap dung bang SQL rieng.
-  unitCost  Decimal @map("unit_cost") @db.Decimal(12, 2)
-
-  sheet   OpeningStockSheet @relation("opening_stock_items_sheet_id", fields: [sheetId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variant ProductVariant    @relation("opening_stock_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot     ProductLot?       @relation("opening_stock_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@map("opening_stock_items")
-}
-
-model PurchaseOrder {
-  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId           String    @map("business_id") @db.Uuid
-  poCode               String    @map("po_code") @db.VarChar(50)
-  supplierId           String    @map("supplier_id") @db.Uuid
-  orderDate            DateTime  @default(dbgenerated("CURRENT_DATE")) @map("order_date") @db.Date
-  expectedDeliveryDate DateTime? @map("expected_delivery_date") @db.Date
-  /// SQL CHECK (status IN ('ORDERED', 'PARTIALLY_RECEIVED', 'COMPLETED', 'CLOSED_SHORT', 'CANCELLED')); can ap dung bang SQL rieng.
-  status               String    @default("ORDERED") @db.VarChar(30)
-  createdBy            String    @map("created_by") @db.Uuid
-  createdAt            DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business           Business            @relation("purchase_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  supplier           Supplier            @relation("purchase_orders_supplier_id", fields: [supplierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser      User                @relation("purchase_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  purchaseOrderItems PurchaseOrderItem[] @relation("purchase_order_items_po_id")
-  purchaseReceipts   PurchaseReceipt[]   @relation("purchase_receipts_po_id")
-
-  @@unique([businessId, poCode], map: "uq_po_tenant_code")
-  @@map("purchase_orders")
-}
-
-model PurchaseOrderItem {
+model Role {
   id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  poId        String   @map("po_id") @db.Uuid
-  variantId   String   @map("variant_id") @db.Uuid
-  /// SQL CHECK (ordered_qty > 0); can ap dung bang SQL rieng.
-  orderedQty  Int      @map("ordered_qty")
-  /// SQL CHECK (received_qty >= 0); can ap dung bang SQL rieng.
-  receivedQty Int      @default(0) @map("received_qty")
-  /// SQL CHECK (unit_price >= 0); can ap dung bang SQL rieng.
-  unitPrice   Decimal  @map("unit_price") @db.Decimal(12, 2)
-  /// SQL GENERATED ALWAYS AS (ordered_qty * unit_price) STORED; dbgenerated() chi danh dau gia tri do DB sinh.
-  subtotal    Decimal? @default(dbgenerated()) @db.Decimal(14, 2)
+  code        String   @unique(map: "uq_roles_code") @db.VarChar(50)
+  scope       String   @db.VarChar(20)
+  displayName String   @map("display_name") @db.VarChar(100)
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  po                   PurchaseOrder         @relation("purchase_order_items_po_id", fields: [poId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variant              ProductVariant        @relation("purchase_order_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  purchaseReceiptItems PurchaseReceiptItem[] @relation("purchase_receipt_items_po_item_id")
+  permissions   RolePermission[]
+  memberships   BusinessMembership[]
+  platformUsers PlatformUserRole[]
+  invitations   BusinessInvitation[]
 
-  // SQL CONSTRAINT chk_received_not_exceed_ordered CHECK (received_qty <= ordered_qty); can ap dung bang SQL rieng.
-  @@map("purchase_order_items")
+  @@map("roles")
 }
 
-model PurchaseReceipt {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId  String    @map("business_id") @db.Uuid
-  receiptCode String    @map("receipt_code") @db.VarChar(50)
-  poId        String?   @map("po_id") @db.Uuid
-  supplierId  String    @map("supplier_id") @db.Uuid
-  receivedAt  DateTime? @default(now()) @map("received_at") @db.Timestamptz(6)
-  /// SQL CHECK (total_amount >= 0); can ap dung bang SQL rieng.
-  totalAmount Decimal   @map("total_amount") @db.Decimal(14, 2)
-  /// SQL CHECK (paid_amount >= 0); can ap dung bang SQL rieng.
-  paidAmount  Decimal   @default(0) @map("paid_amount") @db.Decimal(14, 2)
-  /// SQL GENERATED ALWAYS AS (total_amount - paid_amount) STORED; dbgenerated() chi danh dau gia tri do DB sinh.
-  debtAmount  Decimal?  @default(dbgenerated()) @map("debt_amount") @db.Decimal(14, 2)
-  /// SQL CHECK (status IN ('RECEIVED', 'CANCELLED')); can ap dung bang SQL rieng.
-  status      String    @default("RECEIVED") @db.VarChar(30)
-  createdBy   String    @map("created_by") @db.Uuid
-
-  business             Business              @relation("purchase_receipts_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  po                   PurchaseOrder?        @relation("purchase_receipts_po_id", fields: [poId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  supplier             Supplier              @relation("purchase_receipts_supplier_id", fields: [supplierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser        User                  @relation("purchase_receipts_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  purchaseReceiptItems PurchaseReceiptItem[] @relation("purchase_receipt_items_receipt_id")
-  vendorReturns        VendorReturn[]        @relation("vendor_returns_receipt_id")
-
-  @@unique([businessId, receiptCode], map: "uq_receipt_tenant_code")
-  @@map("purchase_receipts")
-}
-
-model PurchaseReceiptItem {
+model Permission {
   id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  receiptId   String   @map("receipt_id") @db.Uuid
-  poItemId    String?  @map("po_item_id") @db.Uuid
-  variantId   String   @map("variant_id") @db.Uuid
-  lotId       String?  @map("lot_id") @db.Uuid
-  /// SQL CHECK (received_qty > 0); can ap dung bang SQL rieng.
-  receivedQty Int      @map("received_qty")
-  /// SQL CHECK (actual_cost >= 0); can ap dung bang SQL rieng.
-  actualCost  Decimal  @map("actual_cost") @db.Decimal(12, 2)
-  /// SQL GENERATED ALWAYS AS (received_qty * actual_cost) STORED; dbgenerated() chi danh dau gia tri do DB sinh.
-  subtotal    Decimal? @default(dbgenerated()) @db.Decimal(14, 2)
+  code        String   @unique(map: "uq_permissions_code") @db.VarChar(100)
+  scope       String   @db.VarChar(20)
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  receipt PurchaseReceipt    @relation("purchase_receipt_items_receipt_id", fields: [receiptId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  poItem  PurchaseOrderItem? @relation("purchase_receipt_items_po_item_id", fields: [poItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant ProductVariant     @relation("purchase_receipt_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot     ProductLot?        @relation("purchase_receipt_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  roles RolePermission[]
 
-  @@map("purchase_receipt_items")
+  @@map("permissions")
 }
 
-model VendorReturn {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId       String    @map("business_id") @db.Uuid
-  supplierId       String    @map("supplier_id") @db.Uuid
-  receiptId        String?   @map("receipt_id") @db.Uuid
-  returnCode       String    @map("return_code") @db.VarChar(50)
-  /// SQL CHECK (total_return_value >= 0); can ap dung bang SQL rieng.
-  totalReturnValue Decimal   @default(0) @map("total_return_value") @db.Decimal(14, 2)
-  /// SQL CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED')); can ap dung bang SQL rieng.
-  status           String    @default("COMPLETED") @db.VarChar(30)
-  createdBy        String    @map("created_by") @db.Uuid
-  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
 
-  business          Business           @relation("vendor_returns_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  supplier          Supplier           @relation("vendor_returns_supplier_id", fields: [supplierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  receipt           PurchaseReceipt?   @relation("vendor_returns_receipt_id", fields: [receiptId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser     User               @relation("vendor_returns_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  vendorReturnItems VendorReturnItem[] @relation("vendor_return_items_return_id")
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@unique([businessId, returnCode], map: "uq_vendor_return_tenant_code")
-  @@map("vendor_returns")
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
 }
 
-model VendorReturnItem {
-  id              String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  returnId        String  @map("return_id") @db.Uuid
-  variantId       String  @map("variant_id") @db.Uuid
-  lotId           String? @map("lot_id") @db.Uuid
-  /// SQL CHECK (return_qty > 0); can ap dung bang SQL rieng.
-  returnQty       Int     @map("return_qty")
-  /// SQL CHECK (return_unit_price >= 0); can ap dung bang SQL rieng.
-  returnUnitPrice Decimal @map("return_unit_price") @db.Decimal(12, 2)
+model BusinessMembership {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId String   @map("business_id") @db.Uuid
+  userId     String   @unique(map: "uq_business_memberships_user") @map("user_id") @db.Uuid
+  roleId     String   @map("role_id") @db.Uuid
+  status     String   @default("ACTIVE") @db.VarChar(20)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  return  VendorReturn   @relation("vendor_return_items_return_id", fields: [returnId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variant ProductVariant @relation("vendor_return_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot     ProductLot?    @relation("vendor_return_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  role     Role     @relation(fields: [roleId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
-  @@map("vendor_return_items")
+  @@unique([businessId, userId], map: "uq_business_memberships_business_user")
+  @@index([businessId, status], map: "idx_business_memberships_business_status")
+  @@map("business_memberships")
 }
 
-model CashShift {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId     String    @map("business_id") @db.Uuid
-  userId         String    @map("user_id") @db.Uuid
-  openedAt       DateTime? @default(now()) @map("opened_at") @db.Timestamptz(6)
-  closedAt       DateTime? @map("closed_at") @db.Timestamptz(6)
-  /// SQL CHECK (opening_cash >= 0); can ap dung bang SQL rieng.
-  openingCash    Decimal   @default(0) @map("opening_cash") @db.Decimal(12, 2)
-  expectedCash   Decimal?  @map("expected_cash") @db.Decimal(12, 2)
-  actualCash     Decimal?  @map("actual_cash") @db.Decimal(12, 2)
-  differenceCash Decimal?  @map("difference_cash") @db.Decimal(12, 2)
-  shiftNotes     String?   @map("shift_notes") @db.Text
-  /// SQL CHECK (status IN ('OPEN', 'CLOSED')); can ap dung bang SQL rieng.
-  status         String    @default("OPEN") @db.VarChar(20)
+model PlatformUserRole {
+  userId    String   @map("user_id") @db.Uuid
+  roleId    String   @map("role_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business         Business          @relation("cash_shifts_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  user             User              @relation("cash_shifts_user_id", fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  cashTransactions CashTransaction[] @relation("cash_transactions_shift_id")
-  orders           Order[]           @relation("orders_shift_id")
-  orderPayments    OrderPayment[]    @relation("order_payments_shift_id")
-  customerReturns  CustomerReturn[]  @relation("customer_returns_shift_id")
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
-  @@map("cash_shifts")
+  @@id([userId, roleId])
+  @@map("platform_user_roles")
 }
 
-model CashTransaction {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId       String    @map("business_id") @db.Uuid
-  shiftId          String    @map("shift_id") @db.Uuid
-  /// SQL CHECK (transaction_type IN ('IN', 'OUT')); can ap dung bang SQL rieng.
-  transactionType  String    @map("transaction_type") @db.VarChar(10)
-  category         String    @db.VarChar(100)
-  /// SQL CHECK (amount > 0); can ap dung bang SQL rieng.
-  amount           Decimal   @db.Decimal(12, 2)
-  refDocType       String?   @map("ref_doc_type") @db.VarChar(50)
-  refDocId         String?   @map("ref_doc_id") @db.Uuid
-  recipientOrPayer String?   @map("recipient_or_payer") @db.VarChar(255)
-  notes            String?   @db.Text
-  createdBy        String    @map("created_by") @db.Uuid
-  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+model BusinessInvitation {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId   String    @map("business_id") @db.Uuid
+  invitedEmail String    @map("invited_email") @db.VarChar(320)
+  roleId       String    @map("role_id") @db.Uuid
+  invitedBy    String    @map("invited_by") @db.Uuid
+  tokenHash    String    @unique(map: "uq_business_invitations_token_hash") @map("token_hash") @db.Char(64)
+  status       String    @default("PENDING") @db.VarChar(20)
+  emailStatus  String    @default("PENDING") @map("email_status") @db.VarChar(20)
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(6)
+  acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business      Business  @relation("cash_transactions_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  shift         CashShift @relation("cash_transactions_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser User      @relation("cash_transactions_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  role          Role     @relation(fields: [roleId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  invitedByUser User     @relation("business_invitations_invited_by", fields: [invitedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
-  @@map("cash_transactions")
+  @@unique([businessId, invitedEmail], where: raw("(status = 'PENDING')"), map: "uq_business_invitations_pending_email")
+  @@index([businessId, status], map: "idx_business_invitations_business_status")
+  @@index([invitedEmail, status], map: "idx_business_invitations_email_status")
+  @@map("business_invitations")
 }
-
-model Order {
-  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId           String    @map("business_id") @db.Uuid
-  shiftId              String    @map("shift_id") @db.Uuid
-  orderCode            String    @map("order_code") @db.VarChar(50)
-  customerId           String?   @map("customer_id") @db.Uuid
-  cashierId            String    @map("cashier_id") @db.Uuid
-  /// SQL CHECK (total_gross_amount >= 0); can ap dung bang SQL rieng.
-  totalGrossAmount     Decimal   @map("total_gross_amount") @db.Decimal(12, 2)
-  /// SQL CHECK (discount_amount >= 0); can ap dung bang SQL rieng.
-  discountAmount       Decimal   @default(0) @map("discount_amount") @db.Decimal(12, 2)
-  /// SQL CHECK (total_net_amount >= 0); can ap dung bang SQL rieng.
-  totalNetAmount       Decimal   @map("total_net_amount") @db.Decimal(12, 2)
-  /// SQL CHECK (total_cogs_amount >= 0); can ap dung bang SQL rieng.
-  totalCogsAmount      Decimal   @default(0) @map("total_cogs_amount") @db.Decimal(12, 2)
-  grossProfit          Decimal   @default(0) @map("gross_profit") @db.Decimal(12, 2)
-  /// SQL CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED')); can ap dung bang SQL rieng.
-  status               String    @default("COMPLETED") @db.VarChar(30)
-  exchangeFromReturnId String?   @map("exchange_from_return_id") @db.Uuid
-  createdAt            DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business           Business         @relation("orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  shift              CashShift        @relation("orders_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  customer           Customer?        @relation("orders_customer_id", fields: [customerId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  cashier            User             @relation("orders_cashier_id", fields: [cashierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  exchangeFromReturn CustomerReturn?  @relation("orders_exchange_from_return_id", fields: [exchangeFromReturnId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_order_exchange_return")
-  orderItems         OrderItem[]      @relation("order_items_order_id")
-  orderPayments      OrderPayment[]   @relation("order_payments_order_id")
-  customerReturns    CustomerReturn[] @relation("customer_returns_original_order_id")
-
-  @@unique([businessId, orderCode], map: "uq_order_tenant_code")
-  @@map("orders")
-}
-
-model OrderItem {
-  id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderId        String  @map("order_id") @db.Uuid
-  variantId      String  @map("variant_id") @db.Uuid
-  lotId          String? @map("lot_id") @db.Uuid
-  /// SQL CHECK (quantity > 0); can ap dung bang SQL rieng.
-  quantity       Int
-  /// SQL CHECK (unit_price >= 0); can ap dung bang SQL rieng.
-  unitPrice      Decimal @map("unit_price") @db.Decimal(12, 2)
-  /// SQL CHECK (unit_cost >= 0); can ap dung bang SQL rieng.
-  unitCost       Decimal @map("unit_cost") @db.Decimal(12, 2)
-  /// SQL CHECK (discount_amount >= 0); can ap dung bang SQL rieng.
-  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(12, 2)
-  /// SQL CHECK (subtotal >= 0); can ap dung bang SQL rieng.
-  subtotal       Decimal @db.Decimal(12, 2)
-
-  order               Order                @relation("order_items_order_id", fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant             ProductVariant       @relation("order_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot                 ProductLot?          @relation("order_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  customerReturnItems CustomerReturnItem[] @relation("customer_return_items_order_item_id")
-
-  @@map("order_items")
-}
-
-model OrderPayment {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderId          String    @map("order_id") @db.Uuid
-  shiftId          String    @map("shift_id") @db.Uuid
-  /// SQL CHECK (payment_method IN ('CASH', 'VIETQR', 'BANK_TRANSFER')); can ap dung bang SQL rieng.
-  paymentMethod    String    @map("payment_method") @db.VarChar(50)
-  /// SQL CHECK (amount > 0); can ap dung bang SQL rieng.
-  amount           Decimal   @db.Decimal(12, 2)
-  paymentReference String?   @map("payment_reference") @db.VarChar(100)
-  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  order Order     @relation("order_payments_order_id", fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  shift CashShift @relation("order_payments_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@map("order_payments")
-}
-
-model CustomerReturn {
-  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId         String    @map("business_id") @db.Uuid
-  shiftId            String    @map("shift_id") @db.Uuid
-  returnCode         String    @map("return_code") @db.VarChar(50)
-  originalOrderId    String?   @map("original_order_id") @db.Uuid
-  isUnverifiedOrigin Boolean?  @default(false) @map("is_unverified_origin")
-  cashierId          String    @map("cashier_id") @db.Uuid
-  /// SQL CHECK (total_refund_amount >= 0); can ap dung bang SQL rieng.
-  totalRefundAmount  Decimal   @map("total_refund_amount") @db.Decimal(12, 2)
-  /// SQL CHECK (refund_method IN ('CASH', 'BANK_TRANSFER', 'EXCHANGE_OFFSET', 'NONE')); can ap dung bang SQL rieng.
-  refundMethod       String    @default("CASH") @map("refund_method") @db.VarChar(30)
-  /// SQL CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED')); can ap dung bang SQL rieng.
-  status             String    @default("COMPLETED") @db.VarChar(30)
-  createdAt          DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business            Business             @relation("customer_returns_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  shift               CashShift            @relation("customer_returns_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  originalOrder       Order?               @relation("customer_returns_original_order_id", fields: [originalOrderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  cashier             User                 @relation("customer_returns_cashier_id", fields: [cashierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  customerReturnItems CustomerReturnItem[] @relation("customer_return_items_return_id")
-  orders              Order[]              @relation("orders_exchange_from_return_id")
-
-  @@unique([businessId, returnCode], map: "uq_return_tenant_code")
-  @@map("customer_returns")
-}
-
-model CustomerReturnItem {
-  id              String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  returnId        String  @map("return_id") @db.Uuid
-  orderItemId     String? @map("order_item_id") @db.Uuid
-  variantId       String  @map("variant_id") @db.Uuid
-  lotId           String? @map("lot_id") @db.Uuid
-  /// SQL CHECK (return_qty > 0); can ap dung bang SQL rieng.
-  returnQty       Int     @map("return_qty")
-  /// SQL CHECK (refund_unit_price >= 0); can ap dung bang SQL rieng.
-  refundUnitPrice Decimal @map("refund_unit_price") @db.Decimal(12, 2)
-  /// SQL CHECK (item_condition IN ('RESTOCKABLE', 'DAMAGED_QUARANTINE')); can ap dung bang SQL rieng.
-  itemCondition   String  @map("item_condition") @db.VarChar(30)
-  returnReason    String  @map("return_reason") @db.VarChar(255)
-
-  return    CustomerReturn @relation("customer_return_items_return_id", fields: [returnId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  orderItem OrderItem?     @relation("customer_return_items_order_item_id", fields: [orderItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant   ProductVariant @relation("customer_return_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot       ProductLot?    @relation("customer_return_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@map("customer_return_items")
-}
-
-model StockAudit {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId       String    @map("business_id") @db.Uuid
-  auditCode        String    @map("audit_code") @db.VarChar(50)
-  countStartAt     DateTime  @default(now()) @map("count_start_at") @db.Timestamptz(6)
-  completedAt      DateTime? @map("completed_at") @db.Timestamptz(6)
-  /// SQL CHECK (scope_type IN ('FULL_STORE', 'CATEGORY', 'SHELF')); can ap dung bang SQL rieng.
-  scopeType        String    @default("FULL_STORE") @map("scope_type") @db.VarChar(30)
-  isLockedForAudit Boolean   @default(true) @map("is_locked_for_audit")
-  /// SQL CHECK (status IN ('IN_PROGRESS', 'PENDING_APPROVAL', 'APPLIED', 'CANCELLED')); can ap dung bang SQL rieng.
-  status           String    @default("IN_PROGRESS") @db.VarChar(30)
-  approvedBy       String?   @map("approved_by") @db.Uuid
-
-  business        Business         @relation("stock_audits_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  approvedByUser  User?            @relation("stock_audits_approved_by", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  stockAuditItems StockAuditItem[] @relation("stock_audit_items_audit_id")
-
-  @@unique([businessId, auditCode], map: "uq_audit_tenant_code")
-  @@map("stock_audits")
-}
-
-model StockAuditItem {
-  id                String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  auditId           String  @map("audit_id") @db.Uuid
-  variantId         String  @map("variant_id") @db.Uuid
-  lotId             String? @map("lot_id") @db.Uuid
-  snapshotQty       Int     @map("snapshot_qty")
-  /// SQL CHECK (counted_qty >= 0); can ap dung bang SQL rieng.
-  countedQty        Int     @map("counted_qty")
-  /// SQL GENERATED ALWAYS AS (counted_qty - snapshot_qty) STORED; dbgenerated() chi danh dau gia tri do DB sinh.
-  diffQty           Int?    @default(dbgenerated()) @map("diff_qty")
-  discrepancyReason String? @map("discrepancy_reason") @db.Text
-
-  audit   StockAudit     @relation("stock_audit_items_audit_id", fields: [auditId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variant ProductVariant @relation("stock_audit_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot     ProductLot?    @relation("stock_audit_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@map("stock_audit_items")
-}
-
-model ScrapOrder {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId     String    @map("business_id") @db.Uuid
-  scrapCode      String    @map("scrap_code") @db.VarChar(50)
-  variantId      String    @map("variant_id") @db.Uuid
-  lotId          String?   @map("lot_id") @db.Uuid
-  /// SQL CHECK (scrap_qty > 0); can ap dung bang SQL rieng.
-  scrapQty       Int       @map("scrap_qty")
-  /// SQL CHECK (unit_cost >= 0); can ap dung bang SQL rieng.
-  unitCost       Decimal   @map("unit_cost") @db.Decimal(12, 2)
-  /// SQL GENERATED ALWAYS AS (scrap_qty * unit_cost) STORED; dbgenerated() chi danh dau gia tri do DB sinh.
-  totalLossValue Decimal?  @default(dbgenerated()) @map("total_loss_value") @db.Decimal(14, 2)
-  /// SQL CHECK (scrap_source IN ('DAMAGED_STOCK', 'SELLABLE_STOCK')); can ap dung bang SQL rieng.
-  scrapSource    String    @default("DAMAGED_STOCK") @map("scrap_source") @db.VarChar(30)
-  scrapReason    String    @map("scrap_reason") @db.VarChar(255)
-  /// SQL CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED')); can ap dung bang SQL rieng.
-  status         String    @default("COMPLETED") @db.VarChar(30)
-  createdBy      String    @map("created_by") @db.Uuid
-  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business      Business       @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant       ProductVariant @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot           ProductLot?    @relation("scrap_orders_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser User           @relation("scrap_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@unique([businessId, scrapCode], map: "uq_scrap_tenant_code")
-  @@map("scrap_orders")
-}
-
-model DailyProductMetric {
-  businessId   String   @map("business_id") @db.Uuid
-  variantId    String   @map("variant_id") @db.Uuid
-  metricDate   DateTime @map("metric_date") @db.Date
-  /// SQL CHECK (units_sold >= 0); can ap dung bang SQL rieng.
-  unitsSold    Int      @default(0) @map("units_sold")
-  netRevenue   Decimal  @default(0) @map("net_revenue") @db.Decimal(12, 2)
-  netCogs      Decimal  @default(0) @map("net_cogs") @db.Decimal(12, 2)
-  closingStock Int      @map("closing_stock")
-  isStockout   Boolean  @default(false) @map("is_stockout")
-
-  business Business       @relation("daily_product_metrics_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant  ProductVariant @relation("daily_product_metrics_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@id([businessId, variantId, metricDate])
-  @@map("daily_product_metrics")
-}
-
-model ForecastRun {
-  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId        String    @map("business_id") @db.Uuid
-  /// SQL CHECK (problem_type IN ('REORDER_7D_14D', 'SLOW_MOVING_EXCESS')); can ap dung bang SQL rieng.
-  problemType       String    @map("problem_type") @db.VarChar(50)
-  /// SQL CHECK (horizon_days IN (7, 14)); can ap dung bang SQL rieng.
-  horizonDays       Int       @map("horizon_days")
-  algorithmName     String    @map("algorithm_name") @db.VarChar(100)
-  modelVersion      String    @map("model_version") @db.VarChar(50)
-  trainingStartDate DateTime  @map("training_start_date") @db.Date
-  trainingEndDate   DateTime  @map("training_end_date") @db.Date
-  dataCutoffDate    DateTime  @map("data_cutoff_date") @db.Date
-  forecastStartDate DateTime  @map("forecast_start_date") @db.Date
-  forecastEndDate   DateTime  @map("forecast_end_date") @db.Date
-  hyperparameters   Json?     @db.JsonB
-  executedAt        DateTime? @default(now()) @map("executed_at") @db.Timestamptz(6)
-  executedBy        String?   @map("executed_by") @db.Uuid
-
-  business        Business         @relation("forecast_runs_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  executedByUser  User?            @relation("forecast_runs_executed_by", fields: [executedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  forecastResults ForecastResult[] @relation("forecast_results_run_id")
-
-  @@map("forecast_runs")
-}
-
-model ForecastResult {
-  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  runId                 String    @map("run_id") @db.Uuid
-  variantId             String    @map("variant_id") @db.Uuid
-  currentStock          Int       @map("current_stock")
-  /// SQL CHECK (predicted_demand_qty >= 0); can ap dung bang SQL rieng.
-  predictedDemandQty    Int       @map("predicted_demand_qty")
-  /// SQL CHECK (recommended_order_qty >= 0); can ap dung bang SQL rieng.
-  recommendedOrderQty   Int       @default(0) @map("recommended_order_qty")
-  /// SQL CHECK (risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')); can ap dung bang SQL rieng.
-  riskLevel             String    @map("risk_level") @db.VarChar(20)
-  /// SQL CHECK (owner_decision IN ('ACCEPTED', 'MODIFIED', 'IGNORED')); can ap dung bang SQL rieng.
-  ownerDecision         String?   @map("owner_decision") @db.VarChar(30)
-  /// SQL CHECK (owner_modified_order_qty >= 0); can ap dung bang SQL rieng.
-  ownerModifiedOrderQty Int?      @map("owner_modified_order_qty")
-  decisionNotes         String?   @map("decision_notes") @db.Text
-  actualRealizedSales   Int?      @map("actual_realized_sales")
-  errorAbsoluteQty      Int?      @map("error_absolute_qty")
-  evaluatedAt           DateTime? @map("evaluated_at") @db.Timestamptz(6)
-
-  run     ForecastRun    @relation("forecast_results_run_id", fields: [runId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variant ProductVariant @relation("forecast_results_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@map("forecast_results")
-}
-
-// View chi doc; Prisma Migrate khong tao view nay. SQL nam o cuoi file.
-view ProductLotStatus {
-  id                String    @unique @db.Uuid
-  businessId        String    @map("business_id") @db.Uuid
-  variantId         String    @map("variant_id") @db.Uuid
-  lotNumber         String    @map("lot_number") @db.VarChar(100)
-  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
-  expirationDate    DateTime  @map("expiration_date") @db.Date
-  alertDaysBefore   Int?      @map("alert_days_before")
-  createdAt         DateTime? @map("created_at") @db.Timestamptz(6)
-  isExpired         Boolean   @map("is_expired")
-  isNearExpiry      Boolean?  @map("is_near_expiry")
-  daysRemaining     Int       @map("days_remaining")
-
-  @@map("v_product_lots")
-}
-
-// SQL bo sung sau khi tao cac bang: comment nay KHONG duoc Prisma thuc thi.
-// Chuyen cac cau lenh nay vao migration SQL khi trien khai CSDL.
-// CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
-// ALTER TABLE users ADD CHECK (role IN ('OWNER', 'STAFF', 'SYSTEM_ADMIN'));
-
-// ALTER TABLE product_variants ADD CHECK (base_price >= 0);
-
-// ALTER TABLE product_variants ADD CHECK (cost_price >= 0);
-
-// ALTER TABLE product_variants ADD CHECK (lead_time_days >= 0);
-
-// ALTER TABLE product_variants ADD CHECK (review_period_days > 0);
-
-// ALTER TABLE product_variants ADD CHECK (safety_stock_qty >= 0);
-
-// ALTER TABLE product_variants ADD CHECK (min_order_qty > 0);
-
-// ALTER TABLE product_variants ADD CHECK (pack_size > 0);
-
-// ALTER TABLE product_lots ADD CHECK (alert_days_before >= 0);
-
-// ALTER TABLE inventory_balances ADD CHECK (damaged_quantity >= 0);
-
-// ALTER TABLE inventory_ledger ADD CHECK (unit_cost >= 0);
-
-// ALTER TABLE opening_stock_sheets ADD CHECK (status IN ('DRAFT', 'APPLIED', 'CANCELLED'));
-
-// ALTER TABLE opening_stock_items ADD CHECK (quantity > 0);
-
-// ALTER TABLE opening_stock_items ADD CHECK (unit_cost >= 0);
-
-// ALTER TABLE purchase_orders ADD CHECK (status IN ('ORDERED', 'PARTIALLY_RECEIVED', 'COMPLETED', 'CLOSED_SHORT', 'CANCELLED'));
-
-// ALTER TABLE purchase_order_items ADD CHECK (ordered_qty > 0);
-
-// ALTER TABLE purchase_order_items ADD CHECK (received_qty >= 0);
-
-// ALTER TABLE purchase_order_items ADD CHECK (unit_price >= 0);
-
-// ALTER TABLE purchase_order_items ADD CONSTRAINT chk_received_not_exceed_ordered CHECK (received_qty <= ordered_qty);
-
-// ALTER TABLE purchase_receipts ADD CHECK (total_amount >= 0);
-
-// ALTER TABLE purchase_receipts ADD CHECK (paid_amount >= 0);
-
-// ALTER TABLE purchase_receipts ADD CHECK (status IN ('RECEIVED', 'CANCELLED'));
-
-// ALTER TABLE purchase_receipt_items ADD CHECK (received_qty > 0);
-
-// ALTER TABLE purchase_receipt_items ADD CHECK (actual_cost >= 0);
-
-// ALTER TABLE vendor_returns ADD CHECK (total_return_value >= 0);
-
-// ALTER TABLE vendor_returns ADD CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED'));
-
-// ALTER TABLE vendor_return_items ADD CHECK (return_qty > 0);
-
-// ALTER TABLE vendor_return_items ADD CHECK (return_unit_price >= 0);
-
-// ALTER TABLE cash_shifts ADD CHECK (opening_cash >= 0);
-
-// ALTER TABLE cash_shifts ADD CHECK (status IN ('OPEN', 'CLOSED'));
-
-// ALTER TABLE cash_transactions ADD CHECK (transaction_type IN ('IN', 'OUT'));
-
-// ALTER TABLE cash_transactions ADD CHECK (amount > 0);
-
-// ALTER TABLE orders ADD CHECK (total_gross_amount >= 0);
-
-// ALTER TABLE orders ADD CHECK (discount_amount >= 0);
-
-// ALTER TABLE orders ADD CHECK (total_net_amount >= 0);
-
-// ALTER TABLE orders ADD CHECK (total_cogs_amount >= 0);
-
-// ALTER TABLE orders ADD CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED'));
-
-// ALTER TABLE order_items ADD CHECK (quantity > 0);
-
-// ALTER TABLE order_items ADD CHECK (unit_price >= 0);
-
-// ALTER TABLE order_items ADD CHECK (unit_cost >= 0);
-
-// ALTER TABLE order_items ADD CHECK (discount_amount >= 0);
-
-// ALTER TABLE order_items ADD CHECK (subtotal >= 0);
-
-// ALTER TABLE order_payments ADD CHECK (payment_method IN ('CASH', 'VIETQR', 'BANK_TRANSFER'));
-
-// ALTER TABLE order_payments ADD CHECK (amount > 0);
-
-// ALTER TABLE customer_returns ADD CHECK (total_refund_amount >= 0);
-
-// ALTER TABLE customer_returns ADD CHECK (refund_method IN ('CASH', 'BANK_TRANSFER', 'EXCHANGE_OFFSET', 'NONE'));
-
-// ALTER TABLE customer_returns ADD CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED'));
-
-// ALTER TABLE customer_return_items ADD CHECK (return_qty > 0);
-
-// ALTER TABLE customer_return_items ADD CHECK (refund_unit_price >= 0);
-
-// ALTER TABLE customer_return_items ADD CHECK (item_condition IN ('RESTOCKABLE', 'DAMAGED_QUARANTINE'));
-
-// ALTER TABLE stock_audits ADD CHECK (scope_type IN ('FULL_STORE', 'CATEGORY', 'SHELF'));
-
-// ALTER TABLE stock_audits ADD CHECK (status IN ('IN_PROGRESS', 'PENDING_APPROVAL', 'APPLIED', 'CANCELLED'));
-
-// ALTER TABLE stock_audit_items ADD CHECK (counted_qty >= 0);
-
-// ALTER TABLE scrap_orders ADD CHECK (scrap_qty > 0);
-
-// ALTER TABLE scrap_orders ADD CHECK (unit_cost >= 0);
-
-// ALTER TABLE scrap_orders ADD CHECK (scrap_source IN ('DAMAGED_STOCK', 'SELLABLE_STOCK'));
-
-// ALTER TABLE scrap_orders ADD CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED'));
-
-// ALTER TABLE daily_product_metrics ADD CHECK (units_sold >= 0);
-
-// ALTER TABLE forecast_runs ADD CHECK (problem_type IN ('REORDER_7D_14D', 'SLOW_MOVING_EXCESS'));
-
-// ALTER TABLE forecast_runs ADD CHECK (horizon_days IN (7, 14));
-
-// ALTER TABLE forecast_results ADD CHECK (predicted_demand_qty >= 0);
-
-// ALTER TABLE forecast_results ADD CHECK (recommended_order_qty >= 0);
-
-// ALTER TABLE forecast_results ADD CHECK (risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'));
-
-// ALTER TABLE forecast_results ADD CHECK (owner_decision IN ('ACCEPTED', 'MODIFIED', 'IGNORED'));
-
-// ALTER TABLE forecast_results ADD CHECK (owner_modified_order_qty >= 0);
-
-// ALTER TABLE purchase_order_items DROP COLUMN subtotal;
-// ALTER TABLE purchase_order_items ADD COLUMN subtotal NUMERIC(14, 2) GENERATED ALWAYS AS (ordered_qty * unit_price) STORED;
-
-// ALTER TABLE purchase_receipts DROP COLUMN debt_amount;
-// ALTER TABLE purchase_receipts ADD COLUMN debt_amount NUMERIC(14, 2) GENERATED ALWAYS AS (total_amount - paid_amount) STORED;
-
-// ALTER TABLE purchase_receipt_items DROP COLUMN subtotal;
-// ALTER TABLE purchase_receipt_items ADD COLUMN subtotal NUMERIC(14, 2) GENERATED ALWAYS AS (received_qty * actual_cost) STORED;
-
-// ALTER TABLE stock_audit_items DROP COLUMN diff_qty;
-// ALTER TABLE stock_audit_items ADD COLUMN diff_qty INT GENERATED ALWAYS AS (counted_qty - snapshot_qty) STORED;
-
-// ALTER TABLE scrap_orders DROP COLUMN total_loss_value;
-// ALTER TABLE scrap_orders ADD COLUMN total_loss_value NUMERIC(14, 2) GENERATED ALWAYS AS (scrap_qty * unit_cost) STORED;
-
-// CREATE OR REPLACE VIEW v_product_lots AS
-// SELECT 
-//     l.*,
-//     (l.expiration_date <= CURRENT_DATE) AS is_expired,
-//     ((l.expiration_date - CURRENT_DATE) <= l.alert_days_before AND l.expiration_date > CURRENT_DATE) AS is_near_expiry,
-//     (l.expiration_date - CURRENT_DATE) AS days_remaining
-// FROM product_lots l;
-
-// CREATE OR REPLACE RULE no_update_inventory_ledger AS ON UPDATE TO inventory_ledger DO INSTEAD NOTHING;
-
-// CREATE OR REPLACE RULE no_delete_inventory_ledger AS ON DELETE TO inventory_ledger DO INSTEAD NOTHING;

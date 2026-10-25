@@ -4,6 +4,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 
 import routes from "./routes";
+import { errorHandler } from "./shared/http/error-handler";
 
 const app = express();
 
@@ -21,5 +22,7 @@ app.get("/", (req, res) => {
     message: "Business AI Copilot API",
   });
 });
+
+app.use(errorHandler);
 
 export default app;
