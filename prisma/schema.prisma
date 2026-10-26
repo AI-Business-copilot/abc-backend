@@ -22,6 +22,7 @@ model Business {
   invitations BusinessInvitation[]
 
   categories          Category[]           @relation("categories_business_id")
+  categoryAttributes  CategoryAttribute[]  @relation("category_attributes_business_id")
   productTemplates    ProductTemplate[]    @relation("product_templates_business_id")
   attributes          Attribute[]          @relation("attributes_business_id")
   attributeValues     AttributeValue[]     @relation("attribute_values_business_id")
@@ -168,19 +169,40 @@ model BusinessInvitation {
 }
 
 model Category {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId String    @map("business_id") @db.Uuid
-  name       String    @db.VarChar(150)
-  parentId   String?   @map("parent_id") @db.Uuid
-  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId  String    @map("business_id") @db.Uuid
+  name        String    @db.VarChar(150)
+  code        String?   @db.VarChar(50)
+  parentId    String?   @map("parent_id") @db.Uuid
+  description String?   @db.Text
+  isActive    Boolean?  @default(true) @map("is_active")
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   business         Business          @relation("categories_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   parent           Category?         @relation("categories_parent_id", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   children         Category[]        @relation("categories_parent_id")
+  categoryAttributes CategoryAttribute[] @relation("category_attributes_category_id")
   productTemplates ProductTemplate[] @relation("product_templates_category_id")
 
   @@unique([businessId, name], map: "uq_category_tenant_name")
+  @@unique([businessId, code], map: "uq_category_tenant_code")
   @@map("categories")
+}
+
+model CategoryAttribute {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId  String    @map("business_id") @db.Uuid
+  categoryId  String    @map("category_id") @db.Uuid
+  attributeId String    @map("attribute_id") @db.Uuid
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  business  Business  @relation("category_attributes_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  category  Category  @relation("category_attributes_category_id", fields: [categoryId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  attribute Attribute @relation("category_attributes_attribute_id", fields: [attributeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([categoryId, attributeId], map: "uq_category_attribute")
+  @@map("category_attributes")
 }
 
 model ProductTemplate {
@@ -214,6 +236,7 @@ model Attribute {
   business               Business                @relation("attributes_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   attributeValues        AttributeValue[]        @relation("attribute_values_attribute_id")
   variantAttributeValues VariantAttributeValue[] @relation("variant_attribute_values_attribute_id")
+  categoryAttributes     CategoryAttribute[]     @relation("category_attributes_attribute_id")
 
   @@unique([businessId, name], map: "uq_attribute_tenant_name")
   @@map("attributes")

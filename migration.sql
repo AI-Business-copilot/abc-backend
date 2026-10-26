@@ -117,11 +117,21 @@ CREATE TABLE IF NOT EXISTS "categories" (
     "id" UUID NOT NULL DEFAULT gen_random_uuid(),
     "business_id" UUID NOT NULL,
     "name" VARCHAR(150) NOT NULL,
+    "code" VARCHAR(50),
     "parent_id" UUID,
+    "description" TEXT,
+    "is_active" BOOLEAN DEFAULT true,
     "created_at" TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "categories_pkey" PRIMARY KEY ("id")
 );
+
+-- Bo sung cot cho database da ton tai (an toan khi chay lai)
+ALTER TABLE "categories" ADD COLUMN IF NOT EXISTS "code" VARCHAR(50);
+ALTER TABLE "categories" ADD COLUMN IF NOT EXISTS "description" TEXT;
+ALTER TABLE "categories" ADD COLUMN IF NOT EXISTS "is_active" BOOLEAN DEFAULT true;
+ALTER TABLE "categories" ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP;
 
 -- CreateTable
 CREATE TABLE IF NOT EXISTS "product_templates" (
@@ -596,6 +606,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "uq_user_tenant_username" ON "users"("business
 
 -- CreateIndex
 CREATE UNIQUE INDEX IF NOT EXISTS "uq_category_tenant_name" ON "categories"("business_id", "name");
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_category_tenant_code" ON "categories"("business_id", "code");
 
 -- CreateIndex
 CREATE UNIQUE INDEX IF NOT EXISTS "uq_template_tenant_name" ON "product_templates"("business_id", "name");
@@ -949,3 +960,23 @@ ALTER TABLE "forecast_results" ADD CONSTRAINT "forecast_results_variant_id_fkey"
 CREATE UNIQUE INDEX IF NOT EXISTS uq_template_tenant_code
   ON "product_templates" ("business_id", "code")
   WHERE "code" IS NOT NULL;
+
+-- ---------------------------------------------------------------------
+-- Bo sung: thuoc tinh nganh hang gan cho danh muc (ke thua xuong cap 2)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "category_attributes" (
+    "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+    "business_id" UUID NOT NULL,
+    "category_id" UUID NOT NULL,
+    "attribute_id" UUID NOT NULL,
+    "created_at" TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "category_attributes_pkey" PRIMARY KEY ("id")
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_category_attribute" ON "category_attributes"("category_id", "attribute_id");
+
+ALTER TABLE "category_attributes" ADD CONSTRAINT "category_attributes_business_id_fkey" FOREIGN KEY ("business_id") REFERENCES "businesses"("id") ON DELETE RESTRICT ON UPDATE NO ACTION;
+ALTER TABLE "category_attributes" ADD CONSTRAINT "category_attributes_category_id_fkey" FOREIGN KEY ("category_id") REFERENCES "categories"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+ALTER TABLE "category_attributes" ADD CONSTRAINT "category_attributes_attribute_id_fkey" FOREIGN KEY ("attribute_id") REFERENCES "attributes"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+
