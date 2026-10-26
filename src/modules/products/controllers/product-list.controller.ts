@@ -6,8 +6,8 @@ const num = (v: any) => Number(v ?? 0);
 export class ProductListController {
   async list(req: Request, res: Response) {
     try {
-      const businessId = req.query.businessId as string;
-      if (!businessId) return res.status(400).json({ message: 'businessId là bắt buộc' });
+      const businessId = String(res.locals.businessId || req.query.businessId || '');
+      if (!businessId) return res.status(401).json({ message: 'Bạn cần đăng nhập để xem sản phẩm' });
 
       const keyword = String(req.query.q || '').trim().toLowerCase();
       const categoryId = String(req.query.categoryId || '').trim();

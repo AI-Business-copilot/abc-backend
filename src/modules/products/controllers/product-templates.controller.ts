@@ -16,7 +16,7 @@ export class ProductTemplatesController {
 
   async list(req: Request, res: Response) {
     try {
-      const businessId = req.query.businessId as string;
+      const businessId = String(res.locals.businessId || req.query.businessId || '');
       const result = await service.list(businessId);
       return res.json(result);
     } catch (err: any) {

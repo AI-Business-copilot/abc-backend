@@ -9,13 +9,14 @@ export class ProductVariantsController {
     try {
       const { templateId } = req.params;
       const body = req.body;
+      const businessId = String(res.locals.businessId || body.businessId || "");
 
-      if (!body.businessId) {
-        return res.status(400).json({ message: "Thiếu businessId" });
+      if (!businessId) {
+        return res.status(401).json({ message: "Bạn cần đăng nhập để tạo biến thể" });
       }
 
       const result = await service.generate({
-        businessId: body.businessId,
+        businessId,
         templateId: templateId as string,
         attributes: body.attributes,
         defaults: body.defaults,
