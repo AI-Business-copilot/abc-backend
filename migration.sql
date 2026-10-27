@@ -980,3 +980,18 @@ ALTER TABLE "category_attributes" ADD CONSTRAINT "category_attributes_business_i
 ALTER TABLE "category_attributes" ADD CONSTRAINT "category_attributes_category_id_fkey" FOREIGN KEY ("category_id") REFERENCES "categories"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "category_attributes" ADD CONSTRAINT "category_attributes_attribute_id_fkey" FOREIGN KEY ("attribute_id") REFERENCES "attributes"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
+-- ---------------------------------------------------------------------
+-- Bo sung: phieu nap ton dau ky (ma phieu, ghi chu, thoi diem cap nhat)
+-- ---------------------------------------------------------------------
+ALTER TABLE "opening_stock_sheets" ADD COLUMN IF NOT EXISTS "code" VARCHAR(40);
+ALTER TABLE "opening_stock_sheets" ADD COLUMN IF NOT EXISTS "note" TEXT;
+ALTER TABLE "opening_stock_sheets" ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMPTZ(6) DEFAULT CURRENT_TIMESTAMP;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_opening_stock_sheet_tenant_code"
+  ON "opening_stock_sheets" ("business_id", "code")
+  WHERE "code" IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS "idx_opening_stock_sheets_tenant_status_created"
+  ON "opening_stock_sheets" ("business_id", "status", "created_at" DESC);
+
+

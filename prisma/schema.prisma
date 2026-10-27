@@ -426,15 +426,22 @@ model OpeningStockSheet {
   id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   businessId String    @map("business_id") @db.Uuid
   createdBy  String    @map("created_by") @db.Uuid
+  /// Ma phieu, vi du OSTK-2026-001 (duy nhat trong tung cua hang).
+  code       String?   @db.VarChar(40)
+  /// Ghi chu / dien giai cua phieu nap ton.
+  note       String?
   /// SQL CHECK (status IN ('DRAFT', 'APPLIED', 'CANCELLED')); can ap dung bang SQL rieng.
   status     String    @default("DRAFT") @db.VarChar(30)
   appliedAt  DateTime? @map("applied_at") @db.Timestamptz(6)
   createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   business          Business           @relation("opening_stock_sheets_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   createdByUser     User               @relation("opening_stock_sheets_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   openingStockItems OpeningStockItem[] @relation("opening_stock_items_sheet_id")
 
+  @@unique([businessId, code], map: "uq_opening_stock_sheet_tenant_code")
+  @@index([businessId, status, createdAt], map: "idx_opening_stock_sheets_tenant_status_created")
   @@map("opening_stock_sheets")
 }
 
