@@ -1,38 +1,91 @@
-﻿import { Request, Response } from 'express';
-import { AttributesService } from '../services/attributes.service';
+﻿import { Request, Response } from "express";
+import { AttributesService } from "../services/attributes.service";
 
 const service = new AttributesService();
+
+const fail = (res: Response, err: any) => {
+  console.error(err);
+  return res.status(err.status || err.statusCode || 500).json({ message: err.message || "Loi he thong" });
+};
 
 export class AttributesController {
   async create(req: Request, res: Response) {
     try {
-      const result = await service.create(req.body);
+      const businessId = String(res.locals.businessId || "");
+      const result = await service.create(businessId, req.body ?? {});
       return res.status(201).json(result);
     } catch (err: any) {
-      console.error(err);
-      return res.status(err.status || 500).json({ message: err.message || 'Loi he thong' });
+      return fail(res, err);
     }
   }
 
   async addValue(req: Request, res: Response) {
     try {
-      const result = await service.addValue(req.body);
+      const businessId = String(res.locals.businessId || "");
+      const result = await service.addValue(businessId, req.body ?? {});
       return res.status(201).json(result);
     } catch (err: any) {
-      console.error(err);
-      return res.status(err.status || 500).json({ message: err.message || 'Loi he thong' });
+      return fail(res, err);
     }
   }
 
   async list(req: Request, res: Response) {
     try {
-      const businessId = String(res.locals.businessId || req.query.businessId || '');
+      const businessId = String(res.locals.businessId || "");
       const result = await service.list(businessId);
       return res.json(result);
     } catch (err: any) {
-      console.error(err);
-      return res.status(err.status || 500).json({ message: err.message || 'Loi he thong' });
+      return fail(res, err);
+    }
+  }
+
+  async getById(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await service.getById(businessId, String(req.params.id));
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async update(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await service.update(businessId, String(req.params.id), req.body ?? {});
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async remove(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await service.remove(businessId, String(req.params.id));
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async updateValue(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await service.updateValue(businessId, String(req.params.id), req.body ?? {});
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async removeValue(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await service.removeValue(businessId, String(req.params.id));
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
     }
   }
 }
-

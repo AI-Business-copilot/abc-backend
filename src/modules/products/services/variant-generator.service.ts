@@ -43,6 +43,7 @@ export class VariantGeneratorService {
       const barcode = await this.barcodeGen.generate({ businessId, type: barcodeType });
 
       const variant = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${templateId})::bigint)`;
         const v = await tx.productVariant.create({
           data: {
             businessId,
@@ -68,7 +69,7 @@ export class VariantGeneratorService {
         });
 
         return v;
-      });
+      }, { timeout: 30000 });
 
       return { mode: "SINGLE", count: 1, variants: [variant] };
     }
@@ -102,6 +103,8 @@ export class VariantGeneratorService {
 
     // 5) Sinh biến thể trong transaction
     const created = await prisma.$transaction(async (tx) => {
+      // Khoá theo template để hai request đồng thời không tạo trùng SKU.
+      await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${templateId})::bigint)`;
       const result: any[] = [];
       for (const combo of combos) {
         // Kiểm tra xem tổ hợp này đã tồn tại cho template chưa
@@ -182,7 +185,7 @@ export class VariantGeneratorService {
         result.push(variant);
       }
       return result;
-    });
+    }, { timeout: 30000 });
 
     return { mode: "VARIANTS", count: created.length, variants: created };
   }
