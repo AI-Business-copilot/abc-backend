@@ -76,6 +76,16 @@ export class VendorReturnsController {
       return fail(res, err);
     }
   }
+
+  async getSuppliers(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await vendorReturnsService.getSuppliers(businessId);
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
 }
 
 export const vendorReturnsController = new VendorReturnsController();

@@ -9,6 +9,7 @@ router.use(requireSupabaseIdentity);
 router.use(requireBusinessScope);
 
 router.get("/", vendorReturnsController.listReturns.bind(vendorReturnsController));
+router.get("/suppliers", vendorReturnsController.getSuppliers.bind(vendorReturnsController));
 router.get("/:id", vendorReturnsController.getReturn.bind(vendorReturnsController));
 router.post("/", vendorReturnsController.createReturn.bind(vendorReturnsController));
 

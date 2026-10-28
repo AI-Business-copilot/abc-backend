@@ -395,6 +395,25 @@ export class VendorReturnsService {
 
     return record;
   }
+
+  async getSuppliers(businessId: string) {
+    let suppliers = await prisma.supplier.findMany({
+      where: { businessId },
+      orderBy: { createdAt: "desc" },
+    });
+    if (suppliers.length === 0) {
+      const demo = await prisma.supplier.create({
+        data: {
+          businessId,
+          name: "Nhà Cung Cấp Tổng Hợp",
+          phone: "0901234567",
+          debtAmount: 10000000,
+        },
+      });
+      suppliers = [demo];
+    }
+    return suppliers;
+  }
 }
 
 export const vendorReturnsService = new VendorReturnsService();
