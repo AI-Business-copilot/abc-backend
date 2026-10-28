@@ -855,3 +855,5 @@ class InventoryService {
 }
 
 export const inventoryService = new InventoryService();
+export { auditService } from "./services/audit.service";
+export { auditLockService } from "./services/audit-lock.service";
