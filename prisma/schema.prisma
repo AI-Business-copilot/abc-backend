@@ -359,6 +359,8 @@ model ProductLot {
   expirationDate    DateTime  @map("expiration_date") @db.Date
   /// SQL CHECK (alert_days_before >= 0); can ap dung bang SQL rieng.
   alertDaysBefore   Int?      @default(30) @map("alert_days_before")
+  /// Status: ACTIVE (auto-calculated), QUARANTINED, SCRAPPED
+  status            String    @default("ACTIVE") @map("status") @db.VarChar(30)
   createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   business             Business              @relation("product_lots_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
