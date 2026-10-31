@@ -14,6 +14,9 @@ interface LotWithStatus {
     id: string;
     sku: string;
     name: string;
+    template?: {
+      name: string;
+    };
   };
   inventoryBalances: Array<{
     quantityOnHand: number;
@@ -66,7 +69,11 @@ export class LotService {
           select: {
             id: true,
             sku: true,
-            name: true,
+            template: {
+              select: {
+                name: true,
+              },
+            },
           },
         },
         inventoryBalances: {
@@ -98,7 +105,12 @@ export class LotService {
       daysUntilExpiry: this.lotStatusService.getDaysUntilExpiry(
         lot.expirationDate,
       ),
-      variant: lot.variant,
+      variant: {
+        id: lot.variant.id,
+        sku: lot.variant.sku,
+        name: lot.variant.template?.name || '',
+        template: lot.variant.template,
+      },
       inventoryBalances: lot.inventoryBalances,
     }));
 
@@ -161,7 +173,11 @@ export class LotService {
           select: {
             id: true,
             sku: true,
-            name: true,
+            template: {
+              select: {
+                name: true,
+              },
+            },
           },
         },
         inventoryBalances: {
@@ -195,7 +211,12 @@ export class LotService {
         lot.expirationDate,
       ),
       daysUntilExpiry,
-      variant: lot.variant,
+      variant: {
+        id: lot.variant.id,
+        sku: lot.variant.sku,
+        name: lot.variant.template?.name || '',
+        template: lot.variant.template,
+      },
       inventoryBalances: lot.inventoryBalances,
     };
   }
@@ -257,7 +278,7 @@ export class LotService {
       );
     }
 
-    return prisma.productLot.update({
+    const updated = await prisma.productLot.update({
       where: { id: lotId },
       data: {
         status: 'QUARANTINED',
@@ -267,11 +288,25 @@ export class LotService {
           select: {
             id: true,
             sku: true,
-            name: true,
+            template: {
+              select: {
+                name: true,
+              },
+            },
           },
         },
       },
     });
+
+    return {
+      ...updated,
+      variant: {
+        id: updated.variant.id,
+        sku: updated.variant.sku,
+        name: updated.variant.template?.name || '',
+        template: updated.variant.template,
+      },
+    };
   }
 
   /**

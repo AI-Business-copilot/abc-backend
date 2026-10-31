@@ -1,6 +1,17 @@
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { Prisma } from '@prisma/client';
 
+function formatScrapOrder<T extends { variant?: any } | null>(order: T): T {
+  if (!order || !order.variant) return order;
+  return {
+    ...order,
+    variant: {
+      ...order.variant,
+      name: order.variant.template?.name ?? '',
+    },
+  };
+}
+
 export class ScrapService {
   /**
    * Generate unique scrap code for a business
@@ -107,7 +118,7 @@ export class ScrapService {
 
     const scrapCode = await this.generateScrapCode(businessId);
 
-    return prisma.scrapOrder.create({
+    const created = await prisma.scrapOrder.create({
       data: {
         businessId,
         scrapCode,
@@ -125,8 +136,12 @@ export class ScrapService {
           select: {
             id: true,
             sku: true,
-            name: true,
             costPrice: true,
+            template: {
+              select: {
+                name: true,
+              },
+            },
           },
         },
         lot: {
@@ -145,6 +160,8 @@ export class ScrapService {
         },
       },
     });
+
+    return formatScrapOrder(created);
   }
 
   /**
@@ -192,7 +209,11 @@ export class ScrapService {
             select: {
               id: true,
               sku: true,
-              name: true,
+              template: {
+                select: {
+                  name: true,
+                },
+              },
             },
           },
           lot: {
@@ -219,7 +240,7 @@ export class ScrapService {
       prisma.scrapOrder.count({ where }),
     ]);
 
-    return { orders, total };
+    return { orders: orders.map(formatScrapOrder), total };
   }
 
   /**
@@ -233,8 +254,12 @@ export class ScrapService {
           select: {
             id: true,
             sku: true,
-            name: true,
             costPrice: true,
+            template: {
+              select: {
+                name: true,
+              },
+            },
           },
         },
         lot: {
@@ -258,7 +283,7 @@ export class ScrapService {
       throw new Error('Scrap order not found');
     }
 
-    return order;
+    return formatScrapOrder(order);
   }
 
   /**
@@ -310,7 +335,7 @@ export class ScrapService {
       }
     }
 
-    return prisma.scrapOrder.update({
+    const updated = await prisma.scrapOrder.update({
       where: { id: scrapOrderId },
       data,
       include: {
@@ -318,7 +343,11 @@ export class ScrapService {
           select: {
             id: true,
             sku: true,
-            name: true,
+            template: {
+              select: {
+                name: true,
+              },
+            },
           },
         },
         lot: {
@@ -330,6 +359,8 @@ export class ScrapService {
         },
       },
     });
+
+    return formatScrapOrder(updated);
   }
 
   /**
@@ -448,7 +479,11 @@ export class ScrapService {
             select: {
               id: true,
               sku: true,
-              name: true,
+              template: {
+                select: {
+                  name: true,
+                },
+              },
             },
           },
           lot: {
@@ -461,7 +496,7 @@ export class ScrapService {
       });
 
       return {
-        scrapOrder: updatedOrder,
+        scrapOrder: formatScrapOrder(updatedOrder),
         inventoryReduced: order.scrapQty,
         lossAmount: totalCostValue,
         ledgerCreated: true,
