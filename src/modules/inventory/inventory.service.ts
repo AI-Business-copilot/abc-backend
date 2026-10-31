@@ -2,6 +2,7 @@ import { Prisma, StockTransactionType } from "@prisma/client";
 
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../shared/http/http-error";
+import { LotStatusService } from "./services/lot-status.service";
 
 const num = (value: unknown) => Number(value ?? 0);
 const likeTerm = (value: string) => `%${value.replace(/[%_]/g, "")}%`;
@@ -221,6 +222,10 @@ async function writeItems(
       if (!item.expirationDate) {
         throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập hạn sử dụng.`);
       }
+      // Calculate lot status based on expiration date
+      const lotStatusService = new LotStatusService();
+      const calculatedStatus = lotStatusService.calculateStatus(item.expirationDate);
+
       const lot = await tx.productLot.upsert({
         where: {
           businessId_variantId_lotNumber: {
@@ -235,10 +240,12 @@ async function writeItems(
           lotNumber: item.lotNumber,
           manufacturingDate: item.manufacturingDate,
           expirationDate: item.expirationDate,
+          status: calculatedStatus,
         },
         update: {
           manufacturingDate: item.manufacturingDate ?? undefined,
           expirationDate: item.expirationDate,
+          status: calculatedStatus,
         },
       });
       lotId = lot.id;

@@ -179,10 +179,41 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await auditService.recordCount(
         businessId,
+        authUserId(req),
+        String(req.params.id),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async addAuditItems(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.addAuditItems(
+        businessId,
+        authUserId(req),
         String(req.params.id),
         req.body ?? {},
       );
       return res.status(201).json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async reassignAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.reassignAuditItem(
+        businessId,
+        String(req.params.id),
+        String(req.params.itemId),
+        req.body ?? {},
+      );
+      return res.json(result);
     } catch (err: any) {
       return fail(res, err);
     }
@@ -193,6 +224,68 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await auditService.updateCount(
         businessId,
+        authUserId(req),
+        String(req.params.id),
+        String(req.params.itemId),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async submitAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.submitAuditItem(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
+        String(req.params.itemId),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async getAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.getAuditItem(
+        businessId,
+        String(req.params.id),
+        String(req.params.itemId),
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async approveAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.approveAuditItem(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
+        String(req.params.itemId),
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async rejectAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.rejectAuditItem(
+        businessId,
+        authUserId(req),
         String(req.params.id),
         String(req.params.itemId),
         req.body ?? {},
@@ -206,10 +299,16 @@ export class InventoryController {
   async getAuditItems(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      const result = await auditService.getAuditItems(businessId, String(req.params.id), {
-        page: Number(req.query.page) || 1,
-        pageSize: Number(req.query.pageSize) || 20,
-      });
+      const result = await auditService.getAuditItems(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
+        {
+          page: Number(req.query.page) || 1,
+          pageSize: Number(req.query.pageSize) || 20,
+          mine: String(req.query.mine || "") === "true",
+        },
+      );
       return res.json(result);
     } catch (err: any) {
       return fail(res, err);

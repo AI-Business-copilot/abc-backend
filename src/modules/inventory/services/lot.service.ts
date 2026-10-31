@@ -25,6 +25,48 @@ export class LotService {
   constructor(private lotStatusService: LotStatusService) { }
 
   /**
+   * Calculate lot status based on expiration date
+   * Used to auto-set status when creating or updating lots
+   * @param expirationDate The lot's expiration date
+   * @returns Calculated status: HEALTHY, WARNING, or UNUSABLE
+   */
+  private calculateLotStatus(expirationDate: Date): string {
+    return this.lotStatusService.calculateStatus(expirationDate);
+  }
+
+  /**
+   * Initialize or recalculate statuses for all lots in a business
+   * Useful for batch updates or migrations
+   * @param businessId The business ID
+   * @returns Number of lots updated
+   */
+  async initializeLotStatuses(businessId: string): Promise<number> {
+    const lots = await prisma.productLot.findMany({
+      where: {
+        businessId,
+        status: { notIn: ['QUARANTINED', 'SCRAPPED'] }, // Preserve manual QUARANTINED/SCRAPPED decisions
+      },
+      select: {
+        id: true,
+        expirationDate: true,
+      },
+    });
+
+    let updatedCount = 0;
+
+    for (const lot of lots) {
+      const newStatus = this.calculateLotStatus(lot.expirationDate);
+      await prisma.productLot.update({
+        where: { id: lot.id },
+        data: { status: newStatus },
+      });
+      updatedCount++;
+    }
+
+    return updatedCount;
+  }
+
+  /**
    * Get all lots for a business with status information
    */
   async getLots(
@@ -251,9 +293,10 @@ export class LotService {
       throw new Error('Lot not found');
     }
 
-    if ((lot as any).status !== 'ACTIVE') {
+    // Can quarantine from any non-scrapped state
+    if ((lot as any).status === 'SCRAPPED') {
       throw new Error(
-        `Cannot quarantine lot with status ${(lot as any).status}. Only ACTIVE lots can be quarantined.`,
+        `Cannot quarantine lot with status SCRAPPED. Only non-scrapped lots can be quarantined.`,
       );
     }
 

@@ -28,9 +28,19 @@ router.post("/audits", requirePermission("inventory.audit.create"), controller.c
 router.get("/audits", requirePermission("inventory.read"), controller.listAudits.bind(controller));
 router.get("/audits/:id", requirePermission("inventory.read"), controller.getAudit.bind(controller));
 
+// Owner: add employee + variant + optional lot rows, and reassign an item to another employee
+router.post("/audits/:id/items/assign", requirePermission("inventory.audit.create"), controller.addAuditItems.bind(controller));
+router.patch("/audits/:id/items/:itemId/assign", requirePermission("inventory.audit.create"), controller.reassignAuditItem.bind(controller));
+
 router.post("/audits/:id/items", requirePermission("inventory.audit.count"), controller.recordCount.bind(controller));
 router.patch("/audits/:id/items/:itemId", requirePermission("inventory.audit.count"), controller.updateCount.bind(controller));
 router.get("/audits/:id/items", requirePermission("inventory.read"), controller.getAuditItems.bind(controller));
+router.get("/audits/:id/items/:itemId", requirePermission("inventory.read"), controller.getAuditItem.bind(controller));
+
+// F07: Item-level submission and approval (new per-item workflow)
+router.post("/audits/:id/items/:itemId/submit", requirePermission("inventory.audit.submit_item"), controller.submitAuditItem.bind(controller));
+router.patch("/audits/:id/items/:itemId/approve", requirePermission("inventory.audit.approve_item"), controller.approveAuditItem.bind(controller));
+router.patch("/audits/:id/items/:itemId/reject", requirePermission("inventory.audit.approve_item"), controller.rejectAuditItem.bind(controller));
 
 router.patch("/audits/:id/approve", requirePermission("inventory.audit.approve"), controller.approveAudit.bind(controller));
 router.patch("/audits/:id/apply", requirePermission("inventory.audit.apply"), controller.applyAudit.bind(controller));
