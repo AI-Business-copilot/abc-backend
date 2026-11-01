@@ -1,5 +1,20 @@
+import type { Prisma } from "@prisma/client";
+
+import { HttpError } from "../../../shared/http/http-error";
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { LotStatusService } from "./lot-status.service";
+
+type LotStatusName = "HEALTHY" | "WARNING" | "UNUSABLE" | "QUARANTINED" | "SCRAPPED";
+
+/** Statuses the Owner needs to act on. HEALTHY and SCRAPPED are left out of the default expiry list. */
+const DEFAULT_EXPIRING_STATUSES: LotStatusName[] = ["WARNING", "UNUSABLE", "QUARANTINED"];
+const ALL_LOT_STATUSES: LotStatusName[] = ["HEALTHY", "WARNING", "UNUSABLE", "QUARANTINED", "SCRAPPED"];
+
+export interface LotWithStatusVariant {
+  id: string;
+  sku: string;
+  template: { name: string };
+}
 
 interface LotWithStatus {
   id: string;
@@ -10,11 +25,9 @@ interface LotWithStatus {
   calculatedStatus: string;
   effectiveStatus: string;
   daysUntilExpiry: number;
-  variant: {
-    id: string;
-    sku: string;
-    name: string;
-  };
+  quarantineQty?: number | null;
+  quarantinedAt?: Date | null;
+  variant: LotWithStatusVariant;
   inventoryBalances: Array<{
     quantityOnHand: number;
     damagedQuantity: number;
@@ -108,7 +121,7 @@ export class LotService {
           select: {
             id: true,
             sku: true,
-            name: true,
+            template: { select: { name: true } },
           },
         },
         inventoryBalances: {
@@ -203,7 +216,7 @@ export class LotService {
           select: {
             id: true,
             sku: true,
-            name: true,
+            template: { select: { name: true } },
           },
         },
         inventoryBalances: {
@@ -249,71 +262,140 @@ export class LotService {
   async getExpiringLots(
     businessId: string,
     filters?: {
-      status?: 'HEALTHY' | 'WARNING' | 'UNUSABLE' | 'QUARANTINED' | 'SCRAPPED';
+      status?: LotStatusName;
       skip?: number;
       take?: number;
     },
-  ): Promise<{ lots: LotWithStatus[]; summary: Record<string, number> }> {
-    const { lots, total } = await this.getLots(businessId, {
-      ...filters,
+  ): Promise<{ lots: LotWithStatus[]; total: number; summary: Record<string, number> }> {
+    if (filters?.status && !ALL_LOT_STATUSES.includes(filters.status)) {
+      throw new HttpError(400, `Invalid status. Use one of: ${ALL_LOT_STATUSES.join(", ")}.`);
+    }
+
+    const take = filters?.take || 20;
+    const skip = filters?.skip || 0;
+    const wanted: LotStatusName[] = filters?.status ? [filters.status] : DEFAULT_EXPIRING_STATUSES;
+
+    const rows = await prisma.productLot.findMany({
+      // Only lot-tracked variants have meaningful expiry dates.
+      where: { businessId, variant: { template: { hasLotTracking: true } } },
+      select: {
+        id: true,
+        variantId: true,
+        lotNumber: true,
+        expirationDate: true,
+        status: true,
+        quarantineQty: true,
+        quarantinedAt: true,
+        variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
+        inventoryBalances: { select: { quantityOnHand: true, damagedQuantity: true } },
+      },
+      orderBy: { expirationDate: "asc" },
     });
 
-    // Build summary
+    // The effective status depends on today's date, so it is calculated here and filtered before paging.
+    const matching = rows
+      .map((lot) => ({
+        id: lot.id,
+        variantId: lot.variantId,
+        lotNumber: lot.lotNumber,
+        expirationDate: lot.expirationDate,
+        dbStatus: lot.status,
+        calculatedStatus: this.lotStatusService.calculateStatus(lot.expirationDate),
+        effectiveStatus: this.lotStatusService.getEffectiveStatus(lot.status, lot.expirationDate),
+        daysUntilExpiry: this.lotStatusService.getDaysUntilExpiry(lot.expirationDate),
+        quarantineQty: lot.quarantineQty,
+        quarantinedAt: lot.quarantinedAt,
+        variant: lot.variant,
+        inventoryBalances: lot.inventoryBalances,
+      }))
+      .filter((lot) => (wanted as string[]).includes(lot.effectiveStatus));
+
     const summary: Record<string, number> = {
       healthy: 0,
       warning: 0,
       unusable: 0,
       quarantined: 0,
       scrapped: 0,
-      total,
+      total: matching.length,
     };
-
-    lots.forEach((lot) => {
-      const status = lot.effectiveStatus.toLowerCase();
-      if (status in summary) {
-        summary[status]++;
-      }
-    });
+    for (const lot of matching) {
+      summary[lot.effectiveStatus.toLowerCase()]++;
+    }
 
     return {
-      lots,
+      lots: matching.slice(skip, skip + take),
+      total: matching.length,
       summary,
     };
   }
 
   /**
-   * Mark a lot as QUARANTINED (staff removes from shelf)
+   * Staff pull a quantity of a lot off the shelf. Records how many, who and when.
+   * quantity can be at most the lot's on-hand plus damaged stock. No photo is taken here:
+   * evidence belongs to the scrap order.
    */
-  async quarantineLot(businessId: string, lotId: string): Promise<any> {
-    const lot = await prisma.productLot.findUnique({
-      where: { id: lotId },
-    });
-
-    if (!lot || lot.businessId !== businessId) {
-      throw new Error('Lot not found');
+  async quarantineLot(
+    businessId: string,
+    lotId: string,
+    userId: string,
+    body: { quantity?: unknown; note?: unknown },
+  ): Promise<any> {
+    const quantity = Number(body.quantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new HttpError(400, 'quantity must be a whole number greater than 0.');
     }
 
-    // Can quarantine from any non-scrapped state
-    if ((lot as any).status === 'SCRAPPED') {
-      throw new Error(
-        `Cannot quarantine lot with status SCRAPPED. Only non-scrapped lots can be quarantined.`,
-      );
+    const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : null;
+    if (note && note.length > 500) {
+      throw new HttpError(400, 'note must be 500 characters or fewer.');
     }
 
-    return prisma.productLot.update({
-      where: { id: lotId },
-      data: {
-        status: 'QUARANTINED',
-      },
-      include: {
-        variant: {
-          select: {
-            id: true,
-            sku: true,
-            name: true,
-          },
+    return prisma.$transaction(async (tx) => {
+      const lot = await tx.productLot.findUnique({ where: { id: lotId } });
+      if (!lot || lot.businessId !== businessId) {
+        throw new HttpError(404, 'Lot not found');
+      }
+
+      if (lot.status === 'SCRAPPED') {
+        throw new HttpError(409, 'A scrapped lot cannot be quarantined.');
+      }
+
+      const pending = await tx.scrapOrder.count({
+        where: { businessId, lotId, status: 'PENDING' },
+      });
+      if (pending > 0) {
+        throw new HttpError(
+          409,
+          'This lot has a scrap order waiting for review. Resolve it before changing the quarantine.',
+        );
+      }
+
+      const balances = await tx.inventoryBalance.aggregate({
+        where: { businessId, lotId },
+        _sum: { quantityOnHand: true, damagedQuantity: true },
+      });
+      const available = (balances._sum.quantityOnHand ?? 0) + (balances._sum.damagedQuantity ?? 0);
+
+      if (quantity > available) {
+        throw new HttpError(
+          409,
+          `Quarantine quantity ${quantity} is more than the ${available} unit(s) in this lot.`,
+        );
+      }
+
+      return tx.productLot.update({
+        where: { id: lotId },
+        data: {
+          status: 'QUARANTINED',
+          quarantineQty: quantity,
+          quarantinedAt: new Date(),
+          quarantinedBy: userId,
+          quarantineNote: note,
         },
-      },
+        include: {
+          variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
+        },
+      });
     });
   }
 
@@ -326,39 +408,6 @@ export class LotService {
     });
 
     return lots;
-  }
-
-  /**
-   * Cron job: Update lot statuses daily
-   * Scans all lots and identifies those becoming UNUSABLE
-   */
-  async updateLotStatusesCron(): Promise<{
-    scannedCount: number;
-    unusableCount: number;
-  }> {
-    const activeLots = await prisma.productLot.findMany({
-      // Query all lots - status filtering handled in cron file
-      select: {
-        id: true,
-        expirationDate: true,
-      },
-    });
-
-    let unusableCount = 0;
-
-    for (const lot of activeLots) {
-      const isUnusable = this.lotStatusService.isUnusable(lot.expirationDate);
-      if (isUnusable) {
-        // Optional: could create a notification here
-        // For now, just count them
-        unusableCount++;
-      }
-    }
-
-    return {
-      scannedCount: activeLots.length,
-      unusableCount,
-    };
   }
 
   /**
@@ -414,5 +463,45 @@ export class LotService {
     }
 
     return { allowed: true };
+  }
+
+  /**
+   * Hook for POS checkout: throws a 409 naming every lot that cannot be sold
+   * (UNUSABLE, QUARANTINED or SCRAPPED). Pass the checkout transaction as tx
+   * so the check and the sale see the same data. Lots from another business count as not found.
+   */
+  async assertLotsSellable(
+    businessId: string,
+    lotIds: string[],
+    tx?: Prisma.TransactionClient,
+  ): Promise<void> {
+    const ids = [...new Set(lotIds)];
+    if (ids.length === 0) return;
+
+    const db = tx ?? prisma;
+    const lots = await db.productLot.findMany({
+      where: { businessId, id: { in: ids } },
+      select: { id: true, lotNumber: true, status: true, expirationDate: true },
+    });
+
+    const foundIds = new Set(lots.map((lot) => lot.id));
+    const missing = ids.filter((id) => !foundIds.has(id));
+    if (missing.length > 0) {
+      throw new HttpError(404, `Lot not found: ${missing.join(', ')}`);
+    }
+
+    const blocked = lots
+      .map((lot) => ({
+        lot,
+        verdict: this.canSellFromLot(lot.status, lot.expirationDate),
+      }))
+      .filter((entry) => !entry.verdict.allowed);
+
+    if (blocked.length > 0) {
+      const detail = blocked
+        .map((entry) => `${entry.lot.lotNumber} (${entry.verdict.reason})`)
+        .join('; ');
+      throw new HttpError(409, `These lots cannot be sold: ${detail}`);
+    }
   }
 }

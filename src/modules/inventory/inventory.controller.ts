@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { inventoryService, auditService } from "./inventory.service";
 import { LotService } from "./services/lot.service";
 import { ScrapService } from "./services/scrap.service";
+import { ScrapImageService } from "./services/scrap-image.service";
 import { LotStatusService } from "./services/lot-status.service";
 
 const fail = (res: Response, err: any) => {
@@ -12,8 +13,15 @@ const fail = (res: Response, err: any) => {
 
 const authUserId = (req: Request) => String(req.identity?.id || "");
 
+/** users.id and business role set by requireBusinessScope. Used for the F08 role and ownership rules. */
+const actorOf = (res: Response) => ({
+  userId: String(res.locals.userId || ""),
+  role: String(res.locals.businessRole || ""),
+});
+
 const lotService = new LotService(new LotStatusService());
 const scrapService = new ScrapService();
+const scrapImageService = new ScrapImageService();
 
 export class InventoryController {
   async listSheets(req: Request, res: Response) {
@@ -381,7 +389,12 @@ export class InventoryController {
   async quarantineLot(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      const result = await lotService.quarantineLot(businessId, String(req.params.id));
+      const result = await lotService.quarantineLot(
+        businessId,
+        String(req.params.id),
+        String(res.locals.userId || ""),
+        req.body ?? {},
+      );
       return res.json(result);
     } catch (err: any) {
       return fail(res, err);
@@ -391,7 +404,7 @@ export class InventoryController {
   async createScrapOrder(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      const result = await scrapService.createScrapOrder(businessId, authUserId(req), req.body ?? {});
+      const result = await scrapService.createScrapOrder(businessId, actorOf(res), req.body ?? {});
       return res.status(201).json(result);
     } catch (err: any) {
       return fail(res, err);
@@ -430,6 +443,7 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await scrapService.updateScrapOrder(
         businessId,
+        actorOf(res),
         String(req.params.id),
         req.body ?? {},
       );
@@ -442,7 +456,7 @@ export class InventoryController {
   async deleteScrapOrder(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      await scrapService.deleteScrapOrder(businessId, String(req.params.id));
+      await scrapService.deleteScrapOrder(businessId, actorOf(res), String(req.params.id));
       return res.status(204).send();
     } catch (err: any) {
       return fail(res, err);
@@ -454,8 +468,9 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await scrapService.approveScrapOrder(
         businessId,
+        actorOf(res),
         String(req.params.id),
-        authUserId(req),
+        req.body ?? {},
       );
       return res.json(result);
     } catch (err: any) {
@@ -468,10 +483,81 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await scrapService.rejectScrapOrder(
         businessId,
+        actorOf(res),
         String(req.params.id),
-        req.body?.reason,
+        req.body ?? {},
       );
       return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async getScrapStatistics(_req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(await scrapService.getScrapStatistics(businessId));
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  // F08: scrap order evidence images
+
+  async uploadScrapImage(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await scrapImageService.uploadImage(
+        businessId,
+        actorOf(res),
+        String(req.params.id),
+        req.file,
+        req.body?.note,
+      );
+      return res.status(201).json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async listScrapImages(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(await scrapImageService.listImages(businessId, String(req.params.id)));
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async getScrapImage(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(await scrapImageService.getImage(businessId, String(req.params.imageId)));
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async updateScrapImage(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await scrapImageService.updateImageNote(
+        businessId,
+        actorOf(res),
+        String(req.params.imageId),
+        req.body?.note,
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async deleteScrapImage(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      await scrapImageService.deleteImage(businessId, actorOf(res), String(req.params.imageId));
+      return res.status(204).send();
     } catch (err: any) {
       return fail(res, err);
     }

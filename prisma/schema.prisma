@@ -42,6 +42,7 @@ model Business {
   customerReturns     CustomerReturn[]     @relation("customer_returns_business_id")
   stockAudits         StockAudit[]         @relation("stock_audits_business_id")
   scrapOrders         ScrapOrder[]         @relation("scrap_orders_business_id")
+  scrapOrderImages    ScrapOrderImage[]    @relation("scrap_order_images_business_id")
   dailyProductMetrics DailyProductMetric[] @relation("daily_product_metrics_business_id")
   forecastRuns        ForecastRun[]        @relation("forecast_runs_business_id")
 
@@ -77,6 +78,11 @@ model User {
   stockAuditItemsApprovedBy StockAuditItem[] @relation("stock_audit_items_approved_by_user_id")
   stockAuditItemsRejectedBy StockAuditItem[] @relation("stock_audit_items_rejected_by_user_id")
   scrapOrders        ScrapOrder[]        @relation("scrap_orders_created_by")
+  scrapOrdersApproved ScrapOrder[]       @relation("scrap_orders_approved_by")
+  scrapOrdersRejected ScrapOrder[]       @relation("scrap_orders_rejected_by")
+  scrapImagesUploaded ScrapOrderImage[]  @relation("scrap_order_images_uploaded_by")
+  scrapImagesDeleted  ScrapOrderImage[]  @relation("scrap_order_images_deleted_by")
+  lotsQuarantined     ProductLot[]       @relation("product_lots_quarantined_by")
   forecastRuns       ForecastRun[]       @relation("forecast_runs_executed_by")
 
 @@map("users")
@@ -368,8 +374,14 @@ model ProductLot {
   /// Status: HEALTHY / WARNING / UNUSABLE (calculated from expiration date), QUARANTINED, SCRAPPED
   status            String    @default("HEALTHY") @map("status") @db.VarChar(30)
   isLockedForAudit  Boolean   @default(false) @map("is_locked_for_audit")
+  /// Quantity staff pulled off the shelf when quarantining the lot. SQL CHECK (quarantine_qty > 0).
+  quarantineQty     Int?      @map("quarantine_qty")
+  quarantinedAt     DateTime? @map("quarantined_at") @db.Timestamptz(6)
+  quarantinedBy     String?   @map("quarantined_by") @db.Uuid
+  quarantineNote    String?   @map("quarantine_note") @db.VarChar(500)
   createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  quarantinedByUser    User?                 @relation("product_lots_quarantined_by", fields: [quarantinedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   business             Business              @relation("product_lots_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   variant              ProductVariant        @relation("product_lots_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   inventoryBalances    InventoryBalance[]    @relation("inventory_balances_lot_id")
@@ -853,23 +865,57 @@ model ScrapOrder {
   scrapQty       Int       @map("scrap_qty")
   /// SQL CHECK (unit_cost >= 0); can ap dung bang SQL rieng.
   unitCost       Decimal   @map("unit_cost") @db.Decimal(12, 2)
-  /// SQL GENERATED ALWAYS AS (scrap_qty * unit_cost) STORED; dbgenerated() chi danh dau gia tri do DB sinh.
+  /// Plain nullable column in the live database (not generated). Set to scrap_qty * unit_cost when the order is approved.
   totalLossValue Decimal?  @default(dbgenerated()) @map("total_loss_value") @db.Decimal(14, 2)
   /// SQL CHECK (scrap_source IN ('DAMAGED_STOCK', 'SELLABLE_STOCK')); can ap dung bang SQL rieng.
   scrapSource    String    @default("DAMAGED_STOCK") @map("scrap_source") @db.VarChar(30)
   scrapReason    String    @map("scrap_reason") @db.VarChar(255)
-  /// SQL CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED')); can ap dung bang SQL rieng.
-  status         String    @default("COMPLETED") @db.VarChar(30)
+  /// SQL CHECK (status IN ('PENDING', 'COMPLETED', 'REJECTED', 'CANCELLED')); CANCELLED is kept for old rows.
+  status         String    @default("PENDING") @db.VarChar(30)
   createdBy      String    @map("created_by") @db.Uuid
   createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  approvedBy     String?   @map("approved_by") @db.Uuid
+  approvedAt     DateTime? @map("approved_at") @db.Timestamptz(6)
+  rejectedBy     String?   @map("rejected_by") @db.Uuid
+  rejectedAt     DateTime? @map("rejected_at") @db.Timestamptz(6)
+  /// SQL CHECK (rejection_reason_code IN ('WRONG_QUANTITY', 'PHOTO_UNCLEAR', 'NOT_REMOVED_FROM_SHELF', 'OTHER')).
+  rejectionReasonCode String? @map("rejection_reason_code") @db.VarChar(40)
+  rejectionNote       String? @map("rejection_note") @db.VarChar(500)
 
-  business      Business       @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant       ProductVariant @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot           ProductLot?    @relation("scrap_orders_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser User           @relation("scrap_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business       Business       @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant        ProductVariant @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lot            ProductLot?    @relation("scrap_orders_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  createdByUser  User           @relation("scrap_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  approvedByUser User?          @relation("scrap_orders_approved_by", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  rejectedByUser User?          @relation("scrap_orders_rejected_by", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  images         ScrapOrderImage[] @relation("scrap_order_images_scrap_order_id")
 
   @@unique([businessId, scrapCode], map: "uq_scrap_tenant_code")
   @@map("scrap_orders")
+}
+
+/// Evidence photos for a scrap order. Rows are soft-deleted (deleted_at) so removals stay auditable.
+model ScrapOrderImage {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId   String    @map("business_id") @db.Uuid
+  scrapOrderId String    @map("scrap_order_id") @db.Uuid
+  storagePath  String    @map("storage_path") @db.VarChar(500)
+  mimeType     String    @map("mime_type") @db.VarChar(50)
+  sizeBytes    Int       @map("size_bytes")
+  note         String?   @db.VarChar(500)
+  uploadedBy   String    @map("uploaded_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy    String?   @map("deleted_by") @db.Uuid
+
+  business       Business   @relation("scrap_order_images_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  scrapOrder     ScrapOrder @relation("scrap_order_images_scrap_order_id", fields: [scrapOrderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  uploadedByUser User       @relation("scrap_order_images_uploaded_by", fields: [uploadedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  deletedByUser  User?      @relation("scrap_order_images_deleted_by", fields: [deletedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([businessId, scrapOrderId], map: "idx_scrap_order_images_order")
+  @@map("scrap_order_images")
 }
 
 model DailyProductMetric {

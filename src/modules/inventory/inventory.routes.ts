@@ -3,6 +3,7 @@ import { Router } from "express";
 import { requireBusinessScope } from "../../shared/auth/business-scope.middleware";
 import { requirePermission } from "../../shared/auth/require-permission.middleware";
 import { requireSupabaseIdentity } from "../../shared/auth/supabase-auth.middleware";
+import { requireMultipart, uploadSingleImage } from "../../shared/http/upload.middleware";
 import { InventoryController } from "./inventory.controller";
 
 const router = Router();
@@ -57,5 +58,19 @@ router.patch("/scrap-orders/:id", requirePermission("inventory.scrap.create"), c
 router.delete("/scrap-orders/:id", requirePermission("inventory.scrap.create"), controller.deleteScrapOrder.bind(controller));
 router.patch("/scrap-orders/:id/approve", requirePermission("inventory.scrap.approve"), controller.approveScrapOrder.bind(controller));
 router.patch("/scrap-orders/:id/reject", requirePermission("inventory.scrap.approve"), controller.rejectScrapOrder.bind(controller));
+router.get("/scrap-statistics", requirePermission("inventory.lot.read"), controller.getScrapStatistics.bind(controller));
+
+// F08: scrap order evidence images. Staff upload and delete their own photos; the Owner only views and reviews.
+router.post(
+  "/scrap-orders/:id/images",
+  requirePermission("inventory.scrap.create"),
+  requireMultipart,
+  uploadSingleImage,
+  controller.uploadScrapImage.bind(controller),
+);
+router.get("/scrap-orders/:id/images", requirePermission("inventory.lot.read"), controller.listScrapImages.bind(controller));
+router.get("/scrap-order-images/:imageId", requirePermission("inventory.lot.read"), controller.getScrapImage.bind(controller));
+router.patch("/scrap-order-images/:imageId", requirePermission("inventory.scrap.create"), controller.updateScrapImage.bind(controller));
+router.delete("/scrap-order-images/:imageId", requirePermission("inventory.scrap.create"), controller.deleteScrapImage.bind(controller));
 
 export default router;
