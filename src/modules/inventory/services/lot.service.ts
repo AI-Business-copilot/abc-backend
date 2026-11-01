@@ -293,23 +293,24 @@ export class LotService {
     });
 
     // The effective status depends on today's date, so it is calculated here and filtered before paging.
-    const matching = rows
-      .map((lot) => ({
-        id: lot.id,
-        variantId: lot.variantId,
-        lotNumber: lot.lotNumber,
-        expirationDate: lot.expirationDate,
-        dbStatus: lot.status,
-        calculatedStatus: this.lotStatusService.calculateStatus(lot.expirationDate),
-        effectiveStatus: this.lotStatusService.getEffectiveStatus(lot.status, lot.expirationDate),
-        daysUntilExpiry: this.lotStatusService.getDaysUntilExpiry(lot.expirationDate),
-        quarantineQty: lot.quarantineQty,
-        quarantinedAt: lot.quarantinedAt,
-        variant: lot.variant,
-        inventoryBalances: lot.inventoryBalances,
-      }))
-      .filter((lot) => (wanted as string[]).includes(lot.effectiveStatus));
+    const allLots = rows.map((lot) => ({
+      id: lot.id,
+      variantId: lot.variantId,
+      lotNumber: lot.lotNumber,
+      expirationDate: lot.expirationDate,
+      dbStatus: lot.status,
+      calculatedStatus: this.lotStatusService.calculateStatus(lot.expirationDate),
+      effectiveStatus: this.lotStatusService.getEffectiveStatus(lot.status, lot.expirationDate),
+      daysUntilExpiry: this.lotStatusService.getDaysUntilExpiry(lot.expirationDate),
+      quarantineQty: lot.quarantineQty,
+      quarantinedAt: lot.quarantinedAt,
+      variant: lot.variant,
+      inventoryBalances: lot.inventoryBalances,
+    }));
+    const matching = allLots.filter((lot) => (wanted as string[]).includes(lot.effectiveStatus));
 
+    // The per-status counts cover every lot, so they stay the same whichever tab is selected.
+    // `total` is the size of the selected tab's list, the same as the top-level `total`.
     const summary: Record<string, number> = {
       healthy: 0,
       warning: 0,
@@ -318,7 +319,7 @@ export class LotService {
       scrapped: 0,
       total: matching.length,
     };
-    for (const lot of matching) {
+    for (const lot of allLots) {
       summary[lot.effectiveStatus.toLowerCase()]++;
     }
 
