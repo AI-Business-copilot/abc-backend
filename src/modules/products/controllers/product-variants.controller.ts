@@ -64,20 +64,30 @@ export class ProductVariantsController {
         if (costPrice === null || basePrice === null) {
           throw new BadRequestException(`Giá của dòng ${index + 1} không hợp lệ`);
         }
+        const patch: Record<string, any> = {
+          costPrice,
+          basePrice,
+          safetyStockQty,
+          updatedAt: new Date(),
+        };
+        if (typeof row.sku === "string" && row.sku.trim()) {
+          patch.sku = row.sku.trim();
+        }
+        if (row.barcode !== undefined) {
+          patch.barcode = typeof row.barcode === "string" && row.barcode.trim() ? row.barcode.trim() : null;
+        }
         return prisma.productVariant.update({
           where: { id },
-          data: {
-            costPrice,
-            basePrice,
-            safetyStockQty,
-            updatedAt: new Date(),
-          },
+          data: patch,
         });
       });
 
       const result = await prisma.$transaction(updates);
       return res.json({ updated: result.length });
     } catch (err: any) {
+      if (err?.code === "P2002" || String(err?.message).includes("uq_variant_tenant_sku")) {
+        return res.status(400).json({ message: "Mã SKU đã tồn tại trong hệ thống. Vui lòng chọn mã khác." });
+      }
       return fail(res, err);
     }
   }

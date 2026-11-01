@@ -1,4 +1,4 @@
-﻿import { prisma } from "../../../shared/infrastructure/database/prisma.client";
+import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import {
   BadRequestException,
   NotFoundException,
@@ -140,5 +140,64 @@ export class ProductTemplatesService {
     });
     if (!template) throw new NotFoundException("Không tìm thấy mẫu sản phẩm");
     return template;
+  }
+
+  async delete(businessId: string, templateId: string) {
+    const template = await prisma.productTemplate.findFirst({
+      where: { id: templateId, businessId },
+      include: {
+        productVariants: {
+          select: {
+            id: true,
+            _count: {
+              select: {
+                inventoryLedger: true,
+                orderItems: true,
+                purchaseOrderItems: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!template) throw new NotFoundException("Không tìm thấy mẫu sản phẩm để xóa");
+
+    // Kiểm tra xem đã có giao dịch kho hoặc đơn hàng chưa
+    const hasTransactions = template.productVariants.some(
+      (v) =>
+        v._count.inventoryLedger > 0 ||
+        v._count.orderItems > 0 ||
+        v._count.purchaseOrderItems > 0
+    );
+
+    if (hasTransactions) {
+      // Đã có lịch sử giao dịch: chuyển trạng thái thành ngừng kinh doanh để bảo toàn số liệu kế toán
+      await prisma.productTemplate.update({
+        where: { id: templateId },
+        data: { isActive: false, updatedAt: new Date() },
+      });
+      await prisma.productVariant.updateMany({
+        where: { templateId },
+        data: { isActive: false, updatedAt: new Date() },
+      });
+      return {
+        message: "Sản phẩm đã có lịch sử giao dịch kho/đơn hàng. Hệ thống đã chuyển sang trạng thái 'Ngừng bán'.",
+        softDeleted: true,
+      };
+    }
+
+    // Chưa có giao dịch: xóa sạch các bảng liên quan an toàn
+    const variantIds = template.productVariants.map((v) => v.id);
+    await prisma.$transaction(async (tx) => {
+      if (variantIds.length > 0) {
+        await tx.variantAttributeValue.deleteMany({ where: { variantId: { in: variantIds } } });
+        await tx.inventoryBalance.deleteMany({ where: { variantId: { in: variantIds } } });
+        await tx.productLot.deleteMany({ where: { variantId: { in: variantIds } } });
+        await tx.productVariant.deleteMany({ where: { id: { in: variantIds } } });
+      }
+      await tx.productTemplate.delete({ where: { id: templateId } });
+    });
+
+    return { message: "Đã xóa hoàn toàn mẫu sản phẩm và các biến thể liên quan.", softDeleted: false };
   }
 }
