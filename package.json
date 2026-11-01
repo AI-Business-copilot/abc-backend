@@ -7,6 +7,7 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "docs": "echo 'Swagger UI available at http://localhost:5000/api-docs'",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
@@ -30,7 +31,9 @@
     "morgan": "^1.12.0",
     "multer": "2.5.0",
     "node-cron": "4.6.0",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "swagger-ui-express": "^5.0.1",
+    "yamljs": "^0.3.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
@@ -38,6 +41,8 @@
     "@types/morgan": "^1.9.10",
     "@types/multer": "2.3.0",
     "@types/node": "^26.5.0",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@types/yamljs": "^0.2.34",
     "prisma": "^7.10.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3"

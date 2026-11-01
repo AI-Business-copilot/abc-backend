@@ -1,0 +1,641 @@
+openapi: 3.0.3
+info:
+  title: ABC Retail - F07 Stock Audit & F08 Lot Management API
+  version: 1.0.0
+  description: |
+    API documentation for:
+    - **F07**: Stock Audit (Kiểm kê tồn kho)
+    - **F08**: Lot Tracking & Scrap Management (Theo dõi lô hàng & hủy hàng)
+    
+    All endpoints require:
+    - Bearer JWT authentication (Supabase token)
+    - X-Business-Id header with valid business UUID
+    - Appropriate permissions for each operation
+
+servers:
+  - url: http://localhost:5000/api
+    description: Local development
+  - url: https://api.example.com/api
+    description: Production
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase JWT token from authentication
+  
+  parameters:
+    businessIdHeader:
+      name: X-Business-Id
+      in: header
+      required: true
+      description: Business/store UUID for multi-tenant isolation
+      schema:
+        type: string
+        format: uuid
+    
+    auditId:
+      name: id
+      in: path
+      required: true
+      description: Audit UUID
+      schema:
+        type: string
+        format: uuid
+    
+    auditItemId:
+      name: itemId
+      in: path
+      required: true
+      description: Audit item UUID
+      schema:
+        type: string
+        format: uuid
+    
+    lotId:
+      name: id
+      in: path
+      required: true
+      description: Product lot UUID
+      schema:
+        type: string
+        format: uuid
+    
+    scrapOrderId:
+      name: id
+      in: path
+      required: true
+      description: Scrap order UUID
+      schema:
+        type: string
+        format: uuid
+    
+    scrapImageId:
+      name: imageId
+      in: path
+      required: true
+      description: Scrap image UUID
+      schema:
+        type: string
+        format: uuid
+  
+  schemas:
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Error message in Vietnamese
+          example: "Mã kiểm kê đã tồn tại trong cửa hàng này."
+    
+    # F07 SCHEMAS
+    Audit:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        auditCode:
+          type: string
+          example: "AUDIT-2026-10-001"
+        scopeType:
+          type: string
+          enum: [FULL_STORE, CATEGORY, SHELF]
+        status:
+          type: string
+          enum: [IN_PROGRESS, PENDING_APPROVAL, APPLIED, CANCELLED]
+        note:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    
+    AuditItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        snapshotQty:
+          type: integer
+          nullable: true
+        countedQty:
+          type: integer
+          nullable: true
+        diffQty:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [PENDING, SUBMITTED, APPROVED, REJECTED]
+    
+    AuditListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Audit'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    
+    # F08 SCHEMAS
+    ExpiringLot:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        lotNumber:
+          type: string
+        expirationDate:
+          type: string
+          format: date
+        effectiveStatus:
+          type: string
+          enum: [HEALTHY, WARNING, UNUSABLE, QUARANTINED, SCRAPPED]
+    
+    ScrapOrder:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        scrapCode:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, COMPLETED, REJECTED]
+    
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+
+paths:
+  # F07 ENDPOINTS
+  /inventory/audits:
+    post:
+      tags: [F07 Stock Audit]
+      summary: Create new audit
+      description: "Permission: inventory.audit.create"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [auditCode, scopeType]
+              properties:
+                auditCode:
+                  type: string
+                scopeType:
+                  type: string
+                  enum: [FULL_STORE, CATEGORY, SHELF]
+      responses:
+        '201':
+          description: Audit created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Audit'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    
+    get:
+      tags: [F07 Stock Audit]
+      summary: List audits
+      description: "Permission: inventory.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: List of audits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditListResponse'
+  
+  /inventory/audits/{id}:
+    get:
+      tags: [F07 Stock Audit]
+      summary: Get audit details
+      description: "Permission: inventory.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      responses:
+        '200':
+          description: Audit details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Audit'
+  
+  /inventory/audits/{id}/items/assign:
+    post:
+      tags: [F07 Stock Audit]
+      summary: Assign items to employees
+      description: "Permission: inventory.audit.create"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Items assigned
+  
+  /inventory/audits/{id}/items/{itemId}/assign:
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Reassign item
+      description: "Permission: inventory.audit.create"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      responses:
+        '200':
+          description: Item reassigned
+  
+  /inventory/audits/{id}/items:
+    post:
+      tags: [F07 Stock Audit]
+      summary: Record count
+      description: "Permission: inventory.audit.count"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [variantId, countedQty]
+              properties:
+                variantId:
+                  type: string
+                  format: uuid
+                countedQty:
+                  type: integer
+      responses:
+        '201':
+          description: Count recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditItem'
+    
+    get:
+      tags: [F07 Stock Audit]
+      summary: List audit items
+      description: "Permission: inventory.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: List of audit items
+  
+  /inventory/audits/{id}/items/{itemId}:
+    get:
+      tags: [F07 Stock Audit]
+      summary: Get audit item
+      description: "Permission: inventory.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      responses:
+        '200':
+          description: Audit item details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditItem'
+    
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Update count
+      description: "Permission: inventory.audit.count"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                countedQty:
+                  type: integer
+      responses:
+        '200':
+          description: Count updated
+  
+  /inventory/audits/{id}/items/{itemId}/submit:
+    post:
+      tags: [F07 Stock Audit]
+      summary: Submit item for approval
+      description: "Permission: inventory.audit.submit_item"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      responses:
+        '200':
+          description: Item submitted
+  
+  /inventory/audits/{id}/items/{itemId}/approve:
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Approve item
+      description: "Permission: inventory.audit.approve_item"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      responses:
+        '200':
+          description: Item approved
+  
+  /inventory/audits/{id}/items/{itemId}/reject:
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Reject item
+      description: "Permission: inventory.audit.approve_item"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      responses:
+        '200':
+          description: Item rejected
+  
+  /inventory/audits/{id}/approve:
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Approve audit
+      description: "Permission: inventory.audit.approve"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      responses:
+        '200':
+          description: Audit approved
+  
+  /inventory/audits/{id}/apply:
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Apply audit to inventory
+      description: "Permission: inventory.audit.apply"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      responses:
+        '200':
+          description: Audit applied
+  
+  # F08 ENDPOINTS
+  /inventory/lots/expiring:
+    get:
+      tags: [F08 Lot Management]
+      summary: List expiring lots
+      description: "Permission: inventory.lot.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [HEALTHY, WARNING, UNUSABLE, QUARANTINED, SCRAPPED]
+      responses:
+        '200':
+          description: List of expiring lots
+  
+  /inventory/lots/{id}:
+    get:
+      tags: [F08 Lot Management]
+      summary: Get lot details
+      description: "Permission: inventory.lot.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/lotId'
+      responses:
+        '200':
+          description: Lot details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpiringLot'
+  
+  /inventory/lots/{id}/quarantine:
+    post:
+      tags: [F08 Lot Management]
+      summary: Quarantine a lot
+      description: "Permission: inventory.scrap.create"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/lotId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quarantineQty]
+              properties:
+                quarantineQty:
+                  type: integer
+      responses:
+        '200':
+          description: Lot quarantined
+  
+  /inventory/scrap-orders:
+    post:
+      tags: [F08 Scrap Management]
+      summary: Create scrap order with images
+      description: "Permission: inventory.scrap.create. Multipart/form-data upload."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [lotId, scrapQty, scrapReason]
+              properties:
+                lotId:
+                  type: string
+                  format: uuid
+                scrapQty:
+                  type: integer
+                scrapReason:
+                  type: string
+                scrapSource:
+                  type: string
+                  enum: [DAMAGED_STOCK, SELLABLE_STOCK]
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '201':
+          description: Scrap order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScrapOrder'
+    
+    get:
+      tags: [F08 Scrap Management]
+      summary: List scrap orders
+      description: "Permission: inventory.lot.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      responses:
+        '200':
+          description: List of scrap orders
+  
+  /inventory/scrap-orders/{id}:
+    get:
+      tags: [F08 Scrap Management]
+      summary: Get scrap order details
+      description: "Permission: inventory.lot.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/scrapOrderId'
+      responses:
+        '200':
+          description: Scrap order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScrapOrder'
+    
+    patch:
+      tags: [F08 Scrap Management]
+      summary: Update scrap order
+      description: "Permission: inventory.scrap.create"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/scrapOrderId'
+      responses:
+        '200':
+          description: Scrap order updated
+    
+    delete:
+      tags: [F08 Scrap Management]
+      summary: Delete scrap order
+      description: "Permission: inventory.scrap.create"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/scrapOrderId'
+      responses:
+        '204':
+          description: Scrap order deleted
+  
+  /inventory/scrap-orders/{id}/approve:
+    patch:
+      tags: [F08 Scrap Management]
+      summary: Approve scrap order
+      description: "Permission: inventory.scrap.approve. Owner only."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/scrapOrderId'
+      responses:
+        '200':
+          description: Scrap order approved
+  
+  /inventory/scrap-orders/{id}/reject:
+    patch:
+      tags: [F08 Scrap Management]
+      summary: Reject scrap order
+      description: "Permission: inventory.scrap.approve. Owner only."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/scrapOrderId'
+      responses:
+        '200':
+          description: Scrap order rejected
+  
+  /inventory/scrap-statistics:
+    get:
+      tags: [F08 Scrap Management]
+      summary: Get scrap statistics
+      description: "Permission: inventory.lot.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      responses:
+        '200':
+          description: Scrap statistics
+  
+  /inventory/scrap-orders/{id}/images:
+    get:
+      tags: [F08 Scrap Management]
+      summary: List scrap order images
+      description: "Permission: inventory.lot.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/scrapOrderId'
+      responses:
+        '200':
+          description: List of images
+  
+  /inventory/scrap-order-images/{imageId}:
+    get:
+      tags: [F08 Scrap Management]
+      summary: Get image details
+      description: "Permission: inventory.lot.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/scrapImageId'
+      responses:
+        '200':
+          description: Image details
