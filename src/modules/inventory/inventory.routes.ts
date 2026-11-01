@@ -3,7 +3,7 @@ import { Router } from "express";
 import { requireBusinessScope } from "../../shared/auth/business-scope.middleware";
 import { requirePermission } from "../../shared/auth/require-permission.middleware";
 import { requireSupabaseIdentity } from "../../shared/auth/supabase-auth.middleware";
-import { requireMultipart, uploadSingleImage } from "../../shared/http/upload.middleware";
+import { requireMultipart, uploadImages } from "../../shared/http/upload.middleware";
 import { InventoryController } from "./inventory.controller";
 
 const router = Router();
@@ -51,7 +51,13 @@ router.get("/lots/expiring", requirePermission("inventory.lot.read"), controller
 router.get("/lots/:id", requirePermission("inventory.lot.read"), controller.getLot.bind(controller));
 router.post("/lots/:id/quarantine", requirePermission("inventory.scrap.create"), controller.quarantineLot.bind(controller));
 
-router.post("/scrap-orders", requirePermission("inventory.scrap.create"), controller.createScrapOrder.bind(controller));
+router.post(
+  "/scrap-orders",
+  requirePermission("inventory.scrap.create"),
+  requireMultipart,
+  uploadImages,
+  controller.createScrapOrder.bind(controller),
+);
 router.get("/scrap-orders", requirePermission("inventory.lot.read"), controller.getScrapOrders.bind(controller));
 router.get("/scrap-orders/:id", requirePermission("inventory.lot.read"), controller.getScrapOrder.bind(controller));
 router.patch("/scrap-orders/:id", requirePermission("inventory.scrap.create"), controller.updateScrapOrder.bind(controller));
@@ -60,17 +66,8 @@ router.patch("/scrap-orders/:id/approve", requirePermission("inventory.scrap.app
 router.patch("/scrap-orders/:id/reject", requirePermission("inventory.scrap.approve"), controller.rejectScrapOrder.bind(controller));
 router.get("/scrap-statistics", requirePermission("inventory.lot.read"), controller.getScrapStatistics.bind(controller));
 
-// F08: scrap order evidence images. Staff upload and delete their own photos; the Owner only views and reviews.
-router.post(
-  "/scrap-orders/:id/images",
-  requirePermission("inventory.scrap.create"),
-  requireMultipart,
-  uploadSingleImage,
-  controller.uploadScrapImage.bind(controller),
-);
+// F08: scrap order evidence images. View only; images are created with the scrap order and cannot be changed afterward.
 router.get("/scrap-orders/:id/images", requirePermission("inventory.lot.read"), controller.listScrapImages.bind(controller));
 router.get("/scrap-order-images/:imageId", requirePermission("inventory.lot.read"), controller.getScrapImage.bind(controller));
-router.patch("/scrap-order-images/:imageId", requirePermission("inventory.scrap.create"), controller.updateScrapImage.bind(controller));
-router.delete("/scrap-order-images/:imageId", requirePermission("inventory.scrap.create"), controller.deleteScrapImage.bind(controller));
 
 export default router;

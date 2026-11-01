@@ -404,7 +404,12 @@ export class InventoryController {
   async createScrapOrder(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      const result = await scrapService.createScrapOrder(businessId, actorOf(res), req.body ?? {});
+      const result = await scrapService.createScrapOrder(
+        businessId,
+        actorOf(res),
+        req.body ?? {},
+        req.files as Express.Multer.File[] | undefined,
+      );
       return res.status(201).json(result);
     } catch (err: any) {
       return fail(res, err);
@@ -504,22 +509,6 @@ export class InventoryController {
 
   // F08: scrap order evidence images
 
-  async uploadScrapImage(req: Request, res: Response) {
-    try {
-      const businessId = String(res.locals.businessId || "");
-      const result = await scrapImageService.uploadImage(
-        businessId,
-        actorOf(res),
-        String(req.params.id),
-        req.file,
-        req.body?.note,
-      );
-      return res.status(201).json(result);
-    } catch (err: any) {
-      return fail(res, err);
-    }
-  }
-
   async listScrapImages(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
@@ -533,31 +522,6 @@ export class InventoryController {
     try {
       const businessId = String(res.locals.businessId || "");
       return res.json(await scrapImageService.getImage(businessId, String(req.params.imageId)));
-    } catch (err: any) {
-      return fail(res, err);
-    }
-  }
-
-  async updateScrapImage(req: Request, res: Response) {
-    try {
-      const businessId = String(res.locals.businessId || "");
-      const result = await scrapImageService.updateImageNote(
-        businessId,
-        actorOf(res),
-        String(req.params.imageId),
-        req.body?.note,
-      );
-      return res.json(result);
-    } catch (err: any) {
-      return fail(res, err);
-    }
-  }
-
-  async deleteScrapImage(req: Request, res: Response) {
-    try {
-      const businessId = String(res.locals.businessId || "");
-      await scrapImageService.deleteImage(businessId, actorOf(res), String(req.params.imageId));
-      return res.status(204).send();
     } catch (err: any) {
       return fail(res, err);
     }

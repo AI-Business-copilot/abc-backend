@@ -7,13 +7,15 @@ export type DetectedImage = { mimeType: "image/jpeg" | "image/png" | "image/webp
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-const uploader = multer({
+export const MAX_UPLOAD_IMAGES = 10;
+
+const multiUploader = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_IMAGE_BYTES, files: 1, fields: 5, fieldSize: 2_000 },
+  limits: { fileSize: MAX_IMAGE_BYTES, files: MAX_UPLOAD_IMAGES, fields: 10, fieldSize: 2_000 },
 });
 
-/** Parses a single multipart `file` field into req.file (memory). Multer errors are mapped by the error handler. */
-export const uploadSingleImage = uploader.single("file");
+/** Parses the multipart `files` field (up to 10 images) into req.files (memory) and the text fields into req.body. */
+export const uploadImages = multiUploader.array("files", MAX_UPLOAD_IMAGES);
 
 /** Decides the real type from the first bytes. The client Content-Type and file name are never trusted. */
 export function detectImageType(buffer: Buffer): DetectedImage | null {
@@ -39,7 +41,7 @@ export function detectImageType(buffer: Buffer): DetectedImage | null {
 /** Route-level guard so the multipart body is only parsed for requests that actually are multipart. */
 export function requireMultipart(req: Request, _res: Response, next: NextFunction): void {
   if (!req.is("multipart/form-data")) {
-    next(new HttpError(415, "Send the image as multipart/form-data with a 'file' field."));
+    next(new HttpError(415, "Send the scrap order as multipart/form-data with the images in a 'files' field."));
     return;
   }
   next();

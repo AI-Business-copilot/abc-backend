@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
+
 import { Prisma } from "@prisma/client";
 
 import { HttpError } from "../../../shared/http/http-error";
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
-import { deleteObjects } from "../../../shared/infrastructure/storage/supabase-storage";
+import { deleteObjects, uploadObject } from "../../../shared/infrastructure/storage/supabase-storage";
 import { LotStatusService } from "./lot-status.service";
 import { ScrapImageService, type ScrapImageDto } from "./scrap-image.service";
 import {
@@ -82,7 +84,10 @@ export class ScrapService {
     return { balance, available };
   }
 
-  /** STAFF only. The lot must be QUARANTINED and have no other PENDING scrap order. */
+  /**
+   * STAFF only. The lot must be QUARANTINED and have no other PENDING scrap order.
+   * Needs 1 to 10 evidence photos, which are saved with the order and cannot be changed afterward.
+   */
   async createScrapOrder(
     businessId: string,
     actor: ScrapActor,
@@ -93,10 +98,12 @@ export class ScrapService {
       scrapSource?: unknown;
       scrapReason?: unknown;
     },
+    files: { buffer: Buffer }[] | undefined,
   ) {
     assertStaff(actor);
     const lotId = assertUuid(data.lotId, "Lot");
     const scrapReason = parseReason(data.scrapReason);
+    const images = imageService.prepareImages(files);
 
     const lot = await prisma.productLot.findFirst({
       where: { id: lotId, businessId },
@@ -143,36 +150,71 @@ export class ScrapService {
       );
     }
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const pending = await prisma.scrapOrder.count({ where: { businessId, lotId, status: "PENDING" } });
-      if (pending > 0) {
-        throw new HttpError(409, "This lot already has a scrap order waiting for review.");
+    // Cheap check before touching Storage. The loop below checks again in case of a race.
+    if ((await prisma.scrapOrder.count({ where: { businessId, lotId, status: "PENDING" } })) > 0) {
+      throw new HttpError(409, "This lot already has a scrap order waiting for review.");
+    }
+
+    // The photos are stored with the order and never change afterward, so they are written in the same step.
+    const orderId = randomUUID();
+    const storedImages = images.map((image) => ({
+      ...image,
+      storagePath: `${businessId}/scrap-orders/${orderId}/${randomUUID()}.${image.extension}`,
+    }));
+    const uploadedPaths: string[] = [];
+
+    try {
+      for (const image of storedImages) {
+        await uploadObject(image.storagePath, image.buffer, image.mimeType);
+        uploadedPaths.push(image.storagePath);
       }
 
-      try {
-        return await prisma.scrapOrder.create({
-          data: {
-            businessId,
-            scrapCode: await this.generateScrapCode(businessId),
-            variantId: lot.variantId,
-            lotId,
-            scrapQty,
-            unitCost: lot.variant.costPrice,
-            scrapSource,
-            scrapReason,
-            status: "PENDING",
-            createdBy: actor.userId,
-          },
-          include: orderInclude,
-        });
-      } catch (error) {
-        // P2002 is either a duplicate scrap code (retry with a fresh one) or the one-PENDING-per-lot index.
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
-          throw error;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const pending = await prisma.scrapOrder.count({ where: { businessId, lotId, status: "PENDING" } });
+        if (pending > 0) {
+          throw new HttpError(409, "This lot already has a scrap order waiting for review.");
+        }
+
+        try {
+          // One nested create: the order and its photos are saved together or not at all.
+          return await prisma.scrapOrder.create({
+            data: {
+              id: orderId,
+              businessId,
+              scrapCode: await this.generateScrapCode(businessId),
+              variantId: lot.variantId,
+              lotId,
+              scrapQty,
+              unitCost: lot.variant.costPrice,
+              scrapSource,
+              scrapReason,
+              status: "PENDING",
+              createdBy: actor.userId,
+              images: {
+                create: storedImages.map((image) => ({
+                  businessId,
+                  storagePath: image.storagePath,
+                  mimeType: image.mimeType,
+                  sizeBytes: image.buffer.length,
+                  uploadedBy: actor.userId,
+                })),
+              },
+            },
+            include: orderInclude,
+          });
+        } catch (error) {
+          // P2002 is either a duplicate scrap code (retry with a fresh one) or the one-PENDING-per-lot index.
+          if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+            throw error;
+          }
         }
       }
+      throw new HttpError(409, "The scrap order could not be created. Try again.");
+    } catch (error) {
+      // Nothing was saved, so the files already in Storage would be orphans.
+      await deleteObjects(uploadedPaths);
+      throw error;
     }
-    throw new HttpError(409, "The scrap order could not be created. Try again.");
   }
 
   async getScrapOrders(

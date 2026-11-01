@@ -15,7 +15,11 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
       res.status(413).json({ error: "The image is larger than the 5 MB limit." });
       return;
     }
-    res.status(400).json({ error: "The upload was not valid. Send one image in the 'file' field." });
+    if (error.code === "LIMIT_FILE_COUNT") {
+      res.status(400).json({ error: "A scrap order can have at most 10 photos." });
+      return;
+    }
+    res.status(400).json({ error: "The upload was not valid. Send up to 10 images in the 'files' field." });
     return;
   }
 
