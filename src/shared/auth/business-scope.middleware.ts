@@ -46,6 +46,7 @@ export async function requireBusinessScope(
       );
     }
 
+    res.locals.userId = user.id;
     res.locals.businessId = access.membership.businessId;
     res.locals.businessRole = access.membership.role.code;
     res.locals.permissionCodes = access.permissionCodes;

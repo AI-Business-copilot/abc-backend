@@ -36,7 +36,7 @@ export async function getAccessContext(userId: string) {
       },
     },
   });
-
+  console.log(user);
   if (!user || !user.isActive) {
     throw new HttpError(403, "This account is not active.");
   }
@@ -46,14 +46,16 @@ export async function getAccessContext(userId: string) {
     ...(membership ? [membership.role] : []),
     ...user.platformRoles.map(({ role }) => role),
   ];
+
   const permissionCodes = [
     ...new Set(
       roles.flatMap((role) =>
-        role.permissions.map(({ permission }) => permission.code),
+        role.permissions.map(({ permission }) => {
+          return permission.code;
+        }),
       ),
     ),
   ];
-
   return {
     user,
     membership,
