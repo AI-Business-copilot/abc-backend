@@ -6,6 +6,7 @@ import {
 import { Prisma } from "@prisma/client";
 
 type TemplateInput = {
+  code?: unknown;
   name?: unknown;
   categoryId?: unknown;
   unitOfMeasure?: unknown;
@@ -47,11 +48,19 @@ export class ProductTemplatesService {
     const duplicate = await prisma.productTemplate.findFirst({ where: { businessId, name } });
     if (duplicate) throw new BadRequestException("Tên mẫu sản phẩm đã tồn tại");
 
+    let code = text(data.code).toUpperCase();
+    if (code) {
+      const dupCode = await prisma.productTemplate.findFirst({ where: { businessId, code } });
+      if (dupCode) throw new BadRequestException(`Mã sản phẩm "${code}" đã tồn tại trong cửa hàng`);
+    } else {
+      code = await nextTemplateCode(businessId);
+    }
+
     const categoryId = await this.resolveCategory(businessId, data.categoryId);
     const template = await prisma.productTemplate.create({
       data: {
         businessId,
-        code: await nextTemplateCode(businessId),
+        code,
         name,
         categoryId,
         unitOfMeasure: text(data.unitOfMeasure) || "Cái",
@@ -72,6 +81,15 @@ export class ProductTemplatesService {
     if (!template) throw new NotFoundException("Không tìm thấy mẫu sản phẩm");
 
     const patch: Prisma.ProductTemplateUncheckedUpdateInput = {};
+    if (data.code !== undefined) {
+      const code = text(data.code).toUpperCase();
+      if (!code) throw new BadRequestException("Mã mẫu sản phẩm không được để trống");
+      const dupCode = await prisma.productTemplate.findFirst({
+        where: { businessId, code, id: { not: templateId } },
+      });
+      if (dupCode) throw new BadRequestException(`Mã sản phẩm "${code}" đã tồn tại trong cửa hàng`);
+      patch.code = code;
+    }
     if (data.name !== undefined) {
       const name = text(data.name);
       if (!name) throw new BadRequestException("Tên mẫu sản phẩm là bắt buộc");
