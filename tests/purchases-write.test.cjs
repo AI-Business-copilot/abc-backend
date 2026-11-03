@@ -91,7 +91,7 @@ beforeEach(() => {
 });
 
 test("validates quantities, decimal precision, dates and duplicate order SKU", () => {
-  const input = { poCode: "PO-1", supplierId, items: [{ variantId, orderedQty: 2, unitPrice: "10.00" }] };
+  const input = { poCode: "PO-1", supplierId, expectedDeliveryDate: "2099-12-31", items: [{ variantId, orderedQty: 2, unitPrice: "10.00" }] };
   assert.equal(orderInput(input).items[0].unitPrice.toFixed(2), "10.00");
   for (const orderedQty of [0, -1, 1.5, "2", 2147483648]) assert.throws(() => orderInput({ ...input, items: [{ ...input.items[0], orderedQty }] }));
   assert.throws(() => orderInput({ ...input, items: [...input.items, ...input.items] }));
@@ -100,8 +100,31 @@ test("validates quantities, decimal precision, dates and duplicate order SKU", (
   assert.throws(() => orderInput({ ...input, orderDate: "2026-02-30" }));
 });
 
+test("create PO requires delivery date and rejects delivery before order without writes", async () => {
+  const input = { poCode: "PO-DELIVERY", supplierId, orderDate: "2099-12-30", items: [{ variantId, orderedQty: 1, unitPrice: "20" }] };
+  for (const expectedDeliveryDate of [undefined, null, ""]) {
+    await assert.rejects(service.createOrder(businessId, "auth", { ...input, expectedDeliveryDate }), (err) => err.statusCode === 400 && /Vui lòng chọn ngày giao dự kiến/.test(err.message));
+  }
+  await assert.rejects(service.createOrder(businessId, "auth", { ...input, expectedDeliveryDate: "2099-12-29" }), (err) => err.statusCode === 400 && /không được trước ngày đặt/.test(err.message));
+  assert.equal(calls.length, 0);
+  assert.equal(orderInput({ ...input, expectedDeliveryDate: "2099-12-30" }).expectedDeliveryDate.toISOString().slice(0, 10), "2099-12-30");
+});
+
+test("create PO rejects past dates using the Vietnam calendar day", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-01T18:00:00Z") });
+  const input = { poCode: "PO-DATE", supplierId, expectedDeliveryDate: "2026-11-03", items: [{ variantId, orderedQty: 1, unitPrice: "20" }] };
+  await assert.rejects(service.createOrder(businessId, "auth", { ...input, orderDate: "2026-11-01" }), (err) => err.status === 400 || err.statusCode === 400);
+  assert.equal(calls.length, 0);
+  for (const orderDate of ["2026-11-02", "2026-11-03"]) {
+    const row = await service.createOrder(businessId, "auth", { ...input, orderDate });
+    assert.equal(row.orderDate.toISOString().slice(0, 10), orderDate);
+  }
+  const row = await service.createOrder(businessId, "auth", input);
+  assert.equal(row.orderDate.toISOString().slice(0, 10), "2026-11-02");
+});
+
 test("create PO scopes supplier and SKU, records actor and leaves stock unchanged", async () => {
-  const row = await service.createOrder(businessId, "auth", { poCode: "PO-1", supplierId, items: [{ variantId, orderedQty: 5, unitPrice: "20" }] });
+  const row = await service.createOrder(businessId, "auth", { poCode: "PO-1", supplierId, expectedDeliveryDate: "2099-12-31", items: [{ variantId, orderedQty: 5, unitPrice: "20" }] });
   assert.equal(row.businessId, businessId); assert.equal(row.createdBy, "actor"); assert.equal(row.status, "ORDERED");
   assert.equal(calls[0][1].businessId, businessId); assert.equal(calls[1][1].businessId, businessId);
   assert.equal(state.quantity, 10); assert.equal(state.ledger.length, 0);

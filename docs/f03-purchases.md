@@ -69,7 +69,7 @@ Helper transaction dùng Serializable, timeout 30 giây; khi gặp Prisma P2034 
 - Tiền không âm, tối đa 2 chữ số thập phân; nên gửi chuỗi decimal. Giá đơn vị, openingCash và mỗi khoản chi < 10.000.000.000; tổng phiếu/tổng đã trả < 1.000.000.000.000. Nợ NCC có thể âm, trị tuyệt đối < 10.000.000.000.
 - Tiền response là chuỗi decimal; không giả định mọi trường đều có hậu tố .00. Các trường tính toán như totals dùng định dạng 2 chữ số.
 - poCode/receiptCode bắt buộc, tối đa 50 ký tự, duy nhất trong cửa hàng. Sau mất kết nối, GET kiểm tra mã cũ trước khi retry; đổi mã có thể nhập hàng hai lần.
-- Ngày body dùng YYYY-MM-DD. orderDate mặc định theo UTC; ngày giao dự kiến không trước ngày đặt. receivedAt lấy từ server.
+- Ngày body dùng YYYY-MM-DD. orderDate mặc định theo ngày Việt Nam; ngày giao dự kiến bắt buộc và không trước ngày đặt. receivedAt lấy từ server.
 - SKU quản lý lô cần lotNumber (tối đa 100 ký tự), expirationDate; manufacturingDate tùy chọn và không sau hạn dùng. Lô cũ phải cùng hạn dùng và cùng ngày sản xuất nếu gửi ngày này; không cập nhật ngày lô cũ.
 - Lô hết hạn trước hôm nay theo Việt Nam UTC+7 trả 400; hết hạn đúng hôm nay vẫn nhận được. SKU không quản lý lô không được gửi trường lô.
 
@@ -204,6 +204,7 @@ Gửi `GET /purchases/suppliers?search={{runId}}`: HTTP **200**, tìm dòng có 
 ```json
 {
   "poCode": "PO-{{runId}}",
+  "expectedDeliveryDate": "{{expectedDeliveryDate}}",
   "supplierId": "{{supplierId}}",
   "items": [
     { "variantId": "{{variantId}}", "orderedQty": 10, "unitPrice": "50000.00" }
@@ -216,7 +217,7 @@ Gửi `GET /purchases/suppliers?search={{runId}}`: HTTP **200**, tìm dòng có 
 - `response.id` → `poId`.
 - `response.purchaseOrderItems[0].id` → `poItemId`. Đây là ID dòng đặt hàng, khác `variantId`.
 
-Body trên dùng ngày đặt mặc định và không đặt ngày giao dự kiến. Nếu test ngày, thêm `orderDate` và `expectedDeliveryDate` theo `YYYY-MM-DD`, ngày giao không trước ngày đặt.
+Body trên dùng ngày đặt mặc định theo ngày Việt Nam. Đặt biến `expectedDeliveryDate` theo `YYYY-MM-DD`, bằng hoặc sau ngày đặt. Ngày giao dự kiến bắt buộc khi tạo hoặc sửa đơn; thiếu ngày trả HTTP **400**. Đơn cũ chưa có ngày phải bổ sung khi sửa.
 
 Gọi `GET /purchases/orders/{{poId}}` và `GET /purchases/orders?search=PO-{{runId}}`:
 
@@ -629,3 +630,12 @@ Ghi kết quả test gồm: mã case, ID/dữ liệu, request đã ẩn token, H
 | purchases-transaction.ts | Transaction/retry, người thao tác, công nợ |
 
 Phạm vi cửa hàng được kiểm soát tại src/shared/auth/business-scope.middleware.ts.
+
+## SKU theo nhà cung cấp
+
+- `GET /purchases/suppliers/:id/products`: phân trang/tìm kiếm SKU. `kind=catalog` (mặc định) đọc danh sách cung cấp đã khai báo; `kind=history` đọc SKU từng nhận qua phiếu `RECEIVED`, không gồm phiếu hủy. Mỗi SKU có giá chào và thông tin dòng nhập gần nhất.
+- `PUT /purchases/suppliers/:id/products`: thêm/cập nhật `{ variantId, supplyPrice }`. SKU phải đang hoạt động và cùng doanh nghiệp. Giá chào là tiền thập phân không âm, không tự thay đổi giá vốn hay chứng từ.
+- `DELETE /purchases/suppliers/:id/products/:variantId`: bỏ liên kết cung cấp, giữ nguyên lịch sử mua.
+- Các route yêu cầu `inventory.read` + `finance.read`; ghi thêm `inventory.receive`. Bảng `supplier_products` có khóa ngoại ghép doanh nghiệp–NCC và doanh nghiệp–SKU để chặn liên kết chéo doanh nghiệp tại DB.
+- Migration: `prisma/migrations/20261103090000_supplier_products/migration.sql`. Client đã được generate. Migration chưa được áp dụng lên database dùng chung: lịch sử migration remote khác repo; cần xác nhận riêng trước khi thay đổi schema, không chạy toàn bộ migration pending một cách tự động.
+- Kiểm tra: `node --test tests/supplier-products.test.cjs` (mock DB boundary; không phải kiểm thử PostgreSQL thật).

@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../shared/http/http-error";
-import { money, object, orderInput, receiptInput, requiredText } from "./purchases.input";
+import { money, object, orderInput, purchaseToday, receiptInput, requiredText } from "./purchases.input";
 import { uuid } from "./purchases.query";
 import { recordSupplierPayment } from "./purchases-payments.service";
 import { actor, atomic, supplierInBusiness, changeDebt } from "./purchases-transaction";
@@ -19,6 +19,9 @@ export class PurchasesWriteService {
 
   async createOrder(businessId: string, authUserId: string, value: unknown) {
     const input = orderInput(value);
+    if (input.orderDate.toISOString().slice(0, 10) < purchaseToday()) {
+      throw new HttpError(400, "Ngày đặt không được trước hôm nay.");
+    }
     return atomic(async (tx) => {
       const createdBy = await actor(tx, authUserId);
       await supplierInBusiness(tx, businessId, input.supplierId);

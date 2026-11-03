@@ -9,6 +9,7 @@ import { purchasesLifecycleService } from "./purchases-lifecycle.service";
 import { purchasesCorrectionService } from "./purchases-correction.service";
 import { purchasesPaymentsService } from "./purchases-payments.service";
 import { purchasesDraftsService } from "./purchases-drafts.service";
+import { supplierProductsService } from "./supplier-products.service";
 
 const router = Router();
 router.use(requireSupabaseIdentity, requireBusinessScope, requirePermission("inventory.read"));
@@ -33,6 +34,15 @@ router.get("/suppliers", async (req: Request, res: Response) => {
 
 router.post("/suppliers", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
   res.status(201).json(await purchasesWriteService.createSupplier(String(res.locals.businessId), req.body));
+});
+router.get("/suppliers/:id/products", async (req: Request, res: Response) => {
+  res.json(await supplierProductsService.list(String(res.locals.businessId), String(req.params.id), req.query));
+});
+router.put("/suppliers/:id/products", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
+  res.json(await supplierProductsService.save(String(res.locals.businessId), String(req.params.id), req.body));
+});
+router.delete("/suppliers/:id/products/:variantId", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
+  res.json(await supplierProductsService.remove(String(res.locals.businessId), String(req.params.id), String(req.params.variantId)));
 });
 router.post("/orders", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
   res.status(201).json(await purchasesWriteService.createOrder(String(res.locals.businessId), req.identity!.id, req.body));
