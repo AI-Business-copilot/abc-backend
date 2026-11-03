@@ -26,14 +26,14 @@ router.get("/me", requireSupabaseIdentity, async (req, res) => {
     },
     business: access.membership
       ? {
-          id: access.membership.business.id,
-          name: access.membership.business.name,
-          phone: access.membership.business.phone,
-          address: access.membership.business.address,
-          industryType: access.membership.business.industryType,
-          createdAt: access.membership.business.createdAt,
-          role: access.membership.role.code,
-        }
+        id: access.membership.business.id,
+        name: access.membership.business.name,
+        phone: access.membership.business.phone,
+        address: access.membership.business.address,
+        industryType: access.membership.business.industryType,
+        createdAt: access.membership.business.createdAt,
+        role: access.membership.role.code,
+      }
       : null,
     platformRoles: access.platformRoles,
     permissions: access.permissionCodes,
