@@ -211,37 +211,53 @@ async function writeItems(
       throw new HttpError(404, "Có SKU không thuộc cửa hàng hiện tại.");
     }
 
-    const tracksLot = isLotTracking(variant.template);
+    const tracksLot = isLotTracking(variant.template) || Boolean(item.lotNumber);
     let lotId: string | null = null;
 
-    if (tracksLot) {
-      if (!item.lotNumber) {
-        throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập số lô.`);
-      }
-      if (!item.expirationDate) {
-        throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập hạn sử dụng.`);
-      }
+    if (item.lotNumber && item.lotNumber.trim()) {
+      const cleanLotNum = item.lotNumber.trim();
       const lot = await tx.productLot.upsert({
         where: {
           businessId_variantId_lotNumber: {
             businessId,
             variantId: variant.id,
-            lotNumber: item.lotNumber,
+            lotNumber: cleanLotNum,
           },
         },
         create: {
           businessId,
           variantId: variant.id,
-          lotNumber: item.lotNumber,
-          manufacturingDate: item.manufacturingDate,
-          expirationDate: item.expirationDate,
+          lotNumber: cleanLotNum,
+          manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : null,
+          expirationDate: item.expirationDate ? new Date(item.expirationDate) : (new Date("2099-12-31")),
         },
         update: {
-          manufacturingDate: item.manufacturingDate ?? undefined,
-          expirationDate: item.expirationDate,
+          manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : undefined,
+          expirationDate: item.expirationDate ? new Date(item.expirationDate) : undefined,
         },
       });
       lotId = lot.id;
+
+      // Đồng bộ vào bảng product_lot_items trên Supabase để giữ toàn vẹn dữ liệu cho team dev
+      try {
+        await tx.$executeRaw`
+          INSERT INTO product_lot_items (
+            id, business_id, lot_id, variant_id, manufacturing_date, expiration_date, status
+          )
+          VALUES (
+            gen_random_uuid(),
+            ${businessId}::uuid, ${lot.id}::uuid, ${variant.id}::uuid,
+            ${item.manufacturingDate ? new Date(item.manufacturingDate) : null},
+            ${item.expirationDate ? new Date(item.expirationDate) : null},
+            'ACTIVE'
+          )
+          ON CONFLICT (business_id, lot_id, variant_id) DO UPDATE
+          SET manufacturing_date = EXCLUDED.manufacturing_date,
+              expiration_date = EXCLUDED.expiration_date;
+        `;
+      } catch {
+        // ignore if already present
+      }
     }
 
     await tx.openingStockItem.create({
@@ -256,17 +272,9 @@ async function writeItems(
   }
 }
 
-async function cleanupOrphanLots(tx: Prisma.TransactionClient, lotIds: string[]) {
-  for (const lotId of Array.from(new Set(lotIds.filter(Boolean)))) {
-    const [items, balances, ledger] = await Promise.all([
-      tx.openingStockItem.count({ where: { lotId } }),
-      tx.inventoryBalance.count({ where: { lotId } }),
-      tx.inventoryLedger.count({ where: { lotId } }),
-    ]);
-    if (items + balances + ledger === 0) {
-      await tx.productLot.delete({ where: { id: lotId } }).catch(() => undefined);
-    }
-  }
+async function cleanupOrphanLots(_tx: Prisma.TransactionClient, _lotIds: string[]) {
+  // Giữ lại dữ liệu lô trong product_lots & product_lot_items khi lưu nháp
+  // Không xóa lô để không làm mất dữ liệu của người dùng và đồng nghiệp
 }
 
 class InventoryService {
@@ -830,7 +838,9 @@ class InventoryService {
           id: row.id,
           createdAt: row.created_at,
           reference,
+          sheetCode: row.sheet_code || reference,
           type: row.transaction_type,
+          transactionType: row.transaction_type,
           typeLabel: LEDGER_LABELS[row.transaction_type] ?? row.transaction_type,
           quantityChanged: row.quantity_changed,
           balanceAfter: row.balance_after,
