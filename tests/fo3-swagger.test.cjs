@@ -13,11 +13,11 @@ const { createFo3Document } = require("../src/docs/fo3.openapi.ts");
 test("fo3 documents exactly the implemented purchases routes and resolves schema references", () => {
   const spec = createFo3Document();
   const source = fs.readFileSync(require.resolve("../src/modules/purchases/purchases.routes.ts"), "utf8");
-  const implemented = [...source.matchAll(/router\.(get|post|patch)\("([^"]+)"/g)]
-    .map(([, method, path]) => `${method} /purchases${path.replace(/:id/g, "{id}")}`).sort();
+  const implemented = [...source.matchAll(/router\.(get|post|patch|put|delete)\("([^"]+)"/g)]
+    .map(([, method, path]) => `${method} /purchases${path.replace(/:id/g, "{id}").replace(/:variantId/g, "{variantId}")}`).sort();
   const documented = Object.entries(spec.paths).filter(([path]) => path.startsWith("/purchases/"))
     .flatMap(([path, methods]) => Object.keys(methods).map((method) => `${method} ${path}`)).sort();
-  assert.equal(documented.length, 20);
+  assert.equal(documented.length, 24);
   assert.deepEqual(documented, implemented);
   for (const [, name] of JSON.stringify(spec).matchAll(/"\$ref":"#\/components\/schemas\/([^"]+)"/g)) {
     assert.ok(spec.components.schemas[name], `Missing schema ${name}`);

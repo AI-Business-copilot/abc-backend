@@ -15,7 +15,7 @@ const db = {
   },
   supplierProduct: {
     upsert: async (args) => { calls.push(["save", args]); if (databaseError) throw databaseError; return args.create; },
-    deleteMany: async (args) => { calls.push(["delete", args]); if (databaseError) throw databaseError; return { count: 1 }; },
+    updateMany: async (args) => { calls.push(["retire", args]); if (databaseError) throw databaseError; return { count: 1 }; },
   },
   $transaction: async (operation) => operation(db),
 };
@@ -23,7 +23,7 @@ const databasePath = require.resolve("../src/shared/infrastructure/database/pris
 require.cache[databasePath] = { id: databasePath, filename: databasePath, loaded: true, exports: { prisma: db } };
 const { SupplierProductsService } = require("../src/modules/purchases/supplier-products.service.ts");
 const service = new SupplierProductsService();
-beforeEach(() => { supplier = { id: supplierId }; variant = { id: variantId }; rows = []; calls = []; databaseError = undefined; });
+beforeEach(() => { supplier = { id: supplierId, isActive: true }; variant = { id: variantId }; rows = []; calls = []; databaseError = undefined; });
 
 test("missing supplier product schema reports unavailability for reads and writes", async () => {
   databaseError = new Prisma.PrismaClientKnownRequestError('The table public.supplier_products does not exist.', { code: "P2021", clientVersion: Prisma.prismaVersion.client });
@@ -47,7 +47,7 @@ test("foreign or missing suppliers and SKUs cannot be linked or read", async () 
   await assert.rejects(service.save(businessId, supplierId, { variantId, supplyPrice: "10" }), (err) => err.statusCode === 404);
   assert.deepEqual(calls[0][1].where, { id: supplierId, businessId });
   assert.equal(calls.some(([name]) => name === "products" || name === "save"), false);
-  supplier = { id: supplierId }; variant = null;
+  supplier = { id: supplierId, isActive: true }; variant = null;
   await assert.rejects(service.save(businessId, supplierId, { variantId, supplyPrice: "10" }), (err) => err.statusCode === 404);
   assert.deepEqual(calls.at(-1)[1].where, { id: variantId, businessId, isActive: true });
 });
@@ -60,7 +60,7 @@ test("catalog queries page only this supplier's SKU links and preserve exact pri
   const result = await service.list(businessId, supplierId, { page: "2", pageSize: "5", search: "SKU" });
   const args = calls.find(([name]) => name === "products")[1];
   assert.equal(args.where.businessId, businessId);
-  assert.deepEqual(args.where.supplierProducts.some, { businessId, supplierId });
+  assert.deepEqual(args.where.supplierProducts.some, { businessId, supplierId, isActive: true });
   assert.equal(args.skip, 5); assert.equal(args.take, 5);
   assert.deepEqual(calls.find(([name]) => name === "count")[1].where, args.where);
   assert.equal(result.items[0].supplyPrice, "0.20");
@@ -90,7 +90,7 @@ test("updating quoted price and removal are tenant scoped without modifying rece
   assert.deepEqual(saved.where.businessId_supplierId_variantId, { businessId, supplierId, variantId });
   assert.equal(saved.update.supplyPrice.toFixed(2), "123.45");
   await service.remove(businessId, supplierId, variantId);
-  assert.deepEqual(calls.at(-1), ["delete", { where: { businessId, supplierId, variantId } }]);
+  assert.deepEqual(calls.at(-1), ["retire", { where: { businessId, supplierId, variantId }, data: { isActive: false, isPreferred: false } }]);
 });
 
 test("invalid prices, list kinds, pagination and UUIDs fail before database access", async () => {
@@ -101,5 +101,31 @@ test("invalid prices, list kinds, pagination and UUIDs fail before database acce
     await assert.rejects(service.list(businessId, supplierId, query), (err) => err.statusCode === 400);
   }
   await assert.rejects(service.remove(businessId, supplierId, "invalid"), (err) => err.statusCode === 400);
+  assert.equal(calls.length, 0);
+});
+
+ test("retired supplier cannot change or activate catalog", async () => {
+  supplier.isActive = false;
+  await assert.rejects(service.save(businessId, supplierId, { variantId, supplyPrice: "10" }), err => err.statusCode === 409);
+  assert.equal(calls.some(([key]) => key === "save"), false);
+});
+test("preferred supplier switches in one transaction and retired entries reactivate", async () => {
+  await service.save(businessId, supplierId, { variantId, supplyPrice: "10", supplierSku: "  NCC-1  ", minOrderQty: 5, orderMultiple: 3, leadTimeDays: 0, isPreferred: true });
+  const demotion = calls.find(([key]) => key === "retire")[1];
+  assert.deepEqual(demotion.where, { businessId, variantId, isPreferred: true });
+  const saved = calls.find(([key]) => key === "save")[1];
+  assert.equal(saved.update.isActive, true);
+  assert.equal(saved.update.isPreferred, true);
+  assert.equal(saved.update.supplierSku, "NCC-1");
+  assert.equal(saved.update.minOrderQty, 5);
+  assert.equal(saved.update.orderMultiple, 3);
+  assert.equal(saved.update.leadTimeDays, 0);
+  assert.ok(saved.update.priceUpdatedAt instanceof Date);
+});
+test("invalid supply conditions and status filters fail before database writes", async () => {
+  for (const patch of [{ minOrderQty: 0 }, { orderMultiple: 1.5 }, { leadTimeDays: -1 }, { isPreferred: "true" }, { debtAmount: "100" }]) {
+    await assert.rejects(service.save(businessId, supplierId, { variantId, supplyPrice: "10", ...patch }), err => err.statusCode === 400);
+  }
+  await assert.rejects(service.list(businessId, supplierId, { isActive: "invalid" }), err => err.statusCode === 400);
   assert.equal(calls.length, 0);
 });

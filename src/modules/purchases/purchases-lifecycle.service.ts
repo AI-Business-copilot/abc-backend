@@ -1,3 +1,4 @@
+import { validateSupplierOrder } from "./supplier-order";
 import { Prisma } from "@prisma/client";
 import { HttpError } from "../../shared/http/http-error";
 import { object, orderInput, money } from "./purchases.input";
@@ -28,7 +29,9 @@ export class PurchasesLifecycleService {
         items: order.purchaseOrderItems.map((item) => ({ variantId: item.variantId, orderedQty: item.orderedQty, unitPrice: item.unitPrice.toFixed(2) })),
         ...patch,
       });
-      await supplierInBusiness(tx, businessId, input.supplierId);
+      // Existing unchanged lines remain editable when a catalog entry was retired.
+      const changedLines = input.items.filter(line => input.supplierId !== order.supplierId || !order.purchaseOrderItems.some(old => old.variantId === line.variantId && old.orderedQty === line.orderedQty && old.unitPrice.eq(line.unitPrice)));
+      if (changedLines.length) await validateSupplierOrder(tx, businessId, input.supplierId, changedLines);
       const variants = await tx.productVariant.findMany({ where: { businessId, isActive: true, id: { in: input.items.map((item) => item.variantId) } } });
       if (variants.length !== input.items.length) throw new HttpError(404, "An active SKU was not found in this business.");
       const wanted = new Set(input.items.map((item) => item.variantId));

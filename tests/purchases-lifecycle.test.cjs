@@ -18,6 +18,7 @@ const tx = {
     findFirst: async ({ where }) => { calls.push(["order", where]); return order; },
     update: async ({ data }) => { calls.push(["orderWrite", data]); return { ...order, ...data }; },
   },
+  supplierProduct: { findMany: async () => [{ variantId, minOrderQty: 1, orderMultiple: 1, isActive: true }] },
   productVariant: { findMany: async ({ where }) => { calls.push(["variants", where]); return [{ id: variantId }]; } },
   purchaseOrderItem: {
     deleteMany: async ({ where }) => calls.push(["deleteItems", where]),
@@ -39,7 +40,7 @@ beforeEach(() => {
   calls.length = 0; receiptCount = 0;
   order = { id, businessId, supplierId: id, poCode: "PO-1", status: "ORDERED", orderDate: new Date("2026-10-01"), expectedDeliveryDate: new Date("2026-10-02"),
     purchaseOrderItems: [{ id, variantId, orderedQty: 10, receivedQty: 0, unitPrice: D(20) }] };
-  supplier = { id, debtAmount: D(90) }; receiptSum = { totalAmount: D(100), paidAmount: D(30) }; returnSum = D(10);
+  supplier = { id, isActive: true, debtAmount: D(90) }; receiptSum = { totalAmount: D(100), paidAmount: D(30) }; returnSum = D(10);
 });
 
 test("PO update preserves existing item IDs and scopes lookups", async () => {
@@ -117,4 +118,11 @@ test("foreign/missing PO and supplier return 404", async () => {
   await assert.rejects(service.finishOrder(businessId, "auth", id, "cancel"), (err) => err.statusCode === 404);
   supplier = null;
   await assert.rejects(service.reconcileDebt(businessId, "auth", id), (err) => err.statusCode === 404);
+});
+
+test("unchanged legacy lines allow document edits after supplier retirement, buying changes fail", async () => {
+  supplier.isActive = false;
+  const saved = await service.updateOrder(businessId, "auth", id, { expectedDeliveryDate: "2026-10-03" });
+  assert.equal(saved.expectedDeliveryDate.toISOString().slice(0, 10), "2026-10-03");
+  await assert.rejects(service.updateOrder(businessId, "auth", id, { items: [{ variantId, orderedQty: 15, unitPrice: "25" }] }), err => err.statusCode === 409);
 });

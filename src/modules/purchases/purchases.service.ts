@@ -1,3 +1,4 @@
+import { activeFilter } from "./suppliers.input";
 import { Prisma } from "@prisma/client";
 
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
@@ -128,8 +129,10 @@ export class PurchasesService {
   async listSuppliers(businessId: string, query: PurchaseQuery) {
     const f = filters(query, []);
     const where: Prisma.SupplierWhereInput = {
-      businessId,
+      businessId, isActive: activeFilter(query.isActive),
       ...(f.search ? { OR: [
+        { supplierCode: { contains: f.search, mode: "insensitive" } },
+        { email: { contains: f.search, mode: "insensitive" } },
         { name: { contains: f.search, mode: "insensitive" } },
         { phone: { contains: f.search, mode: "insensitive" } },
         { contactPerson: { contains: f.search, mode: "insensitive" } },

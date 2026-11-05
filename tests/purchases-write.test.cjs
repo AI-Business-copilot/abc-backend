@@ -28,6 +28,7 @@ const tx = {
     update: async ({ data }) => Object.assign(state.supplier, data),
     create: async ({ data }) => ({ id: supplierId, ...data }),
   },
+  supplierProduct: { findMany: async () => [{ variantId, minOrderQty: 1, orderMultiple: 1, isActive: true }] },
   productVariant: {
     findMany: async ({ where }) => { calls.push(["variantScope", where]); return [state.variant]; },
     update: async ({ data }) => Object.assign(state.variant, data),
@@ -82,7 +83,7 @@ const receive = (extra = {}) => ({ receiptCode: "PR-001", paidAmount: "10.00", i
 beforeEach(() => {
   calls.length = 0; conflicts = 0;
   state = {
-    supplier: { id: supplierId, debtAmount: D(0) },
+    supplier: { id: supplierId, isActive: true, debtAmount: D(0) },
     order: { id, supplierId, status: "ORDERED", purchaseOrderItems: [{ id: itemId, variantId, orderedQty: 5, receivedQty: 0, unitPrice: D(20) }] },
     variant: { id: variantId, isActive: true, costPrice: D(10), template: { hasLotTracking: false } },
     quantity: 10, balance: { id: "balance", quantityOnHand: 10 }, lot: null, receipt: null, items: [], ledger: [], codes: [],
@@ -272,4 +273,13 @@ test("draft confirmation revalidates expiration before committing inventory/paym
   } finally {
     if (previousKey === undefined) delete process.env.PURCHASE_DRAFT_SECRET; else process.env.PURCHASE_DRAFT_SECRET = previousKey;
   }
+});
+
+test("retiring supplier preserves receiving and payment for existing purchase orders", async () => {
+  state.supplier.isActive = false;
+  await service.receiveOrder(businessId, "auth", id, receive());
+  assert.equal(state.receipt.status, "RECEIVED");
+  await service.updatePayment(businessId, "auth", id, { paidAmount: "40.00" });
+  assert.equal(state.receipt.paidAmount.toFixed(2), "40.00");
+  assert.equal(state.supplier.debtAmount.toFixed(2), "0.00");
 });

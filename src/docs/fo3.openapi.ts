@@ -45,15 +45,19 @@ const prepareTag = "01. Chuẩn bị và đối chiếu";
 
 const orderProperties = { poCode: { ...text(50), example: "PO-FO3-001" }, supplierId: uuid, orderDate: day, expectedDeliveryDate: day, items: lines(ref("OrderItemInput")) };
 const receiptExample = { receiptCode: "PR-FO3-001", paidAmount: "0.00", items: [{ poItemId: "11111111-1111-4111-8111-111111111111", receivedQty: 4, actualCost: "50000.00" }] };
+const supplierFields = { name: text(255), phone: { ...text(20), nullable: true }, contactPerson: { ...text(100), nullable: true }, supplierCode: { ...text(50), nullable: true }, email: { ...text(255), format: "email", nullable: true }, address: { type: "string", nullable: true, maxLength: 5000 }, taxCode: { ...text(30), nullable: true }, note: { type: "string", nullable: true, maxLength: 5000 }, isActive: { type: "boolean", default: true } };
 const schemas: Record<string, Schema> = {
   Error: object({ error: { type: "string" } }),
   Pagination: object({ page: { type: "integer" }, pageSize: { type: "integer" }, total: { type: "integer" }, totalPages: { type: "integer" } }),
   Login: object({ email: { type: "string", format: "email" }, password: { type: "string", format: "password", minLength: 1 }, gotrue_meta_security: object({ captcha_token: { type: "string", description: "Gửi nếu dự án Supabase bật CAPTCHA." } }) }, ["email", "password"]),
   Session: object({ access_token: { type: "string" }, token_type: { type: "string" }, expires_in: { type: "integer" }, refresh_token: { type: "string" }, user: { type: "object", additionalProperties: true } }),
-  SupplierInput: object({ name: { ...text(255), example: "NCC FO3" }, phone: { ...text(20), example: "0901234567" }, contactPerson: { ...text(100), example: "Anh An" } }, ["name"]),
-  Supplier: object({ id: uuid, name: { type: "string" }, phone: { type: "string", nullable: true }, contactPerson: { type: "string", nullable: true }, debtAmount: { type: "string", example: "100000.00" } }),
+  SupplierInput: { ...object(supplierFields, ["name"]), additionalProperties: false },
+  SupplierUpdate: { ...object(supplierFields), minProperties: 1, additionalProperties: false },
+  Supplier: object({ id: uuid, ...supplierFields, debtAmount: { type: "string", nullable: true } }),
+  SupplierProductInput: { ...object({ variantId: uuid, supplyPrice: money, supplierSku: { ...text(100), nullable: true }, supplierProductName: { ...text(255), nullable: true }, minOrderQty: quantity, orderMultiple: quantity, leadTimeDays: { type: "integer", minimum: 0, maximum: 2147483647, nullable: true }, isActive: { type: "boolean" }, isPreferred: { type: "boolean" }, note: { type: "string", nullable: true, maxLength: 5000 } }, ["variantId", "supplyPrice"]), additionalProperties: false },
+  SupplierProduct: object({ id: uuid, sku: text(100), supplyPrice: { ...money, nullable: true }, catalog: { type: "object", nullable: true, additionalProperties: true }, lastPurchase: { type: "object", nullable: true, additionalProperties: true } }),
   OrderItemInput: object({ variantId: uuid, orderedQty: quantity, unitPrice: money }, ["variantId", "orderedQty", "unitPrice"]),
-  OrderInput: object(orderProperties, ["poCode", "supplierId", "items"]),
+  OrderInput: object(orderProperties, ["poCode", "supplierId", "expectedDeliveryDate", "items"]),
   OrderUpdate: { ...object(orderProperties), minProperties: 1, additionalProperties: false },
   Order: object({ id: uuid, poCode: { type: "string" }, supplierId: uuid, status: { type: "string", enum: orderStatuses }, orderDate: day, expectedDeliveryDate: { ...day, nullable: true }, purchaseOrderItems: { type: "array", items: object({ id: uuid, variantId: uuid, orderedQty: quantity, receivedQty: { type: "integer" }, remainingQty: { type: "integer" }, unitPrice: money, subtotal: totalMoney }) }, purchaseReceipts: { type: "array", items: ref("Receipt") }, totals: object({ orderedQty: { type: "integer" }, receivedQty: { type: "integer" }, orderedAmount: totalMoney, receivedAmount: totalMoney, paidAmount: totalMoney, debtAmount: totalMoney }) }),
   ReceiptItemInput: object({ poItemId: uuid, receivedQty: quantity, actualCost: money, lotNumber: text(100), manufacturingDate: day, expirationDate: { ...day, description: "SKU quản lý lô bắt buộc số lô và hạn dùng; hạn dùng không trước hôm nay theo UTC+7. SKU không quản lý lô không gửi trường lô." } }, ["poItemId", "receivedQty", "actualCost"]),
@@ -78,7 +82,7 @@ export function createFo3Document() {
     openapi: "3.0.3",
     info: {
       title: "fo3", version: "1.0.0",
-      description: `Swagger riêng cho F03: đặt mua, nhận hàng và thanh toán NCC.\n\n1. Mở POST /auth/v1/token, Try it out, nhập email/password rồi Execute. Swagger tự Authorize bằng access_token. Có thể dán token từ frontend vào nút Authorize.\n2. GET /auth/me để kiểm tra cửa hàng/quyền.\n3. Lấy SKU → tạo NCC → tạo PO → mở ca nếu trả tiền → nhận hàng → thanh toán → đối chiếu kho/nợ.\n\nThay các UUID mẫu bằng ID thật từ response trước; dùng mã PO/phiếu mới mỗi lần test. Tiền gửi bằng chuỗi decimal. Query ngày from/to bao gồm cả hai ngày theo UTC. Token chỉ giữ trong bộ nhớ trang, tải lại cần đăng nhập lại.${!supabaseUrl || !anonKey ? "\n\nChưa cấu hình SUPABASE_URL/SUPABASE_ANON_KEY trên backend: đăng nhập trực tiếp chưa sẵn sàng." : ""}`,
+      description: `Swagger riêng cho F03: đặt mua, nhận hàng và thanh toán NCC.\n\n1. Mở POST /auth/v1/token, Try it out, nhập email/password rồi Execute. Swagger tự Authorize bằng access_token. Có thể dán token từ frontend vào nút Authorize.\n2. GET /auth/me để kiểm tra cửa hàng/quyền.\n3. Lấy SKU → tạo NCC → khai báo danh mục và giá chào → tạo PO → mở ca nếu trả tiền → nhận hàng → thanh toán → đối chiếu kho/nợ.\n\nThay các UUID mẫu bằng ID thật từ response trước; dùng mã PO/phiếu mới mỗi lần test. Tiền gửi bằng chuỗi decimal. Query ngày from/to bao gồm cả hai ngày theo UTC. Token chỉ giữ trong bộ nhớ trang, tải lại cần đăng nhập lại.${!supabaseUrl || !anonKey ? "\n\nChưa cấu hình SUPABASE_URL/SUPABASE_ANON_KEY trên backend: đăng nhập trực tiếp chưa sẵn sàng." : ""}`,
     },
     servers: [{ url: "/api", description: "Backend hiện tại" }],
     security: [{ bearerAuth: [] }],
@@ -100,12 +104,18 @@ export function createFo3Document() {
       "/inventory/lots": { get: operation("fo3Lots", prepareTag, "Xem lô và tồn theo SKU", { type: "object", additionalProperties: true }, { parameters: [query("variantId", uuid, true)], description: "Cần inventory.read." }) },
       "/inventory/ledger": { get: operation("fo3Ledger", prepareTag, "Đối chiếu lịch sử nhập và điều chỉnh kho", { type: "object", additionalProperties: true }, { parameters: [...paging, query("type", { type: "string" }), query("from", day), query("to", day)], description: "Cần inventory.read. Ledger là lịch sử, không phải tồn hiện tại." }) },
       "/purchases/suppliers": {
-        get: operation("fo3Suppliers", supplierTag, "Danh sách NCC và công nợ", list("Supplier"), { parameters: paging }),
+        get: operation("fo3Suppliers", supplierTag, "Danh sách NCC và công nợ", list("Supplier"), { parameters: [...paging, query("isActive", { type: "string", enum: ["true", "false", "all"] })] }),
         post: operation("fo3CreateSupplier", supplierTag, "Tạo NCC", ref("Supplier"), { status: 201, write: true, requestBody: body("SupplierInput") }),
       },
+      "/purchases/suppliers/{id}": { patch: operation("fo3UpdateSupplier", supplierTag, "Sửa hồ sơ / trạng thái NCC", ref("Supplier"), { parameters: [idParameter], write: true, requestBody: body("SupplierUpdate"), description: "Không sửa công nợ qua hồ sơ. Ngừng hợp tác chặn đặt mua mới; vẫn nhận và trả tiền cho đơn cũ." }) },
+      "/purchases/suppliers/{id}/products": {
+        get: operation("fo3SupplierProducts", supplierTag, "Danh mục cung cấp hoặc hàng đã mua", { ...list("SupplierProduct"), properties: { items: { type: "array", items: ref("SupplierProduct") }, supplier: ref("Supplier"), pagination: ref("Pagination") } }, { parameters: [idParameter, ...paging, query("kind", { type: "string", enum: ["catalog", "history"], default: "catalog" }), query("isActive", { type: "string", enum: ["true", "false", "all"], default: "true" })] }),
+        put: operation("fo3SaveSupplierProduct", supplierTag, "Lưu giá chào và điều kiện cung cấp", { type: "object", additionalProperties: true }, { parameters: [idParameter], write: true, requestBody: body("SupplierProductInput"), description: "Kích hoạt lại dòng cũ. Giá chào theo đơn vị tồn kho, không thay giá vốn / chứng từ. Tối đa một NCC ưu tiên hoạt động cho mỗi SKU." }),
+      },
+      "/purchases/suppliers/{id}/products/{variantId}": { delete: operation("fo3RetireSupplierProduct", supplierTag, "Ngừng cung cấp SKU", object({ removed: { type: "boolean" } }), { parameters: [idParameter, { name: "variantId", in: "path", required: true, schema: uuid }], write: true, description: "Ngừng cung cấp và bỏ ưu tiên, giữ dòng và lịch sử nhập." }) },
       "/purchases/orders": {
         get: operation("fo3Orders", orderTag, "Danh sách PO, SKU, đợt nhận và totals", list("Order"), { parameters: filters(orderStatuses) }),
-        post: operation("fo3CreateOrder", orderTag, "Tạo PO ở trạng thái ORDERED", ref("Order"), { status: 201, write: true, requestBody: body("OrderInput", { poCode: "PO-FO3-001", supplierId: "11111111-1111-4111-8111-111111111111", items: [{ variantId: "22222222-2222-4222-8222-222222222222", orderedQty: 10, unitPrice: "50000.00" }] }), description: "Không lặp SKU. Tạo PO chưa làm thay đổi tồn kho/công nợ." }),
+        post: operation("fo3CreateOrder", orderTag, "Tạo PO ở trạng thái ORDERED", ref("Order"), { status: 201, write: true, requestBody: body("OrderInput", { poCode: "PO-FO3-001", supplierId: "11111111-1111-4111-8111-111111111111", items: [{ variantId: "22222222-2222-4222-8222-222222222222", orderedQty: 10, unitPrice: "50000.00" }] }), description: "NCC và liên kết SKU phải đang hoạt động. Lượng đặt phải đạt tối thiểu và đúng bội số của NCC. Không lặp SKU. Tạo PO chưa làm thay đổi tồn kho/công nợ." }),
       },
       "/purchases/orders/{id}": {
         get: operation("fo3Order", orderTag, "Chi tiết PO", ref("Order"), { parameters: [idParameter] }),

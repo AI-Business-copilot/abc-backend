@@ -35,6 +35,9 @@ router.get("/suppliers", async (req: Request, res: Response) => {
 router.post("/suppliers", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
   res.status(201).json(await purchasesWriteService.createSupplier(String(res.locals.businessId), req.body));
 });
+router.patch("/suppliers/:id", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
+  res.json(await purchasesWriteService.updateSupplier(String(res.locals.businessId), String(req.params.id), req.body));
+});
 router.get("/suppliers/:id/products", async (req: Request, res: Response) => {
   res.json(await supplierProductsService.list(String(res.locals.businessId), String(req.params.id), req.query));
 });

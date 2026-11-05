@@ -1,7 +1,9 @@
+import { supplierInput } from "./suppliers.input";
+import { validateSupplierOrder } from "./supplier-order";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../shared/http/http-error";
-import { money, object, orderInput, purchaseToday, receiptInput, requiredText } from "./purchases.input";
+import { money, object, orderInput, purchaseToday, receiptInput } from "./purchases.input";
 import { uuid } from "./purchases.query";
 import { recordSupplierPayment } from "./purchases-payments.service";
 import { actor, atomic, supplierInBusiness, changeDebt } from "./purchases-transaction";
@@ -9,12 +11,18 @@ import { orderFingerprint } from "./purchases-fingerprint";
 
 export class PurchasesWriteService {
   async createSupplier(businessId: string, value: unknown) {
-    const body = object(value);
-    return prisma.supplier.create({ data: {
-      businessId, name: requiredText(body.name, "name", 255),
-      phone: body.phone === undefined ? undefined : requiredText(body.phone, "phone", 20),
-      contactPerson: body.contactPerson === undefined ? undefined : requiredText(body.contactPerson, "contactPerson", 100),
-    } });
+    const data = supplierInput(value);
+    return prisma.supplier.create({ data: { ...data, businessId, name: data.name! } });
+  }
+
+  async updateSupplier(businessId: string, id: string, value: unknown) {
+    const supplierId = uuid(id, "supplierId");
+    const data = supplierInput(value, true);
+    return atomic(async tx => {
+      await supplierInBusiness(tx, businessId, supplierId);
+      if (data.isActive === false) await tx.supplierProduct.updateMany({ where: { businessId, supplierId, isPreferred: true }, data: { isPreferred: false } });
+      return tx.supplier.update({ where: { id: supplierId }, data });
+    });
   }
 
   async createOrder(businessId: string, authUserId: string, value: unknown) {
@@ -24,7 +32,7 @@ export class PurchasesWriteService {
     }
     return atomic(async (tx) => {
       const createdBy = await actor(tx, authUserId);
-      await supplierInBusiness(tx, businessId, input.supplierId);
+      await validateSupplierOrder(tx, businessId, input.supplierId, input.items);
       const variants = await tx.productVariant.findMany({ where: { businessId, id: { in: input.items.map((item) => item.variantId) }, isActive: true } });
       if (variants.length !== input.items.length) throw new HttpError(404, "An active SKU was not found in this business.");
       const { items, ...data } = input;
