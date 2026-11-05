@@ -5,6 +5,7 @@ import { getAccessContext } from "../../shared/auth/access-context.service";
 import { bootstrapConfiguredSystemAdmin } from "../../shared/auth/system-admin-bootstrap.service";
 import { ensureUserProfile } from "../../shared/auth/user-profile.service";
 import { HttpError } from "../../shared/http/http-error";
+import { prisma } from "../../shared/infrastructure/database/prisma.client";
 
 const router = Router();
 
@@ -40,6 +41,21 @@ router.get("/me", requireSupabaseIdentity, async (req, res) => {
     onboardingRequired:
       !access.membership && access.platformRoles.length === 0,
   });
+});
+
+router.delete("/me", requireSupabaseIdentity, async (req, res) => {
+  if (!req.identity) {
+    throw new HttpError(401, "Authentication is required.");
+  }
+  const user = await ensureUserProfile(req.identity);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { isActive: false },
+  });
+  await prisma.businessMembership.deleteMany({
+    where: { userId: user.id },
+  });
+  res.json({ success: true, message: "Tài khoản người dùng đã được vô hiệu hóa và xóa thành công." });
 });
 
 export default router;

@@ -216,6 +216,16 @@ async function writeItems(
 
     if (item.lotNumber && item.lotNumber.trim()) {
       const cleanLotNum = item.lotNumber.trim();
+
+      // Kiểm tra ràng buộc ngày sản xuất và hạn sử dụng
+      if (item.manufacturingDate && item.expirationDate) {
+        const mfg = new Date(item.manufacturingDate);
+        const exp = new Date(item.expirationDate);
+        if (exp < mfg) {
+          throw new HttpError(400, `Hạn sử dụng (${item.expirationDate}) phải lớn hơn hoặc bằng ngày sản xuất (${item.manufacturingDate}).`);
+        }
+      }
+
       const lot = await tx.productLot.upsert({
         where: {
           businessId_variantId_lotNumber: {
@@ -242,14 +252,15 @@ async function writeItems(
       try {
         await tx.$executeRaw`
           INSERT INTO product_lot_items (
-            id, business_id, lot_id, variant_id, manufacturing_date, expiration_date, status
+            id, business_id, lot_id, variant_id, manufacturing_date, expiration_date, status, is_locked_for_audit
           )
           VALUES (
             gen_random_uuid(),
             ${businessId}::uuid, ${lot.id}::uuid, ${variant.id}::uuid,
             ${item.manufacturingDate ? new Date(item.manufacturingDate) : null},
             ${item.expirationDate ? new Date(item.expirationDate) : null},
-            'ACTIVE'
+            'ACTIVE',
+            false
           )
           ON CONFLICT (business_id, lot_id, variant_id) DO UPDATE
           SET manufacturing_date = EXCLUDED.manufacturing_date,
@@ -319,11 +330,11 @@ class InventoryService {
       items: pairItems.map(({ item, onHand }) => ({
         id: item.id,
         variantId: item.variantId,
-        sku: item.variant.sku,
-        barcode: item.variant.barcode,
-        productName: item.variant.template.name,
-        imageUrl: item.variant.template.imageUrl,
-        unit: item.variant.template.unitOfMeasure || "cái",
+        sku: item.variant?.sku ?? "SKU",
+        barcode: item.variant?.barcode ?? null,
+        productName: item.variant?.template?.name ?? "Sản phẩm",
+        imageUrl: item.variant?.template?.imageUrl ?? null,
+        unit: item.variant?.template?.unitOfMeasure || "cái",
         attributeText: item.variant.variantAttributeValues
           .map((value) => value.attributeValue.value)
           .join(" · "),
@@ -625,8 +636,6 @@ class InventoryService {
 
     const where: Prisma.ProductVariantWhereInput = {
       businessId,
-      isActive: true,
-      ...(categoryIds.length > 0 ? { template: { categoryId: { in: categoryIds } } } : {}),
       ...(search
         ? {
             OR: [
@@ -635,7 +644,8 @@ class InventoryService {
               { template: { name: { contains: search, mode: "insensitive" } } },
             ],
           }
-        : {}),
+        : { isActive: true }),
+      ...(categoryIds.length > 0 ? { template: { categoryId: { in: categoryIds } } } : {}),
     };
 
     const [rows, total, categories] = await Promise.all([
@@ -681,12 +691,12 @@ class InventoryService {
         id: row.id,
         sku: row.sku,
         barcode: row.barcode,
-        productName: row.template.name,
-        imageUrl: row.template.imageUrl,
-        unit: row.template.unitOfMeasure || "cái",
-        hasLotTracking: Boolean(row.template.hasLotTracking),
-        categoryId: row.template.category?.id ?? null,
-        categoryName: row.template.category?.name ?? null,
+        productName: row.template?.name ?? (row.sku || "Sản phẩm"),
+        imageUrl: row.template?.imageUrl ?? null,
+        unit: row.template?.unitOfMeasure || "cái",
+        hasLotTracking: Boolean(row.template?.hasLotTracking),
+        categoryId: row.template?.category?.id ?? null,
+        categoryName: row.template?.category?.name ?? null,
         costPrice: num(row.costPrice),
         basePrice: num(row.basePrice),
         onHand: row.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),

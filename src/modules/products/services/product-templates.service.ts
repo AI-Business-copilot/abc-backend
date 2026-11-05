@@ -18,6 +18,75 @@ type TemplateInput = {
 
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 
+async function uploadBase64Image(dataUri: string, businessId: string): Promise<string> {
+  const supabaseUrl = process.env.SUPABASE_URL || "https://vhivkicmqwjiypvbssbv.supabase.co";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const rawBucket = process.env.SUPABASE_BUCKET || "SEP";
+  const bucket = rawBucket.replace(/^"|"$/g, "");
+
+  if (!serviceKey) return dataUri;
+
+  const matches = dataUri.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+  if (!matches) return dataUri;
+
+  const mime = matches[1];
+  const rawBase64 = matches[2];
+  const buffer = Buffer.from(rawBase64, "base64");
+  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "png";
+  const filePath = `products/${businessId}/${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+  try {
+    const uploadRes = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${filePath}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serviceKey}`,
+        apiKey: serviceKey,
+        "Content-Type": mime,
+      },
+      body: buffer,
+    });
+    if (uploadRes.ok) {
+      return `${supabaseUrl}/storage/v1/object/public/${bucket}/${filePath}`;
+    }
+  } catch {
+    // fallback to original string if upload fails
+  }
+  return dataUri;
+}
+
+export async function processAndUploadImages(rawImageUrl: unknown, businessId: string): Promise<string | null> {
+  if (!rawImageUrl || typeof rawImageUrl !== "string") return null;
+  const trimmed = rawImageUrl.trim();
+  if (!trimmed) return null;
+
+  // Nếu là mảng JSON chứa nhiều ảnh
+  if (trimmed.startsWith("[")) {
+    try {
+      const arr = JSON.parse(trimmed);
+      if (Array.isArray(arr)) {
+        const uploadedArr = await Promise.all(
+          arr.map(async (item) => {
+            if (typeof item === "string" && item.startsWith("data:image/")) {
+              return uploadBase64Image(item, businessId);
+            }
+            return item;
+          })
+        );
+        return JSON.stringify(uploadedArr);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Nếu là 1 ảnh data:image/ duy nhất
+  if (trimmed.startsWith("data:image/")) {
+    return uploadBase64Image(trimmed, businessId);
+  }
+
+  return trimmed;
+}
+
 async function nextTemplateCode(businessId: string) {
   const year = new Date().getFullYear();
   const prefix = `TMP-${year}-`;
@@ -57,6 +126,8 @@ export class ProductTemplatesService {
     }
 
     const categoryId = await this.resolveCategory(businessId, data.categoryId);
+    const uploadedImageUrl = await processAndUploadImages(data.imageUrl, businessId);
+
     const template = await prisma.productTemplate.create({
       data: {
         businessId,
@@ -66,7 +137,7 @@ export class ProductTemplatesService {
         unitOfMeasure: text(data.unitOfMeasure) || "Cái",
         hasLotTracking: Boolean(data.hasLotTracking),
         description: text(data.description) || null,
-        imageUrl: text(data.imageUrl) || null,
+        imageUrl: uploadedImageUrl,
         isActive: data.isActive === undefined ? true : Boolean(data.isActive),
       },
     });
@@ -112,7 +183,7 @@ export class ProductTemplatesService {
       patch.description = text(data.description) || null;
     }
     if (data.imageUrl !== undefined) {
-      patch.imageUrl = text(data.imageUrl) || null;
+      patch.imageUrl = await processAndUploadImages(data.imageUrl, businessId);
     }
     if (data.isActive !== undefined) {
       const isActive = Boolean(data.isActive);

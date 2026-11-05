@@ -70,6 +70,9 @@ export class ProductVariantsController {
           safetyStockQty,
           updatedAt: new Date(),
         };
+        if (row.isActive !== undefined) {
+          patch.isActive = Boolean(row.isActive);
+        }
         if (typeof row.sku === "string" && row.sku.trim()) {
           patch.sku = row.sku.trim();
         }

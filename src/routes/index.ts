@@ -8,6 +8,7 @@ import inventoryRoutes from "../modules/inventory/inventory.routes";
 import productsRoutes from "../modules/products/routes/products.routes";
 import purchasesRoutes from "../modules/purchases/purchases.routes";
 import vendorReturnsRoutes from "../modules/vendor-returns/vendor-returns.routes";
+import uploadRouter from "./upload.routes";
 
 const router = Router();
 
@@ -19,6 +20,7 @@ router.use("/inventory", inventoryRoutes);
 router.use("/products", productsRoutes);
 router.use("/purchases", purchasesRoutes);
 router.use("/vendor-returns", vendorReturnsRoutes);
+router.use("/upload", uploadRouter);
 
 router.get("/health", (req, res) => {
   res.json({
