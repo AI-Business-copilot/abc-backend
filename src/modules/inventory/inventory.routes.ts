@@ -16,6 +16,7 @@ router.get("/opening-sheets/next-code", requirePermission("inventory.read"), con
 router.get("/opening-sheets/:id", requirePermission("inventory.read"), controller.getSheet.bind(controller));
 router.post("/opening-sheets", requirePermission("inventory.receive"), controller.createSheet.bind(controller));
 router.patch("/opening-sheets/:id", requirePermission("inventory.receive"), controller.updateSheet.bind(controller));
+router.put("/opening-sheets/:id", requirePermission("inventory.receive"), controller.updateSheet.bind(controller));
 router.post("/opening-sheets/:id/apply", requirePermission("inventory.receive"), controller.applySheet.bind(controller));
 router.delete("/opening-sheets/:id", requirePermission("inventory.receive"), controller.removeSheet.bind(controller));
 

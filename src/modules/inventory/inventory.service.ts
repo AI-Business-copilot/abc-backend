@@ -226,48 +226,72 @@ async function writeItems(
         }
       }
 
-      const lot = await tx.productLot.upsert({
+      let lot = await tx.productLot.findFirst({
         where: {
-          businessId_variantId_lotNumber: {
-            businessId,
-            variantId: variant.id,
-            lotNumber: cleanLotNum,
-          },
-        },
-        create: {
           businessId,
           variantId: variant.id,
           lotNumber: cleanLotNum,
-          manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : null,
-          expirationDate: item.expirationDate ? new Date(item.expirationDate) : (new Date("2099-12-31")),
-        },
-        update: {
-          manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : undefined,
-          expirationDate: item.expirationDate ? new Date(item.expirationDate) : undefined,
         },
       });
+
+      if (lot) {
+        lot = await tx.productLot.update({
+          where: { id: lot.id },
+          data: {
+            manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : undefined,
+            expirationDate: item.expirationDate ? new Date(item.expirationDate) : undefined,
+            status: "HEALTHY",
+          },
+        });
+      } else {
+        lot = await tx.productLot.create({
+          data: {
+            businessId,
+            variantId: variant.id,
+            lotNumber: cleanLotNum,
+            manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : null,
+            expirationDate: item.expirationDate ? new Date(item.expirationDate) : new Date("2099-12-31"),
+            status: "HEALTHY",
+          },
+        });
+      }
       lotId = lot.id;
 
-      // Đồng bộ vào bảng product_lot_items trên Supabase để giữ toàn vẹn dữ liệu cho team dev
+      // Đồng bộ an toàn vào bảng product_lot_items trên Supabase (status chuẩn 'HEALTHY')
       try {
-        await tx.$executeRaw`
-          INSERT INTO product_lot_items (
-            id, business_id, lot_id, variant_id, manufacturing_date, expiration_date, status, is_locked_for_audit
-          )
-          VALUES (
-            gen_random_uuid(),
-            ${businessId}::uuid, ${lot.id}::uuid, ${variant.id}::uuid,
-            ${item.manufacturingDate ? new Date(item.manufacturingDate) : null},
-            ${item.expirationDate ? new Date(item.expirationDate) : null},
-            'ACTIVE',
-            false
-          )
-          ON CONFLICT (business_id, lot_id, variant_id) DO UPDATE
-          SET manufacturing_date = EXCLUDED.manufacturing_date,
-              expiration_date = EXCLUDED.expiration_date;
+        const existingLotItem = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM product_lot_items
+          WHERE business_id = ${businessId}::uuid
+            AND lot_id = ${lot.id}::uuid
+            AND variant_id = ${variant.id}::uuid
+          LIMIT 1
         `;
+
+        if (existingLotItem && existingLotItem.length > 0) {
+          await tx.$executeRaw`
+            UPDATE product_lot_items
+            SET manufacturing_date = ${item.manufacturingDate ? new Date(item.manufacturingDate) : null},
+                expiration_date = ${item.expirationDate ? new Date(item.expirationDate) : null},
+                status = 'HEALTHY'
+            WHERE id = ${existingLotItem[0].id}::uuid;
+          `;
+        } else {
+          await tx.$executeRaw`
+            INSERT INTO product_lot_items (
+              id, business_id, lot_id, variant_id, manufacturing_date, expiration_date, status, is_locked_for_audit
+            )
+            VALUES (
+              gen_random_uuid(),
+              ${businessId}::uuid, ${lot.id}::uuid, ${variant.id}::uuid,
+              ${item.manufacturingDate ? new Date(item.manufacturingDate) : null},
+              ${item.expirationDate ? new Date(item.expirationDate) : null},
+              'HEALTHY',
+              false
+            );
+          `;
+        }
       } catch {
-        // ignore if already present
+        // do not fail transaction if optional dev table sync encounters issue
       }
     }
 
