@@ -936,10 +936,9 @@ class AuditService {
       snapshotQty = 0;
     }
 
-    // Validate discrepancy reason if diff != 0
-    const diffQty = countedQty - snapshotQty;
-    if (diffQty !== 0 && !discrepancyReason) {
-      throw new HttpError(400, "Khi có chênh lệch, bắt buộc phải nhập lý do.");
+    // Every counted row requires a discrepancy reason, whether or not quantities differ
+    if (!discrepancyReason) {
+      throw new HttpError(400, "Bắt buộc nhập lý do chênh lệch.");
     }
 
     await prisma.stockAuditItem.update({
@@ -1013,13 +1012,9 @@ class AuditService {
       throw new HttpError(400, "Lô mới cần có hạn sử dụng trước khi nộp.");
     }
 
-    // If item has diff, require discrepancy reason
-    const diffQty = item.countedQty - item.snapshotQty;
-    if (diffQty !== 0 && !item.discrepancyReason) {
-      throw new HttpError(
-        400,
-        "Có chênh lệch nhưng chưa nhập lý do. Bắt buộc nhập lý do trước khi nộp.",
-      );
+    // Every item requires a discrepancy reason before it can be submitted
+    if (!item.discrepancyReason) {
+      throw new HttpError(400, "Bắt buộc nhập lý do chênh lệch trước khi nộp.");
     }
 
     // Validate item is in IN_PROGRESS state
@@ -1296,13 +1291,12 @@ class AuditService {
       );
     }
 
-    // Validate: all items with diff != 0 must have discrepancy_reason
+    // Validate: every item must have a discrepancy reason
     for (const item of audit.stockAuditItems) {
-      const diffQty = item.countedQty - item.snapshotQty;
-      if (diffQty !== 0 && !item.discrepancyReason) {
+      if (!item.discrepancyReason) {
         throw new HttpError(
           400,
-          `Dòng kiểm kê ${item.id} có chênh lệch nhưng chưa có lý do. Bắt buộc nhập lý do trước khi phê duyệt.`,
+          `Dòng kiểm kê ${item.id} chưa có lý do chênh lệch. Bắt buộc nhập lý do trước khi phê duyệt.`,
         );
       }
     }
