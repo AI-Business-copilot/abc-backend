@@ -61,7 +61,16 @@ components:
       name: id
       in: path
       required: true
-      description: Product lot UUID
+      description: Product lot (batch) UUID
+      schema:
+        type: string
+        format: uuid
+
+    lotItemId:
+      name: itemId
+      in: path
+      required: true
+      description: Product lot item UUID (one variant inside a batch)
       schema:
         type: string
         format: uuid
@@ -151,18 +160,56 @@ components:
     # F08 SCHEMAS
     ExpiringLot:
       type: object
+      description: One variant inside a batch, with the status calculated for today.
       properties:
         id:
           type: string
           format: uuid
+          description: Lot item UUID
+        lotItemId:
+          type: string
+          format: uuid
+        lotId:
+          type: string
+          format: uuid
+          description: Batch UUID
+        variantId:
+          type: string
+          format: uuid
         lotNumber:
           type: string
+        manufacturingDate:
+          type: string
+          format: date
+          nullable: true
         expirationDate:
           type: string
           format: date
         effectiveStatus:
           type: string
           enum: [HEALTHY, WARNING, UNUSABLE, QUARANTINED, SCRAPPED]
+        onHand:
+          type: integer
+        damaged:
+          type: integer
+
+    LotDetail:
+      type: object
+      description: A batch header with every variant it contains.
+      properties:
+        id:
+          type: string
+          format: uuid
+        lotNumber:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExpiringLot'
     
     ScrapOrder:
       type: object
@@ -453,6 +500,12 @@ paths:
           schema:
             type: string
             enum: [HEALTHY, WARNING, UNUSABLE, QUARANTINED, SCRAPPED]
+        - name: groupBy
+          in: query
+          description: Set to `lot` to page over batches instead of items. Each entry then holds `id`, `lotNumber` and the matching `items`.
+          schema:
+            type: string
+            enum: [lot]
       responses:
         '200':
           description: List of expiring lots
@@ -461,7 +514,7 @@ paths:
     get:
       tags: [F08 Lot Management]
       summary: Get lot details
-      description: "Permission: inventory.lot.read"
+      description: "Permission: inventory.lot.read. Returns the batch with one entry per variant."
       parameters:
         - $ref: '#/components/parameters/businessIdHeader'
         - $ref: '#/components/parameters/lotId'
@@ -471,29 +524,34 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ExpiringLot'
+                $ref: '#/components/schemas/LotDetail'
   
-  /inventory/lots/{id}/quarantine:
+  /inventory/lots/{lotId}/items/{itemId}/quarantine:
     post:
       tags: [F08 Lot Management]
-      summary: Quarantine a lot
-      description: "Permission: inventory.scrap.create"
+      summary: Quarantine one variant of a lot
+      description: "Permission: inventory.scrap.create. Quarantines a single lot item; the other variants in the same batch are unaffected."
       parameters:
         - $ref: '#/components/parameters/businessIdHeader'
         - $ref: '#/components/parameters/lotId'
+        - $ref: '#/components/parameters/lotItemId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [quarantineQty]
+              required: [quantity]
               properties:
-                quarantineQty:
+                quantity:
                   type: integer
+                  minimum: 1
+                note:
+                  type: string
+                  maxLength: 500
       responses:
         '200':
-          description: Lot quarantined
+          description: Lot item quarantined
   
   /inventory/scrap-orders:
     post:
@@ -508,11 +566,12 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [lotId, scrapQty, scrapReason]
+              required: [lotItemId, scrapQty, scrapReason]
               properties:
-                lotId:
+                lotItemId:
                   type: string
                   format: uuid
+                  description: The quarantined lot item to scrap.
                 scrapQty:
                   type: integer
                 scrapReason:

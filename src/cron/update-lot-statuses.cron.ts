@@ -9,7 +9,7 @@ export type UpdateLotStatusesResult =
 /**
  * Daily job (06:00 Asia/Ho_Chi_Minh, see server.ts) that stores the calculated lot status.
  *
- * One idempotent UPDATE moves every lot that is not QUARANTINED or SCRAPPED to HEALTHY, WARNING or
+ * One idempotent UPDATE moves every lot item that is not QUARANTINED or SCRAPPED to HEALTHY, WARNING or
  * UNUSABLE using the same thresholds as LotStatusService.calculateStatus:
  *   more than 60 days left -> HEALTHY, 8 to 60 -> WARNING, 7 or fewer (including expired) -> UNUSABLE.
  * Days are counted from today's date in Vietnam, since the job is scheduled in that timezone.
@@ -27,11 +27,11 @@ export async function updateLotStatusesCron(): Promise<UpdateLotStatusesResult> 
             WHEN (expiration_date - (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) >= 8 THEN 'WARNING'
             ELSE 'UNUSABLE'
           END AS new_status
-        FROM product_lots
+        FROM product_lot_items
         WHERE status NOT IN ('QUARANTINED', 'SCRAPPED')
       ),
       changed AS (
-        UPDATE product_lots AS p
+        UPDATE product_lot_items AS p
         SET status = t.new_status
         FROM target AS t
         WHERE p.id = t.id AND p.status <> t.new_status

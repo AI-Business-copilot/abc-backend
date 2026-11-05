@@ -31,7 +31,7 @@ export class LotStatusService {
    *    UNUSABLE cannot go stale because a lot never gets further from its expiry date.
    * 2. Otherwise (HEALTHY, WARNING, legacy values) the status is calculated from the expiration date
    *    and today's date, because a stored HEALTHY or WARNING gets out of date as days pass.
-   * @param dbStatus Status stored in product_lots.status
+   * @param dbStatus Status stored in product_lot_items.status
    * @param expirationDate Lot expiration date
    * @returns Effective status to display
    */
