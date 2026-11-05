@@ -132,7 +132,7 @@ export class ProductTemplatesService {
                 attributeValue: { select: { id: true, value: true } },
               },
             },
-            inventoryBalances: { select: { quantityOnHand: true, lotId: true } },
+            inventoryBalances: { select: { quantityOnHand: true, lotItemId: true } },
           },
           orderBy: { sku: "asc" },
         },

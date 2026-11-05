@@ -21,7 +21,7 @@ app.use(morgan("dev"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Swagger UI documentation for F07 & F08
+// Swagger UI documentation for F07 & F08 (with F05 & F06 schemas)
 const swaggerPathCandidates = [
   path.join(__dirname, "swagger", "f07-f08-openapi.yaml"),
   path.join(__dirname, "../src/swagger", "f07-f08-openapi.yaml"),
@@ -49,7 +49,9 @@ app.use("/api", routes);
 
 app.get("/", (req, res) => {
   res.json({
-    message: "Welcome to Business AI Copilot API",
+    message: "ABC Retail Backend API",
+    version: "1.0.0",
+    docs: "/api-docs",
   });
 });
 

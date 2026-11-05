@@ -367,6 +367,7 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await lotService.getExpiringLots(businessId, {
         status: (String(req.query.status || "").toUpperCase() as any) || undefined,
+        groupBy: String(req.query.groupBy || "") || undefined,
         skip: Math.max(0, Number(req.query.skip) || 0),
         take: Math.min(100, Math.max(1, Number(req.query.take) || 20)),
       });
@@ -391,7 +392,7 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await lotService.quarantineLot(
         businessId,
-        String(req.params.id),
+        String(req.params.itemId),
         String(res.locals.userId || ""),
         req.body ?? {},
       );

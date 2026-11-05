@@ -12,6 +12,7 @@ export interface CreateCustomerReturnItemInput {
   orderItemId?: string;
   variantId: string;
   lotId?: string | null;
+  lotItemId?: string | null;
   returnQty: number;
   refundUnitPrice?: number;
   itemCondition: "RESTOCKABLE" | "DAMAGED_QUARANTINE";
@@ -91,8 +92,16 @@ export class CustomerReturnsService {
                   },
                 },
               },
-              lot: {
-                select: { id: true, lotNumber: true, expirationDate: true },
+              lotItem: {
+                select: {
+                  id: true,
+                  lotId: true,
+                  expirationDate: true,
+                  manufacturingDate: true,
+                  lot: {
+                    select: { lotNumber: true },
+                  },
+                },
               },
             },
           },
@@ -104,6 +113,15 @@ export class CustomerReturnsService {
       ...r,
       customerReturnItems: r.customerReturnItems.map((item) => ({
         ...item,
+        lot: item.lotItem
+          ? {
+              id: item.lotItem.id,
+              lotId: item.lotItem.lotId,
+              lotNumber: item.lotItem.lot?.lotNumber,
+              expirationDate: item.lotItem.expirationDate,
+              manufacturingDate: item.lotItem.manufacturingDate,
+            }
+          : null,
         variant: item.variant
           ? {
               id: item.variant.id,
@@ -154,7 +172,11 @@ export class CustomerReturnsService {
                 },
               },
             },
-            lot: true,
+            lotItem: {
+              include: {
+                lot: true,
+              },
+            },
           },
         },
       },
@@ -190,7 +212,8 @@ export class CustomerReturnsService {
           id: item.id,
           orderId: item.orderId,
           variantId: item.variantId,
-          lotId: item.lotId,
+          lotId: item.lotItemId,
+          lotItemId: item.lotItemId,
           quantity: item.quantity,
           unitPrice: Number(item.unitPrice),
           ...(isStaff ? {} : { unitCost: Number(item.unitCost) }),
@@ -206,12 +229,13 @@ export class CustomerReturnsService {
             unitOfMeasure: item.variant.template.unitOfMeasure,
             isLockedForAudit: item.variant.isLockedForAudit,
           },
-          lot: item.lot
+          lot: item.lotItem
             ? {
-                id: item.lot.id,
-                lotNumber: item.lot.lotNumber,
-                manufacturingDate: item.lot.manufacturingDate,
-                expirationDate: item.lot.expirationDate,
+                id: item.lotItem.id,
+                lotId: item.lotItem.lotId,
+                lotNumber: item.lotItem.lot?.lotNumber,
+                manufacturingDate: item.lotItem.manufacturingDate,
+                expirationDate: item.lotItem.expirationDate,
               }
             : null,
         };
@@ -281,7 +305,7 @@ export class CustomerReturnsService {
 
           order = await tx.order.findFirst({
             where: { id: originalOrderId, businessId },
-            include: { customer: true, orderItems: true },
+            include: { customer: true, orderItems: { include: { lotItem: { include: { lot: true } } } } },
           });
 
           if (!order) {
@@ -308,11 +332,18 @@ export class CustomerReturnsService {
           if (variant.isLockedForAudit) {
             throw new HttpError(409, "SKU is currently locked for stock audit (F07).");
           }
-          if (item.lotId) {
-            const lot = await tx.productLot.findFirst({
-              where: { id: item.lotId, businessId },
+          const passedLot = item.lotItemId || item.lotId;
+          if (passedLot) {
+            const lotItem = await tx.productLotItem.findFirst({
+              where: {
+                businessId,
+                OR: [
+                  { id: passedLot },
+                  { lotId: passedLot, variantId: item.variantId },
+                ],
+              },
             });
-            if (lot?.isLockedForAudit) {
+            if (lotItem?.isLockedForAudit) {
               throw new HttpError(409, "Lot is currently locked for stock audit (F07).");
             }
           }
@@ -324,7 +355,7 @@ export class CustomerReturnsService {
           orderItem?: any;
           variant: any;
           variantId: string;
-          lotId: string | null;
+          lotItemId: string | null;
           returnQty: number;
           refundUnitPrice: number;
           itemCondition: "RESTOCKABLE" | "DAMAGED_QUARANTINE";
@@ -346,11 +377,14 @@ export class CustomerReturnsService {
           const variant = variantMap.get(item.variantId)!;
 
           let matchedOrderItem: any = undefined;
+          const passedLot = item.lotItemId || item.lotId;
           if (order) {
             matchedOrderItem = item.orderItemId ? orderItemMap.get(item.orderItemId) : undefined;
             if (!matchedOrderItem) {
               matchedOrderItem = order.orderItems.find(
-                (oi: any) => oi.variantId === item.variantId && (!item.lotId || oi.lotId === item.lotId),
+                (oi: any) =>
+                  oi.variantId === item.variantId &&
+                  (!passedLot || oi.lotItemId === passedLot || oi.lotItem?.lotId === passedLot),
               );
             }
 
@@ -374,6 +408,22 @@ export class CustomerReturnsService {
             }
           }
 
+          let resolvedLotItemId: string | null = null;
+          if (passedLot) {
+            const lotItem = await tx.productLotItem.findFirst({
+              where: {
+                businessId,
+                OR: [
+                  { id: passedLot },
+                  { lotId: passedLot, variantId: item.variantId },
+                ],
+              },
+            });
+            resolvedLotItemId = lotItem ? lotItem.id : passedLot;
+          } else if (matchedOrderItem?.lotItemId) {
+            resolvedLotItemId = matchedOrderItem.lotItemId;
+          }
+
           const refundUnitPrice =
             item.refundUnitPrice != null && Number.isFinite(Number(item.refundUnitPrice))
               ? Number(item.refundUnitPrice)
@@ -387,7 +437,7 @@ export class CustomerReturnsService {
             orderItem: matchedOrderItem,
             variant,
             variantId: item.variantId,
-            lotId: item.lotId || matchedOrderItem?.lotId || null,
+            lotItemId: resolvedLotItemId,
             returnQty,
             refundUnitPrice,
             itemCondition: item.itemCondition,
@@ -445,8 +495,10 @@ export class CustomerReturnsService {
           },
         });
 
-        // Deadlock prevention: sort items by variantId + lotId
-        validatedLines.sort((a, b) => (a.variantId + (a.lotId || "")).localeCompare(b.variantId + (b.lotId || "")));
+        // Deadlock prevention: sort items by variantId + lotItemId
+        validatedLines.sort((a, b) =>
+          (a.variantId + (a.lotItemId || "")).localeCompare(b.variantId + (b.lotItemId || "")),
+        );
 
         for (const line of validatedLines) {
           await tx.customerReturnItem.create({
@@ -454,7 +506,7 @@ export class CustomerReturnsService {
               returnId: customerReturn.id,
               orderItemId: line.orderItem ? line.orderItem.id : null,
               variantId: line.variantId,
-              lotId: line.lotId,
+              lotItemId: line.lotItemId,
               returnQty: line.returnQty,
               refundUnitPrice: line.refundUnitPrice,
               itemCondition: line.itemCondition,
@@ -463,7 +515,7 @@ export class CustomerReturnsService {
           });
 
           let balance = await tx.inventoryBalance.findFirst({
-            where: { businessId, variantId: line.variantId, lotId: line.lotId },
+            where: { businessId, variantId: line.variantId, lotItemId: line.lotItemId },
           });
 
           if (!balance) {
@@ -471,7 +523,7 @@ export class CustomerReturnsService {
               data: {
                 businessId,
                 variantId: line.variantId,
-                lotId: line.lotId,
+                lotItemId: line.lotItemId,
                 quantityOnHand: 0,
                 damagedQuantity: 0,
               },
@@ -501,9 +553,9 @@ export class CustomerReturnsService {
               },
             });
 
-            if (line.lotId) {
-              await tx.productLot.update({
-                where: { id: line.lotId },
+            if (line.lotItemId) {
+              await tx.productLotItem.update({
+                where: { id: line.lotItemId },
                 data: {
                   status: "QUARANTINED",
                   quarantineQty: { increment: line.returnQty },
@@ -523,7 +575,7 @@ export class CustomerReturnsService {
             data: {
               businessId,
               variantId: line.variantId,
-              lotId: line.lotId,
+              lotItemId: line.lotItemId,
               transactionType: "CUSTOMER_RETURN",
               quantityChanged: line.returnQty,
               balanceAfter: newOnHand,
@@ -574,7 +626,7 @@ export class CustomerReturnsService {
 
               exchangeOrderItems.push({
                 variantId: variant.id,
-                lotId: balance.lotId,
+                lotItemId: balance.lotItemId,
                 quantity,
                 unitPrice: variant.basePrice,
                 unitCost: variant.costPrice,
@@ -584,7 +636,7 @@ export class CustomerReturnsService {
               ledgerEntries.push({
                 businessId,
                 variantId: variant.id,
-                lotId: balance.lotId,
+                lotItemId: balance.lotItemId,
                 transactionType: "POS_SALE" as const,
                 quantityChanged: -quantity,
                 balanceAfter,
@@ -743,7 +795,11 @@ export class CustomerReturnsService {
                 },
               },
             },
-            lot: true,
+            lotItem: {
+              include: {
+                lot: true,
+              },
+            },
             orderItem: true,
           },
         },
@@ -760,6 +816,15 @@ export class CustomerReturnsService {
       ...customerReturn,
       customerReturnItems: customerReturn.customerReturnItems.map((item) => ({
         ...item,
+        lot: item.lotItem
+          ? {
+              id: item.lotItem.id,
+              lotId: item.lotItem.lotId,
+              lotNumber: item.lotItem.lot?.lotNumber,
+              expirationDate: item.lotItem.expirationDate,
+              manufacturingDate: item.lotItem.manufacturingDate,
+            }
+          : null,
         orderItem: item.orderItem
           ? {
               ...item.orderItem,

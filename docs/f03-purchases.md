@@ -1,5 +1,19 @@
 ﻿# F03 — Đặt mua, nhận hàng và thanh toán nhà cung cấp
 
+## Cập nhật luồng NCC theo schema suppliers / supplier_products (05/11/2026)
+
+1. Tạo hoặc sửa hồ sơ NCC: mã NCC, tên, liên hệ, email, địa chỉ, mã số thuế, ghi chú và trạng thái hợp tác. Mã và điện thoại không trùng trong cùng cửa hàng; chuỗi trống được lưu null. Không sửa công nợ qua hồ sơ.
+2. Khai báo SKU đang cung cấp: mã/tên hàng NCC, giá chào VND trên một đơn vị tồn kho, lượng đặt tối thiểu, bội số đặt, ngày giao (null dùng mặc định SKU), ưu tiên và ghi chú. Chỉ có một NCC ưu tiên đang hoạt động cho mỗi SKU. Đổi ưu tiên trong transaction có retry khi xung đột.
+3. Tạo PO: chọn NCC đang hợp tác → chọn hàng trong danh mục NCC → điền giá chào và lượng nhỏ nhất thỏa tối thiểu/bội số → người dùng chọn ngày giao, có thể sửa giá thỏa thuận → lưu. Backend kiểm tra lại danh mục và điều kiện trong transaction. Đổi NCC trên form xóa các dòng chọn trước đó.
+4. Ngừng cung cấp SKU giữ dòng cũ và bỏ ưu tiên; lưu lại kích hoạt chính dòng đó. Danh mục lọc `isActive=true|false|all`, mặc định true. Tab lịch sử chỉ dựa trên phiếu RECEIVED và vẫn hiển thị hàng đã ngừng; lịch sử không tự trở thành danh mục cung cấp.
+5. Ngừng hợp tác NCC chặn đặt mới và sửa dòng mua, bỏ ưu tiên của NCC. Đơn cũ vẫn nhận phần còn lại, thanh toán và đối soát. Sửa ngày/mã đơn với các dòng cũ giữ nguyên không buộc khai báo lại danh mục; thay NCC, đổi giá/lượng hoặc thêm dòng phải kiểm tra điều kiện hiện tại. Các kiểm tra SKU hoạt động, khóa kiểm kê và lô khi nhận vẫn áp dụng.
+6. Giá chào không tự đổi giá vốn hoặc chứng từ; nhận hàng tiếp tục dùng giá thực nhận, tính kho/công nợ và thanh toán trong transaction hiện có.
+
+API bổ sung: `PATCH /purchases/suppliers/:id`. GET suppliers hỗ trợ `isActive=true|false|all` (mặc định tất cả); tìm theo mã, tên, email, điện thoại hoặc người liên hệ. PUT products nhận đầy đủ điều kiện trên, DELETE products là ngừng cung cấp. Swagger `/fo3/` đã đồng bộ endpoint và payload.
+
+Triển khai cần schema/migration `20261104090000_f03_supplier_catalog` đã có trong checkout và Prisma Client được generate lại. Không chạy migration tự động lên DB từ thao tác sửa mã nguồn. Với dữ liệu cũ, khai báo/xác nhận danh mục trước khi tạo đơn mới; không tự lấy giá vốn hay lịch sử nhận làm giá chào.
+
+
 Tài liệu mô tả hành vi backend hiện tại, toàn bộ API purchases và quy trình test bằng Postman. PO là đơn đặt mua; phiếu nhận xác nhận hàng thực tế nhập kho; NCC là nhà cung cấp.
 
 ## 1. Luồng hoạt động
@@ -69,7 +83,7 @@ Helper transaction dùng Serializable, timeout 30 giây; khi gặp Prisma P2034 
 - Tiền không âm, tối đa 2 chữ số thập phân; nên gửi chuỗi decimal. Giá đơn vị, openingCash và mỗi khoản chi < 10.000.000.000; tổng phiếu/tổng đã trả < 1.000.000.000.000. Nợ NCC có thể âm, trị tuyệt đối < 10.000.000.000.
 - Tiền response là chuỗi decimal; không giả định mọi trường đều có hậu tố .00. Các trường tính toán như totals dùng định dạng 2 chữ số.
 - poCode/receiptCode bắt buộc, tối đa 50 ký tự, duy nhất trong cửa hàng. Sau mất kết nối, GET kiểm tra mã cũ trước khi retry; đổi mã có thể nhập hàng hai lần.
-- Ngày body dùng YYYY-MM-DD. orderDate mặc định theo UTC; ngày giao dự kiến không trước ngày đặt. receivedAt lấy từ server.
+- Ngày body dùng YYYY-MM-DD. orderDate mặc định theo ngày Việt Nam; ngày giao dự kiến bắt buộc và không trước ngày đặt. receivedAt lấy từ server.
 - SKU quản lý lô cần lotNumber (tối đa 100 ký tự), expirationDate; manufacturingDate tùy chọn và không sau hạn dùng. Lô cũ phải cùng hạn dùng và cùng ngày sản xuất nếu gửi ngày này; không cập nhật ngày lô cũ.
 - Lô hết hạn trước hôm nay theo Việt Nam UTC+7 trả 400; hết hạn đúng hôm nay vẫn nhận được. SKU không quản lý lô không được gửi trường lô.
 
@@ -204,6 +218,7 @@ Gửi `GET /purchases/suppliers?search={{runId}}`: HTTP **200**, tìm dòng có 
 ```json
 {
   "poCode": "PO-{{runId}}",
+  "expectedDeliveryDate": "{{expectedDeliveryDate}}",
   "supplierId": "{{supplierId}}",
   "items": [
     { "variantId": "{{variantId}}", "orderedQty": 10, "unitPrice": "50000.00" }
@@ -216,7 +231,7 @@ Gửi `GET /purchases/suppliers?search={{runId}}`: HTTP **200**, tìm dòng có 
 - `response.id` → `poId`.
 - `response.purchaseOrderItems[0].id` → `poItemId`. Đây là ID dòng đặt hàng, khác `variantId`.
 
-Body trên dùng ngày đặt mặc định và không đặt ngày giao dự kiến. Nếu test ngày, thêm `orderDate` và `expectedDeliveryDate` theo `YYYY-MM-DD`, ngày giao không trước ngày đặt.
+Body trên dùng ngày đặt mặc định theo ngày Việt Nam. Đặt biến `expectedDeliveryDate` theo `YYYY-MM-DD`, bằng hoặc sau ngày đặt. Ngày giao dự kiến bắt buộc khi tạo hoặc sửa đơn; thiếu ngày trả HTTP **400**. Đơn cũ chưa có ngày phải bổ sung khi sửa.
 
 Gọi `GET /purchases/orders/{{poId}}` và `GET /purchases/orders?search=PO-{{runId}}`:
 
@@ -629,3 +644,12 @@ Ghi kết quả test gồm: mã case, ID/dữ liệu, request đã ẩn token, H
 | purchases-transaction.ts | Transaction/retry, người thao tác, công nợ |
 
 Phạm vi cửa hàng được kiểm soát tại src/shared/auth/business-scope.middleware.ts.
+
+## SKU theo nhà cung cấp
+
+- `GET /purchases/suppliers/:id/products`: phân trang/tìm kiếm SKU. `kind=catalog` (mặc định) đọc danh sách cung cấp đã khai báo; `kind=history` đọc SKU từng nhận qua phiếu `RECEIVED`, không gồm phiếu hủy. Mỗi SKU có giá chào và thông tin dòng nhập gần nhất.
+- `PUT /purchases/suppliers/:id/products`: thêm/cập nhật `{ variantId, supplyPrice }`. SKU phải đang hoạt động và cùng doanh nghiệp. Giá chào là tiền thập phân không âm, không tự thay đổi giá vốn hay chứng từ.
+- `DELETE /purchases/suppliers/:id/products/:variantId`: bỏ liên kết cung cấp, giữ nguyên lịch sử mua.
+- Các route yêu cầu `inventory.read` + `finance.read`; ghi thêm `inventory.receive`. Bảng `supplier_products` có khóa ngoại ghép doanh nghiệp–NCC và doanh nghiệp–SKU để chặn liên kết chéo doanh nghiệp tại DB.
+- Migration: `prisma/migrations/20261103090000_supplier_products/migration.sql`. Client đã được generate. Migration chưa được áp dụng lên database dùng chung: lịch sử migration remote khác repo; cần xác nhận riêng trước khi thay đổi schema, không chạy toàn bộ migration pending một cách tự động.
+- Kiểm tra: `node --test tests/supplier-products.test.cjs` (mock DB boundary; không phải kiểm thử PostgreSQL thật).

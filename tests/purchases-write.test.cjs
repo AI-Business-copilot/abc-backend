@@ -28,6 +28,7 @@ const tx = {
     update: async ({ data }) => Object.assign(state.supplier, data),
     create: async ({ data }) => ({ id: supplierId, ...data }),
   },
+  supplierProduct: { findMany: async () => [{ variantId, minOrderQty: 1, orderMultiple: 1, isActive: true }] },
   productVariant: {
     findMany: async ({ where }) => { calls.push(["variantScope", where]); return [state.variant]; },
     update: async ({ data }) => Object.assign(state.variant, data),
@@ -82,7 +83,7 @@ const receive = (extra = {}) => ({ receiptCode: "PR-001", paidAmount: "10.00", i
 beforeEach(() => {
   calls.length = 0; conflicts = 0;
   state = {
-    supplier: { id: supplierId, debtAmount: D(0) },
+    supplier: { id: supplierId, isActive: true, debtAmount: D(0) },
     order: { id, supplierId, status: "ORDERED", purchaseOrderItems: [{ id: itemId, variantId, orderedQty: 5, receivedQty: 0, unitPrice: D(20) }] },
     variant: { id: variantId, isActive: true, costPrice: D(10), template: { hasLotTracking: false } },
     quantity: 10, balance: { id: "balance", quantityOnHand: 10 }, lot: null, receipt: null, items: [], ledger: [], codes: [],
@@ -91,7 +92,7 @@ beforeEach(() => {
 });
 
 test("validates quantities, decimal precision, dates and duplicate order SKU", () => {
-  const input = { poCode: "PO-1", supplierId, items: [{ variantId, orderedQty: 2, unitPrice: "10.00" }] };
+  const input = { poCode: "PO-1", supplierId, expectedDeliveryDate: "2099-12-31", items: [{ variantId, orderedQty: 2, unitPrice: "10.00" }] };
   assert.equal(orderInput(input).items[0].unitPrice.toFixed(2), "10.00");
   for (const orderedQty of [0, -1, 1.5, "2", 2147483648]) assert.throws(() => orderInput({ ...input, items: [{ ...input.items[0], orderedQty }] }));
   assert.throws(() => orderInput({ ...input, items: [...input.items, ...input.items] }));
@@ -100,8 +101,31 @@ test("validates quantities, decimal precision, dates and duplicate order SKU", (
   assert.throws(() => orderInput({ ...input, orderDate: "2026-02-30" }));
 });
 
+test("create PO requires delivery date and rejects delivery before order without writes", async () => {
+  const input = { poCode: "PO-DELIVERY", supplierId, orderDate: "2099-12-30", items: [{ variantId, orderedQty: 1, unitPrice: "20" }] };
+  for (const expectedDeliveryDate of [undefined, null, ""]) {
+    await assert.rejects(service.createOrder(businessId, "auth", { ...input, expectedDeliveryDate }), (err) => err.statusCode === 400 && /Vui lòng chọn ngày giao dự kiến/.test(err.message));
+  }
+  await assert.rejects(service.createOrder(businessId, "auth", { ...input, expectedDeliveryDate: "2099-12-29" }), (err) => err.statusCode === 400 && /không được trước ngày đặt/.test(err.message));
+  assert.equal(calls.length, 0);
+  assert.equal(orderInput({ ...input, expectedDeliveryDate: "2099-12-30" }).expectedDeliveryDate.toISOString().slice(0, 10), "2099-12-30");
+});
+
+test("create PO rejects past dates using the Vietnam calendar day", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-01T18:00:00Z") });
+  const input = { poCode: "PO-DATE", supplierId, expectedDeliveryDate: "2026-11-03", items: [{ variantId, orderedQty: 1, unitPrice: "20" }] };
+  await assert.rejects(service.createOrder(businessId, "auth", { ...input, orderDate: "2026-11-01" }), (err) => err.status === 400 || err.statusCode === 400);
+  assert.equal(calls.length, 0);
+  for (const orderDate of ["2026-11-02", "2026-11-03"]) {
+    const row = await service.createOrder(businessId, "auth", { ...input, orderDate });
+    assert.equal(row.orderDate.toISOString().slice(0, 10), orderDate);
+  }
+  const row = await service.createOrder(businessId, "auth", input);
+  assert.equal(row.orderDate.toISOString().slice(0, 10), "2026-11-02");
+});
+
 test("create PO scopes supplier and SKU, records actor and leaves stock unchanged", async () => {
-  const row = await service.createOrder(businessId, "auth", { poCode: "PO-1", supplierId, items: [{ variantId, orderedQty: 5, unitPrice: "20" }] });
+  const row = await service.createOrder(businessId, "auth", { poCode: "PO-1", supplierId, expectedDeliveryDate: "2099-12-31", items: [{ variantId, orderedQty: 5, unitPrice: "20" }] });
   assert.equal(row.businessId, businessId); assert.equal(row.createdBy, "actor"); assert.equal(row.status, "ORDERED");
   assert.equal(calls[0][1].businessId, businessId); assert.equal(calls[1][1].businessId, businessId);
   assert.equal(state.quantity, 10); assert.equal(state.ledger.length, 0);
@@ -249,4 +273,13 @@ test("draft confirmation revalidates expiration before committing inventory/paym
   } finally {
     if (previousKey === undefined) delete process.env.PURCHASE_DRAFT_SECRET; else process.env.PURCHASE_DRAFT_SECRET = previousKey;
   }
+});
+
+test("retiring supplier preserves receiving and payment for existing purchase orders", async () => {
+  state.supplier.isActive = false;
+  await service.receiveOrder(businessId, "auth", id, receive());
+  assert.equal(state.receipt.status, "RECEIVED");
+  await service.updatePayment(businessId, "auth", id, { paidAmount: "40.00" });
+  assert.equal(state.receipt.paidAmount.toFixed(2), "40.00");
+  assert.equal(state.supplier.debtAmount.toFixed(2), "0.00");
 });

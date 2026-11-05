@@ -169,12 +169,12 @@ async function loadItemsForSheet(
           },
         },
       },
-      lot: {
+      lotItem: {
         select: {
           id: true,
-          lotNumber: true,
           manufacturingDate: true,
           expirationDate: true,
+          lot: { select: { id: true, lotNumber: true } },
         },
       },
     },
@@ -213,7 +213,7 @@ async function writeItems(
     }
 
     const tracksLot = isLotTracking(variant.template);
-    let lotId: string | null = null;
+    let lotItemId: string | null = null;
 
     if (tracksLot) {
       if (!item.lotNumber) {
@@ -226,18 +226,34 @@ async function writeItems(
       const lotStatusService = new LotStatusService();
       const calculatedStatus = lotStatusService.calculateStatus(item.expirationDate);
 
+      // The lot number identifies the batch, so a second variant using the same number joins that batch
+      // instead of creating a rival lot.
       const lot = await tx.productLot.upsert({
         where: {
-          businessId_variantId_lotNumber: {
+          businessId_lotNumber: {
             businessId,
-            variantId: variant.id,
             lotNumber: item.lotNumber,
           },
         },
         create: {
           businessId,
-          variantId: variant.id,
           lotNumber: item.lotNumber,
+        },
+        update: {},
+      });
+
+      const lotItem = await tx.productLotItem.upsert({
+        where: {
+          businessId_lotId_variantId: {
+            businessId,
+            lotId: lot.id,
+            variantId: variant.id,
+          },
+        },
+        create: {
+          businessId,
+          lotId: lot.id,
+          variantId: variant.id,
           manufacturingDate: item.manufacturingDate,
           expirationDate: item.expirationDate,
           status: calculatedStatus,
@@ -248,14 +264,14 @@ async function writeItems(
           status: calculatedStatus,
         },
       });
-      lotId = lot.id;
+      lotItemId = lotItem.id;
     }
 
     await tx.openingStockItem.create({
       data: {
         sheetId,
         variantId: variant.id,
-        lotId,
+        lotItemId,
         quantity: item.quantity,
         unitCost: new Prisma.Decimal(item.unitCost),
       },
@@ -263,15 +279,22 @@ async function writeItems(
   }
 }
 
-async function cleanupOrphanLots(tx: Prisma.TransactionClient, lotIds: string[]) {
-  for (const lotId of Array.from(new Set(lotIds.filter(Boolean)))) {
+async function cleanupOrphanLotItems(tx: Prisma.TransactionClient, lotItemIds: string[]) {
+  for (const lotItemId of Array.from(new Set(lotItemIds.filter(Boolean)))) {
     const [items, balances, ledger] = await Promise.all([
-      tx.openingStockItem.count({ where: { lotId } }),
-      tx.inventoryBalance.count({ where: { lotId } }),
-      tx.inventoryLedger.count({ where: { lotId } }),
+      tx.openingStockItem.count({ where: { lotItemId } }),
+      tx.inventoryBalance.count({ where: { lotItemId } }),
+      tx.inventoryLedger.count({ where: { lotItemId } }),
     ]);
-    if (items + balances + ledger === 0) {
-      await tx.productLot.delete({ where: { id: lotId } }).catch(() => undefined);
+    if (items + balances + ledger > 0) continue;
+
+    const deleted = await tx.productLotItem.delete({ where: { id: lotItemId } }).catch(() => null);
+    if (!deleted) continue;
+
+    // The batch header only exists to group items, so it goes once its last item is gone.
+    const remaining = await tx.productLotItem.count({ where: { lotId: deleted.lotId } });
+    if (remaining === 0) {
+      await tx.productLot.delete({ where: { id: deleted.lotId } }).catch(() => undefined);
     }
   }
 }
@@ -326,10 +349,10 @@ class InventoryService {
         attributeText: item.variant.variantAttributeValues
           .map((value) => value.attributeValue.value)
           .join(" · "),
-        lotId: item.lot?.id ?? null,
-        lotNumber: item.lot?.lotNumber ?? null,
-        manufacturingDate: item.lot?.manufacturingDate ?? null,
-        expirationDate: item.lot?.expirationDate ?? null,
+        lotItemId: item.lotItem?.id ?? null,
+        lotNumber: item.lotItem?.lot?.lotNumber ?? null,
+        manufacturingDate: item.lotItem?.manufacturingDate ?? null,
+        expirationDate: item.lotItem?.expirationDate ?? null,
         quantity: item.quantity,
         unitCost: num(item.unitCost),
         lineTotal: num(item.unitCost) * item.quantity,
@@ -484,7 +507,7 @@ class InventoryService {
 
       const oldItems = await tx.openingStockItem.findMany({
         where: { sheetId },
-        select: { lotId: true },
+        select: { lotItemId: true },
       });
       await tx.openingStockItem.deleteMany({ where: { sheetId } });
       await writeItems(tx, businessId, sheetId, items);
@@ -492,9 +515,9 @@ class InventoryService {
         where: { id: sheetId },
         data: { note, updatedAt: new Date() },
       });
-      await cleanupOrphanLots(
+      await cleanupOrphanLotItems(
         tx,
-        oldItems.map((item) => item.lotId).filter((id): id is string => Boolean(id)),
+        oldItems.map((item) => item.lotItemId).filter((id): id is string => Boolean(id)),
       );
     }, { timeout: 30000 });
 
@@ -522,7 +545,7 @@ class InventoryService {
   ) {
     const sheet = await tx.openingStockSheet.findFirst({
       where: { id: sheetId, businessId },
-      include: { openingStockItems: { include: { lot: true } } },
+      include: { openingStockItems: { include: { lotItem: true } } },
     });
     if (!sheet) throw new HttpError(404, "Không tìm thấy phiếu nạp tồn.");
     if (sheet.status === "APPLIED") return;
@@ -535,7 +558,7 @@ class InventoryService {
 
     for (const item of sheet.openingStockItems) {
       let balance = await tx.inventoryBalance.findFirst({
-        where: { businessId, variantId: item.variantId, lotId: item.lotId },
+        where: { businessId, variantId: item.variantId, lotItemId: item.lotItemId },
       });
 
       if (!balance) {
@@ -543,7 +566,7 @@ class InventoryService {
           data: {
             businessId,
             variantId: item.variantId,
-            lotId: item.lotId,
+            lotItemId: item.lotItemId,
             quantityOnHand: 0,
             damagedQuantity: 0,
           },
@@ -564,7 +587,7 @@ class InventoryService {
         data: {
           businessId,
           variantId: item.variantId,
-          lotId: item.lotId,
+          lotItemId: item.lotItemId,
           transactionType: StockTransactionType.OPENING_STOCK,
           quantityChanged: item.quantity,
           balanceAfter: total._sum.quantityOnHand ?? updated.quantityOnHand,
@@ -592,13 +615,13 @@ class InventoryService {
       }
       const items = await tx.openingStockItem.findMany({
         where: { sheetId },
-        select: { lotId: true },
+        select: { lotItemId: true },
       });
       await tx.openingStockItem.deleteMany({ where: { sheetId } });
       await tx.openingStockSheet.delete({ where: { id: sheetId } });
-      await cleanupOrphanLots(
+      await cleanupOrphanLotItems(
         tx,
-        items.map((item) => item.lotId).filter((id): id is string => Boolean(id)),
+        items.map((item) => item.lotItemId).filter((id): id is string => Boolean(id)),
       );
     }, { timeout: 30000 });
     return { id: sheetId };
@@ -698,18 +721,23 @@ class InventoryService {
   }
 
   async getLots(businessId: string, variantId: string) {
-    const lots = await prisma.productLot.findMany({
+    const lotItems = await prisma.productLotItem.findMany({
       where: { businessId, variantId },
-      include: { inventoryBalances: { select: { quantityOnHand: true } } },
+      include: {
+        lot: { select: { id: true, lotNumber: true } },
+        inventoryBalances: { select: { quantityOnHand: true } },
+      },
       orderBy: { expirationDate: "asc" },
     });
     return {
-      items: lots.map((lot) => ({
-        id: lot.id,
-        lotNumber: lot.lotNumber,
-        manufacturingDate: lot.manufacturingDate,
-        expirationDate: lot.expirationDate,
-        onHand: lot.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
+      items: lotItems.map((item) => ({
+        id: item.id,
+        lotId: item.lot.id,
+        lotNumber: item.lot.lotNumber,
+        manufacturingDate: item.manufacturingDate,
+        expirationDate: item.expirationDate,
+        status: item.status,
+        onHand: item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
       })),
     };
   }

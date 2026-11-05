@@ -321,7 +321,7 @@ describe("Workflow WF-03 (F05 Customer Returns & F06 Vendor Returns)", () => {
 
     // 2. Kiểm tra tồn kho inventory_balances: quantity_on_hand tăng 1 (từ 10 lên 11), damaged_quantity giữ nguyên (0)
     const balance = await prisma.inventoryBalance.findFirst({
-      where: { businessId, variantId: variantAId, lotId: null },
+      where: { businessId, variantId: variantAId, lotItemId: null },
     });
     assert.ok(balance, "InventoryBalance must exist");
     assert.strictEqual(balance.quantityOnHand, 11, "quantity_on_hand must increase from 10 to 11");
@@ -378,7 +378,7 @@ describe("Workflow WF-03 (F05 Customer Returns & F06 Vendor Returns)", () => {
 
     // 2. Kiểm tra tồn kho inventory_balances
     const balance = await prisma.inventoryBalance.findFirst({
-      where: { businessId, variantId: variantAId, lotId: null },
+      where: { businessId, variantId: variantAId, lotItemId: null },
     });
     assert.ok(balance, "InventoryBalance must exist");
     // TUYỆT ĐỐI KHÔNG cộng vào quantityOnHand (vẫn là 11 từ TC-F05-01)
@@ -422,7 +422,7 @@ describe("Workflow WF-03 (F05 Customer Returns & F06 Vendor Returns)", () => {
 
     // 4. Tồn kho không đổi (on_hand = 11, damaged = 1)
     const balance = await prisma.inventoryBalance.findFirst({
-      where: { businessId, variantId: variantAId, lotId: null },
+      where: { businessId, variantId: variantAId, lotItemId: null },
     });
     assert.strictEqual(balance?.quantityOnHand, 11, "quantity_on_hand must remain 11");
     assert.strictEqual(balance?.damagedQuantity, 1, "damaged_quantity must remain 1");
@@ -451,7 +451,7 @@ describe("Workflow WF-03 (F05 Customer Returns & F06 Vendor Returns)", () => {
 
     // 2. Kiểm tra tồn kho variantB giảm 2 (từ 10 xuống 8)
     const balance = await prisma.inventoryBalance.findFirst({
-      where: { businessId, variantId: variantBId, lotId: null },
+      where: { businessId, variantId: variantBId, lotItemId: null },
     });
     assert.ok(balance);
     assert.strictEqual(balance.quantityOnHand, 8, "quantity_on_hand must decrease from 10 to 8");
@@ -510,7 +510,7 @@ describe("Workflow WF-03 (F05 Customer Returns & F06 Vendor Returns)", () => {
 
     // Tồn kho không thay đổi (vẫn là 5)
     const balance = await prisma.inventoryBalance.findFirst({
-      where: { businessId, variantId: variantCId, lotId: null },
+      where: { businessId, variantId: variantCId, lotItemId: null },
     });
     assert.strictEqual(balance?.quantityOnHand, 5, "quantity_on_hand must remain 5");
   });

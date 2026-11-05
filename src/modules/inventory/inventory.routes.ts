@@ -49,7 +49,7 @@ router.patch("/audits/:id/apply", requirePermission("inventory.audit.apply"), co
 // F08: Lot Tracking & Scrap Management endpoints
 router.get("/lots/expiring", requirePermission("inventory.lot.read"), controller.getExpiringLots.bind(controller));
 router.get("/lots/:id", requirePermission("inventory.lot.read"), controller.getLot.bind(controller));
-router.post("/lots/:id/quarantine", requirePermission("inventory.scrap.create"), controller.quarantineLot.bind(controller));
+router.post("/lots/:lotId/items/:itemId/quarantine", requirePermission("inventory.scrap.create"), controller.quarantineLot.bind(controller));
 
 router.post(
   "/scrap-orders",

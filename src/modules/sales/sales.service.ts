@@ -5,7 +5,7 @@ import { money, object, quantity, requiredText } from "../purchases/purchases.in
 import { filters, pagination, uuid } from "../purchases/purchases.query";
 import { actor, atomic } from "../purchases/purchases-transaction";
 
-const include = { orderItems: { include: { lot: true, variant: { select: { sku: true, template: { select: { name: true } } } } } }, orderPayments: true, customer: true } as const;
+const include = { orderItems: { include: { lotItem: { include: { lot: true } }, variant: { select: { sku: true, template: { select: { name: true } } } } } }, orderPayments: true, customer: true } as const;
 const zero = () => new Prisma.Decimal(0);
 
 async function openShift(tx: Prisma.TransactionClient, businessId: string, userId: string, id?: string) {
@@ -22,10 +22,10 @@ export async function allocateStock(tx: Prisma.TransactionClient, businessId: st
   const today = new Date(new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10));
   const balances = await tx.inventoryBalance.findMany({
     where: { businessId, variantId, ...(variant.template.hasLotTracking
-      ? { lot: { is: { businessId, variantId, expirationDate: { gte: today } } } }
-      : { lotId: null }) }, include: { lot: true },
+      ? { lotItem: { is: { businessId, variantId, expirationDate: { gte: today } } } }
+      : { lotItemId: null }) }, include: { lotItem: true },
   });
-  balances.sort((a, b) => (a.lot?.expirationDate.getTime() ?? 0) - (b.lot?.expirationDate.getTime() ?? 0) || a.id.localeCompare(b.id));
+  balances.sort((a, b) => (a.lotItem?.expirationDate.getTime() ?? 0) - (b.lotItem?.expirationDate.getTime() ?? 0) || a.id.localeCompare(b.id));
   let remaining = requested;
   const allocations = [];
   for (const balance of balances) {
@@ -118,8 +118,8 @@ export class SalesService {
           money(cogs.toFixed(2), "totalCogsAmount");
           const balanceAfter = balance.quantityOnHand - quantity;
           await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantityOnHand: balanceAfter, updatedAt: new Date(), outOfStockSince: balanceAfter === 0 ? new Date() : null } });
-          await tx.orderItem.create({ data: { orderId: id, variantId: variant.id, lotId: balance.lotId, quantity, unitPrice: line.unitPrice, unitCost: variant.costPrice, subtotal: line.unitPrice.mul(quantity) } });
-          await tx.inventoryLedger.create({ data: { businessId, variantId: variant.id, lotId: balance.lotId, transactionType: "POS_SALE", quantityChanged: -quantity, balanceAfter, unitCost: variant.costPrice, totalCostValue: cost.negated(), referenceDocType: "ORDER", referenceDocId: id, createdBy: userId } });
+          await tx.orderItem.create({ data: { orderId: id, variantId: variant.id, lotItemId: balance.lotItemId, quantity, unitPrice: line.unitPrice, unitCost: variant.costPrice, subtotal: line.unitPrice.mul(quantity) } });
+          await tx.inventoryLedger.create({ data: { businessId, variantId: variant.id, lotItemId: balance.lotItemId, transactionType: "POS_SALE", quantityChanged: -quantity, balanceAfter, unitCost: variant.costPrice, totalCostValue: cost.negated(), referenceDocType: "ORDER", referenceDocId: id, createdBy: userId } });
         }
       }
       await tx.orderPayment.create({ data: { orderId: id, shiftId: order.shiftId, paymentMethod, amount, paymentReference } });
