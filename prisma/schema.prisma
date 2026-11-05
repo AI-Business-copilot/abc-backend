@@ -28,6 +28,7 @@ model Business {
   attributeValues     AttributeValue[]     @relation("attribute_values_business_id")
   productVariants     ProductVariant[]     @relation("product_variants_business_id")
   suppliers           Supplier[]           @relation("suppliers_business_id")
+  supplierProducts    SupplierProduct[]    @relation("supplier_products_business_id")
   customers           Customer[]           @relation("customers_business_id")
   productLots         ProductLot[]         @relation("product_lots_business_id")
   inventoryBalances   InventoryBalance[]   @relation("inventory_balances_business_id")
@@ -311,7 +312,10 @@ model ProductVariant {
   dailyProductMetrics    DailyProductMetric[]    @relation("daily_product_metrics_variant_id")
   forecastResults        ForecastResult[]        @relation("forecast_results_variant_id")
 
+  supplierProducts SupplierProduct[] @relation("supplier_products_variant_id")
+
   @@unique([businessId, sku], map: "uq_variant_tenant_sku")
+  @@unique([businessId, id], map: "uq_variant_tenant_id")
   @@unique([businessId, barcode], map: "uq_variant_tenant_barcode")
   @@map("product_variants")
 }
@@ -336,6 +340,13 @@ model Supplier {
   name          String    @db.VarChar(255)
   phone         String?   @db.VarChar(20)
   contactPerson String?   @map("contact_person") @db.VarChar(100)
+  supplierCode  String?   @map("supplier_code") @db.VarChar(50)
+  email         String?   @db.VarChar(255)
+  address       String?   @db.Text
+  taxCode       String?   @map("tax_code") @db.VarChar(30)
+  note          String?   @db.Text
+  isActive      Boolean   @default(true) @map("is_active")
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   debtAmount    Decimal?  @default(0) @map("debt_amount") @db.Decimal(12, 2)
   createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -343,9 +354,42 @@ model Supplier {
   purchaseOrders   PurchaseOrder[]   @relation("purchase_orders_supplier_id")
   purchaseReceipts PurchaseReceipt[] @relation("purchase_receipts_supplier_id")
   vendorReturns    VendorReturn[]    @relation("vendor_returns_supplier_id")
+  supplierProducts SupplierProduct[] @relation("supplier_products_supplier_id")
 
+  @@unique([businessId, id], map: "uq_supplier_tenant_id")
+  @@unique([businessId, supplierCode], map: "uq_supplier_tenant_code")
   @@unique([businessId, phone], map: "uq_supplier_tenant_phone")
   @@map("suppliers")
+}
+
+/// Prices and order quantities use the SKU inventory unit. CHECK constraints live in the SQL migration.
+model SupplierProduct {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId          String   @map("business_id") @db.Uuid
+  supplierId          String   @map("supplier_id") @db.Uuid
+  variantId           String   @map("variant_id") @db.Uuid
+  supplierSku         String?  @map("supplier_sku") @db.VarChar(100)
+  supplierProductName String?  @map("supplier_product_name") @db.VarChar(255)
+  supplyPrice         Decimal  @map("supply_price") @db.Decimal(12, 2)
+  minOrderQty         Int      @default(1) @map("min_order_qty")
+  orderMultiple       Int      @default(1) @map("order_multiple")
+  leadTimeDays        Int?     @map("lead_time_days")
+  isPreferred         Boolean  @default(false) @map("is_preferred")
+  isActive            Boolean  @default(true) @map("is_active")
+  priceUpdatedAt      DateTime @default(now()) @map("price_updated_at") @db.Timestamptz(6)
+  note                String?  @db.Text
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  business Business       @relation("supplier_products_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  supplier Supplier       @relation("supplier_products_supplier_id", fields: [businessId, supplierId], references: [businessId, id], onDelete: Restrict, onUpdate: NoAction)
+  variant  ProductVariant @relation("supplier_products_variant_id", fields: [businessId, variantId], references: [businessId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([businessId, supplierId, variantId], map: "uq_supplier_product_tenant_supplier_variant")
+  @@unique([businessId, variantId], where: raw("(is_preferred = true AND is_active = true)"), map: "uq_supplier_product_preferred")
+  @@index([businessId, supplierId, isActive], map: "idx_supplier_products_supplier_active")
+  @@index([businessId, variantId, isActive], map: "idx_supplier_products_variant_active")
+  @@map("supplier_products")
 }
 
 model Customer {
