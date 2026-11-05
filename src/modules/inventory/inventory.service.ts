@@ -72,8 +72,16 @@ function isLotTracking(template: { hasLotTracking: boolean | null } | null | und
 }
 
 async function resolveUser(authUserId: string) {
-  const user = await prisma.user.findUnique({ where: { authUserId } });
-  if (!user || !user.isActive) {
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authUserId);
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { authUserId },
+        ...(isUuid ? [{ id: authUserId }] : []),
+      ],
+    },
+  });
+  if (!user || user.isActive === false) {
     throw new HttpError(403, "Tài khoản chưa được đồng bộ với cửa hàng.");
   }
   return user;
@@ -570,8 +578,9 @@ class InventoryService {
     }
 
     for (const item of sheet.openingStockItems) {
+      const lotId = item.lotId || null;
       let balance = await tx.inventoryBalance.findFirst({
-        where: { businessId, variantId: item.variantId, lotId: item.lotId },
+        where: { businessId, variantId: item.variantId, lotId },
       });
 
       if (!balance) {
@@ -579,7 +588,7 @@ class InventoryService {
           data: {
             businessId,
             variantId: item.variantId,
-            lotId: item.lotId,
+            lotId,
             quantityOnHand: 0,
             damagedQuantity: 0,
           },
@@ -738,14 +747,21 @@ class InventoryService {
       include: { inventoryBalances: { select: { quantityOnHand: true } } },
       orderBy: { expirationDate: "asc" },
     });
-    return {
-      items: lots.map((lot) => ({
+    const mapped = lots.map((lot) => {
+      const onHand = lot.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0);
+      return {
         id: lot.id,
         lotNumber: lot.lotNumber,
         manufacturingDate: lot.manufacturingDate,
         expirationDate: lot.expirationDate,
-        onHand: lot.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
-      })),
+        quantityOnHand: onHand,
+        onHand,
+        status: lot.status,
+      };
+    });
+    return {
+      lots: mapped,
+      items: mapped,
     };
   }
 

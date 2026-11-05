@@ -21,6 +21,7 @@ router.post("/opening-sheets/:id/apply", requirePermission("inventory.receive"),
 router.delete("/opening-sheets/:id", requirePermission("inventory.receive"), controller.removeSheet.bind(controller));
 
 router.get("/variants", requirePermission("inventory.read"), controller.variants.bind(controller));
+router.get("/variants/:variantId/lots", requirePermission("inventory.read"), controller.getVariantLots.bind(controller));
 router.get("/lots", requirePermission("inventory.read"), controller.lots.bind(controller));
 router.get("/ledger", requirePermission("inventory.read"), controller.ledger.bind(controller));
 
