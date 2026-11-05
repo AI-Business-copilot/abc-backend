@@ -12,7 +12,7 @@ type LotMode = "EXISTING" | "NEW";
 type AuditItemInput = {
   assignedToUserId?: unknown;
   variantId?: unknown;
-  lotId?: unknown;
+  lotItemId?: unknown;
   lotMode?: unknown;
 };
 
@@ -34,15 +34,15 @@ type ReassignItemBody = {
 
 type RecordCountBody = {
   variantId?: unknown;
-  lotId?: unknown;
+  lotItemId?: unknown;
   countedQty?: unknown;
 };
 
 type UpdateCountBody = {
   countedQty?: unknown;
   discrepancyReason?: unknown;
-  /** Existing lot: lot number and expiry are autofilled from product_lots. */
-  lotId?: unknown;
+  /** Existing lot item: lot number and expiry are autofilled from product_lot_items. */
+  lotItemId?: unknown;
   /** Lot that does not exist yet: typed by the employee. */
   newLotNumber?: unknown;
   newLotExpirationDate?: unknown;
@@ -84,13 +84,25 @@ function parseDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/** Generated audit codes are per business and year: AUDIT_2026_0001. */
+async function nextAuditCode(businessId: string) {
+  const prefix = `AUDIT_${new Date().getFullYear()}_`;
+  const last = await prisma.stockAudit.findFirst({
+    where: { businessId, auditCode: { startsWith: prefix } },
+    orderBy: { auditCode: "desc" },
+    select: { auditCode: true },
+  });
+  const sequence = last?.auditCode ? Number(last.auditCode.slice(prefix.length)) + 1 : 1;
+  return `${prefix}${String(Number.isFinite(sequence) ? sequence : 1).padStart(4, "0")}`;
+}
+
 type DbClient = Prisma.TransactionClient | typeof prisma;
 
 /** Select used wherever a full audit item (with product, lot and people) is returned. */
 const AUDIT_ITEM_SELECT = {
   id: true,
   variantId: true,
-  lotId: true,
+  lotItemId: true,
   lotNumber: true,
   lotMode: true,
   newLotExpirationDate: true,
@@ -122,12 +134,13 @@ const AUDIT_ITEM_SELECT = {
       },
     },
   },
-  lot: {
+  lotItem: {
     select: {
       id: true,
-      lotNumber: true,
+      variantId: true,
       expirationDate: true,
       manufacturingDate: true,
+      lot: { select: { id: true, lotNumber: true } },
     },
   },
   assignedToUser: { select: { id: true, fullName: true, email: true } },
@@ -152,19 +165,20 @@ function formatAuditItem(item: AuditItemRow) {
     attributeText: item.variant.variantAttributeValues
       .map((v) => v.attributeValue.value)
       .join(" · "),
-    lotId: item.lot?.id ?? item.lotId ?? null,
-    // Existing lot: number comes from product_lots. New lot: number typed by the employee.
-    lotNumber: item.lot?.lotNumber ?? item.lotNumber ?? null,
-    // Dates typed by the employee win: for a new lot they are the lot's dates, for an existing lot
-    // they are a correction that is written to the lot when the audit is applied.
-    expirationDate: item.newLotExpirationDate ?? item.lot?.expirationDate ?? null,
-    manufacturingDate: item.newLotManufacturingDate ?? item.lot?.manufacturingDate ?? null,
+    lotId: item.lotItem?.lot.id ?? null,
+    lotItemId: item.lotItem?.id ?? item.lotItemId ?? null,
+    // Existing lot item: the number comes from the batch. New lot: number typed by the employee.
+    lotNumber: item.lotItem?.lot.lotNumber ?? item.lotNumber ?? null,
+    // Dates typed by the employee win: for a new lot they are the lot item's dates, for an existing lot
+    // they are a correction that is written to the lot item when the audit is applied.
+    expirationDate: item.newLotExpirationDate ?? item.lotItem?.expirationDate ?? null,
+    manufacturingDate: item.newLotManufacturingDate ?? item.lotItem?.manufacturingDate ?? null,
     newLotManufacturingDate: item.newLotManufacturingDate ?? null,
-    /** What the system currently has on the lot, to show next to a correction. */
-    lotExpirationDate: item.lot?.expirationDate ?? null,
-    lotManufacturingDate: item.lot?.manufacturingDate ?? null,
-    /** True when the employee changed an existing lot's dates. */
-    datesCorrected: Boolean(item.lotId && (item.newLotExpirationDate || item.newLotManufacturingDate)),
+    /** What the system currently has on the lot item, to show next to a correction. */
+    lotExpirationDate: item.lotItem?.expirationDate ?? null,
+    lotManufacturingDate: item.lotItem?.manufacturingDate ?? null,
+    /** True when the employee changed an existing lot item's dates. */
+    datesCorrected: Boolean(item.lotItemId && (item.newLotExpirationDate || item.newLotManufacturingDate)),
     /** Task type set by the owner. The employee cannot switch it. */
     lotMode: item.lotMode as LotMode,
     isNewLot: item.lotMode === "NEW",
@@ -281,10 +295,10 @@ async function assertAssigneesAreStaff(db: DbClient, businessId: string, userIds
   }
 }
 
-/** Current on-hand quantity for a variant + lot (0 when there is no balance row). */
-async function getSnapshotQty(db: DbClient, businessId: string, variantId: string, lotId: string | null) {
+/** Current on-hand quantity for a variant + lot item (0 when there is no balance row). */
+async function getSnapshotQty(db: DbClient, businessId: string, variantId: string, lotItemId: string | null) {
   const balance = await db.inventoryBalance.findFirst({
-    where: { businessId, variantId, lotId },
+    where: { businessId, variantId, lotItemId },
     select: { quantityOnHand: true },
   });
   return balance?.quantityOnHand ?? 0;
@@ -293,19 +307,30 @@ async function getSnapshotQty(db: DbClient, businessId: string, variantId: strin
 type NormalizedRow = {
   assignedToUserId: string;
   variantId: string;
-  lotId: string | null;
+  lotItemId: string | null;
   lotMode: LotMode;
 };
 
+/** The audit type decides which kind of lot an item row may point at. */
+function assertLotMatchesAuditType(auditType: string, lotItemId: string | null, prefix = "") {
+  if (auditType === "NEW_LOTS" && lotItemId) {
+    throw new HttpError(400, `${prefix}Đợt kiểm kê lô mới không được chọn lô có sẵn.`);
+  }
+  if (auditType === "RE_AUDIT" && !lotItemId) {
+    throw new HttpError(400, `${prefix}Đợt kiểm kê lại bắt buộc chọn lô có sẵn.`);
+  }
+}
+
 /**
  * Validate owner-created rows and return them normalized.
- * Checks assignees, variants and lots, and rejects duplicate (variant, lot) rows.
+ * Checks assignees, variants and lot items, and rejects duplicate (variant, lot item) rows.
  */
 async function normalizeAndValidateRows(
   db: DbClient,
   businessId: string,
+  auditType: string,
   rawItems: unknown,
-  existing: Array<{ variantId: string; lotId: string | null }> = [],
+  existing: Array<{ variantId: string; lotItemId: string | null }> = [],
 ): Promise<NormalizedRow[]> {
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
     throw new HttpError(400, "Cần ít nhất một dòng kiểm kê (nhân viên + SKU).");
@@ -314,7 +339,8 @@ async function normalizeAndValidateRows(
   const rows: NormalizedRow[] = (rawItems as AuditItemInput[]).map((raw, index) => {
     const assignedToUserId = typeof raw?.assignedToUserId === "string" ? raw.assignedToUserId.trim() : "";
     const variantId = typeof raw?.variantId === "string" ? raw.variantId.trim() : "";
-    const lotId = typeof raw?.lotId === "string" && raw.lotId.trim() ? raw.lotId.trim() : null;
+    const lotItemId =
+      typeof raw?.lotItemId === "string" && raw.lotItemId.trim() ? raw.lotItemId.trim() : null;
     if (!assignedToUserId) {
       throw new HttpError(400, `Dòng ${index + 1}: chưa chọn nhân viên.`);
     }
@@ -322,9 +348,12 @@ async function normalizeAndValidateRows(
       throw new HttpError(400, `Dòng ${index + 1}: chưa chọn SKU.`);
     }
 
-    // A row with a lot is EXISTING; without a lot it defaults to NEW. The employee can change this while counting.
-    const lotMode: LotMode = lotId ? "EXISTING" : "NEW";
-    return { assignedToUserId, variantId, lotId, lotMode };
+    // The audit type fixes the lot kind of every row: new-lot audits take no existing lot item,
+    // re-audits require one. Neither role can change that while counting.
+    assertLotMatchesAuditType(auditType, lotItemId, `Dòng ${index + 1}: `);
+
+    const lotMode: LotMode = lotItemId ? "EXISTING" : "NEW";
+    return { assignedToUserId, variantId, lotItemId, lotMode };
   });
 
   await assertAssigneesAreStaff(db, businessId, rows.map((r) => r.assignedToUserId));
@@ -338,24 +367,24 @@ async function normalizeAndValidateRows(
     throw new HttpError(404, "Có SKU không tồn tại hoặc không hoạt động.");
   }
 
-  const lotIds = [...new Set(rows.map((r) => r.lotId).filter((id): id is string => !!id))];
-  if (lotIds.length > 0) {
-    const lots = await db.productLot.findMany({
-      where: { id: { in: lotIds }, businessId },
+  const lotItemIds = [...new Set(rows.map((r) => r.lotItemId).filter((id): id is string => !!id))];
+  if (lotItemIds.length > 0) {
+    const lotItems = await db.productLotItem.findMany({
+      where: { id: { in: lotItemIds }, businessId },
       select: { id: true, variantId: true },
     });
-    const lotVariant = new Map(lots.map((l) => [l.id, l.variantId]));
+    const itemVariant = new Map(lotItems.map((l) => [l.id, l.variantId]));
     for (const row of rows) {
-      if (row.lotId && lotVariant.get(row.lotId) !== row.variantId) {
+      if (row.lotItemId && itemVariant.get(row.lotItemId) !== row.variantId) {
         throw new HttpError(400, "Lô không tồn tại hoặc không thuộc SKU đã chọn.");
       }
     }
   }
 
-  const seen = new Set(existing.filter((e) => e.lotId).map((e) => `${e.variantId}:${e.lotId}`));
+  const seen = new Set(existing.filter((e) => e.lotItemId).map((e) => `${e.variantId}:${e.lotItemId}`));
   for (const row of rows) {
-    if (!row.lotId) continue;
-    const key = `${row.variantId}:${row.lotId}`;
+    if (!row.lotItemId) continue;
+    const key = `${row.variantId}:${row.lotItemId}`;
     if (seen.has(key)) {
       throw new HttpError(409, "Có dòng kiểm kê trùng SKU và lô.");
     }
@@ -373,21 +402,24 @@ async function buildItemData(
   createdBy: string,
   rows: NormalizedRow[],
 ) {
-  const lotIds = [...new Set(rows.map((r) => r.lotId).filter((id): id is string => !!id))];
-  const lots = lotIds.length
-    ? await db.productLot.findMany({ where: { id: { in: lotIds } }, select: { id: true, lotNumber: true } })
+  const lotItemIds = [...new Set(rows.map((r) => r.lotItemId).filter((id): id is string => !!id))];
+  const lotItems = lotItemIds.length
+    ? await db.productLotItem.findMany({
+        where: { id: { in: lotItemIds } },
+        select: { id: true, lot: { select: { lotNumber: true } } },
+      })
     : [];
-  const lotNumberById = new Map(lots.map((l) => [l.id, l.lotNumber]));
+  const lotNumberById = new Map(lotItems.map((l) => [l.id, l.lot.lotNumber]));
 
   const data = [];
   for (const row of rows) {
     data.push({
       auditId,
       variantId: row.variantId,
-      lotId: row.lotId,
-      lotNumber: row.lotId ? (lotNumberById.get(row.lotId) ?? null) : null,
+      lotItemId: row.lotItemId,
+      lotNumber: row.lotItemId ? (lotNumberById.get(row.lotItemId) ?? null) : null,
       lotMode: row.lotMode,
-      snapshotQty: row.lotId ? await getSnapshotQty(db, businessId, row.variantId, row.lotId) : 0,
+      snapshotQty: row.lotItemId ? await getSnapshotQty(db, businessId, row.variantId, row.lotItemId) : 0,
       countedQty: 0,
       itemStatus: "IN_PROGRESS",
       assignedToUserId: row.assignedToUserId,
@@ -401,16 +433,15 @@ class AuditService {
   async createAudit(businessId: string, authUserId: string, body: CreateAuditBody) {
     const user = await resolveUser(authUserId);
 
-    const auditCode = typeof body.auditCode === "string" ? body.auditCode.trim() : "";
-    const auditType = typeof body.auditType === "string" ? body.auditType.toUpperCase() : "CATEGORY_AUDIT";
+    // The code is generated for the caller; an explicitly provided code is still accepted.
+    const providedCode = typeof body.auditCode === "string" ? body.auditCode.trim() : "";
+    const auditType = typeof body.auditType === "string" ? body.auditType.toUpperCase() : "NEW_LOTS";
 
-    if (!auditCode) {
-      throw new HttpError(400, "Mã kiểm kê không được trống.");
+    if (!["NEW_LOTS", "RE_AUDIT"].includes(auditType)) {
+      throw new HttpError(400, "Loại kiểm kê không hợp lệ (NEW_LOTS, RE_AUDIT).");
     }
 
-    if (!["NEW_LOTS", "RE_AUDIT", "CATEGORY_AUDIT"].includes(auditType)) {
-      throw new HttpError(400, "Loại kiểm kê không hợp lệ (NEW_LOTS, RE_AUDIT, CATEGORY_AUDIT).");
-    }
+    const auditCode = providedCode || (await nextAuditCode(businessId));
 
     // Check if audit code is unique per business
     const existing = await prisma.stockAudit.findFirst({
@@ -423,7 +454,9 @@ class AuditService {
     // Items are added in a separate step from the audit detail page, so they are optional here.
     // When rows are provided (employee + variant + optional lot), they are validated and created too.
     const hasRows = Array.isArray(body.items) && body.items.length > 0;
-    const rows = hasRows ? await normalizeAndValidateRows(prisma, businessId, body.items) : [];
+    const rows = hasRows
+      ? await normalizeAndValidateRows(prisma, businessId, auditType, body.items)
+      : [];
     const affectedVariantIds = [...new Set(rows.map((r) => r.variantId))];
 
     // Create audit, lock variants and create the owner-defined items in one transaction
@@ -457,12 +490,12 @@ class AuditService {
 
         const itemData = await buildItemData(tx, businessId, created.id, user.id, rows);
 
-        // For RE_AUDIT type, lock the affected product_lots
+        // For RE_AUDIT type, lock the affected lot items
         if (auditType === "RE_AUDIT") {
-          const lotIds = rows.map((r) => r.lotId).filter((id): id is string => !!id);
-          if (lotIds.length > 0) {
-            await tx.productLot.updateMany({
-              where: { id: { in: lotIds } },
+          const lotItemIds = rows.map((r) => r.lotItemId).filter((id): id is string => !!id);
+          if (lotItemIds.length > 0) {
+            await tx.productLotItem.updateMany({
+              where: { id: { in: lotItemIds } },
               data: { isLockedForAudit: true },
             });
           }
@@ -572,7 +605,7 @@ class AuditService {
   async recordCount(businessId: string, authUserId: string, auditId: string, body: RecordCountBody) {
     const user = await resolveUser(authUserId);
     const variantId = typeof body.variantId === "string" ? body.variantId.trim() : "";
-    const lotId = typeof body.lotId === "string" && body.lotId.trim() ? body.lotId.trim() : null;
+    const lotItemId = typeof body.lotItemId === "string" && body.lotItemId.trim() ? body.lotItemId.trim() : null;
     const countedQty = Math.trunc(Number(body.countedQty));
 
     if (!variantId) {
@@ -596,7 +629,7 @@ class AuditService {
     }
 
     const candidates = await prisma.stockAuditItem.findMany({
-      where: { auditId, variantId, lotId },
+      where: { auditId, variantId, lotItemId },
       select: { id: true, assignedToUserId: true },
     });
     const item = candidates.find((c) => c.assignedToUserId === user.id) ?? candidates[0];
@@ -637,9 +670,9 @@ class AuditService {
 
     const existing = await prisma.stockAuditItem.findMany({
       where: { auditId },
-      select: { variantId: true, lotId: true },
+      select: { variantId: true, lotItemId: true },
     });
-    const rows = await normalizeAndValidateRows(prisma, businessId, body.items, existing);
+    const rows = await normalizeAndValidateRows(prisma, businessId, audit.auditType, body.items, existing);
     const variantIds = [...new Set(rows.map((r) => r.variantId))];
 
     await prisma.$transaction(async (tx) => {
@@ -649,10 +682,10 @@ class AuditService {
       });
 
       if (audit.auditType === "RE_AUDIT") {
-        const lotIds = rows.map((r) => r.lotId).filter((id): id is string => !!id);
-        if (lotIds.length > 0) {
-          await tx.productLot.updateMany({
-            where: { id: { in: lotIds } },
+        const lotItemIds = rows.map((r) => r.lotItemId).filter((id): id is string => !!id);
+        if (lotItemIds.length > 0) {
+          await tx.productLotItem.updateMany({
+            where: { id: { in: lotItemIds } },
             data: { isLockedForAudit: true },
           });
         }
@@ -747,7 +780,7 @@ class AuditService {
       select: {
         id: true,
         variantId: true,
-        lotId: true,
+        lotItemId: true,
         lotNumber: true,
         lotMode: true,
         newLotExpirationDate: true,
@@ -768,10 +801,10 @@ class AuditService {
       throw new HttpError(409, "Chỉ có thể sửa dòng đang IN_PROGRESS.");
     }
 
-    // Resolve the lot for this item. Existing lot => autofill from product_lots.
-    // New lot => number and expiry typed by the employee; the lot row is created on apply.
+    // Resolve the lot for this item. Existing lot item => autofill from product_lot_items.
+    // New lot => number and expiry typed by the employee; the lot and its item are created on apply.
     const lotData: {
-      lotId?: string | null;
+      lotItemId?: string | null;
       lotNumber?: string | null;
       newLotExpirationDate?: Date | null;
       newLotManufacturingDate?: Date | null;
@@ -779,61 +812,83 @@ class AuditService {
     } = {};
     let snapshotQty = item.snapshotQty;
 
-    const lotId = typeof body.lotId === "string" && body.lotId.trim() ? body.lotId.trim() : null;
+    const lotItemId =
+      typeof body.lotItemId === "string" && body.lotItemId.trim() ? body.lotItemId.trim() : null;
     const newLotNumber =
       typeof body.newLotNumber === "string" ? body.newLotNumber.trim().slice(0, 100) : "";
 
-    if (lotId && newLotNumber) {
+    if (lotItemId && newLotNumber) {
       throw new HttpError(400, "Chỉ chọn lô có sẵn hoặc nhập lô mới, không dùng cả hai.");
     }
 
-    // The employee chooses per item whether to count an existing lot or create a new one,
-    // so lotMode follows the choice made here.
-    if (lotId) {
-      const lot = await prisma.productLot.findFirst({
-        where: { id: lotId, businessId, variantId: item.variantId },
-        select: { id: true, lotNumber: true, expirationDate: true, manufacturingDate: true },
+    // The audit type fixes the lot of the row. A new-lot audit may never point at an existing lot item, and a
+    // re-audit keeps the lot the owner assigned: the employee can still count and correct its dates, but cannot
+    // switch the lot or create a new one.
+    if (audit.auditType === "NEW_LOTS" && lotItemId) {
+      throw new HttpError(400, "Đợt kiểm kê lô mới không được chọn lô có sẵn.");
+    }
+    if (audit.auditType === "RE_AUDIT") {
+      if (newLotNumber || (body.lotItemId !== undefined && lotItemId !== item.lotItemId)) {
+        throw new HttpError(400, "Đợt kiểm kê lại không được đổi lô của dòng kiểm kê.");
+      }
+    }
+
+    // Where the audit type allows a choice, the request decides between an existing lot and a new one.
+    if (lotItemId) {
+      const lotItem = await prisma.productLotItem.findFirst({
+        where: { id: lotItemId, businessId, variantId: item.variantId },
+        select: {
+          id: true,
+          expirationDate: true,
+          manufacturingDate: true,
+          lot: { select: { lotNumber: true } },
+        },
       });
-      if (!lot) {
+      if (!lotItem) {
         throw new HttpError(404, "Lô không tồn tại hoặc không thuộc SKU của dòng này.");
       }
 
       const duplicate = await prisma.stockAuditItem.findFirst({
-        where: { auditId, variantId: item.variantId, lotId, id: { not: itemId } },
+        where: { auditId, variantId: item.variantId, lotItemId, id: { not: itemId } },
         select: { id: true },
       });
       if (duplicate) {
         throw new HttpError(409, "Đợt kiểm kê này đã có dòng cho SKU và lô này.");
       }
 
-      // The employee may correct a wrong expiry / manufacturing date. Only differences from the lot
-      // are stored; the lot itself is updated when the owner applies the audit.
-      const correction = resolveLotDateCorrection(lot, body);
+      // The employee may correct a wrong expiry / manufacturing date. Only differences from the lot item
+      // are stored; the lot item itself is updated when the owner applies the audit.
+      const correction = resolveLotDateCorrection(lotItem, body);
 
-      lotData.lotId = lot.id;
-      lotData.lotNumber = lot.lotNumber;
+      lotData.lotItemId = lotItem.id;
+      lotData.lotNumber = lotItem.lot.lotNumber;
       lotData.lotMode = "EXISTING";
       lotData.newLotExpirationDate = correction.expiration;
       lotData.newLotManufacturingDate = correction.manufacturing;
-      snapshotQty = await getSnapshotQty(prisma, businessId, item.variantId, lot.id);
-    } else if (!newLotNumber && body.lotId === null && item.lotId) {
+      snapshotQty = await getSnapshotQty(prisma, businessId, item.variantId, lotItem.id);
+    } else if (!newLotNumber && body.lotItemId === null && item.lotItemId) {
       // The employee switched to "New lot" but has not typed the number yet: drop the previous existing lot.
-      lotData.lotId = null;
+      lotData.lotItemId = null;
       lotData.lotNumber = null;
       lotData.lotMode = "NEW";
       lotData.newLotExpirationDate = null;
       lotData.newLotManufacturingDate = null;
       snapshotQty = 0;
-    } else if (!newLotNumber && item.lotId && hasLotDateFields(body)) {
+    } else if (!newLotNumber && item.lotItemId && hasLotDateFields(body)) {
       // Same existing lot, only the dates changed
-      const lot = await prisma.productLot.findFirst({
-        where: { id: item.lotId, businessId, variantId: item.variantId },
-        select: { id: true, lotNumber: true, expirationDate: true, manufacturingDate: true },
+      const lotItem = await prisma.productLotItem.findFirst({
+        where: { id: item.lotItemId, businessId, variantId: item.variantId },
+        select: {
+          id: true,
+          expirationDate: true,
+          manufacturingDate: true,
+          lot: { select: { lotNumber: true } },
+        },
       });
-      if (!lot) {
+      if (!lotItem) {
         throw new HttpError(404, "Lô không tồn tại hoặc không thuộc SKU của dòng này.");
       }
-      const correction = resolveLotDateCorrection(lot, body);
+      const correction = resolveLotDateCorrection(lotItem, body);
       lotData.newLotExpirationDate = correction.expiration;
       lotData.newLotManufacturingDate = correction.manufacturing;
     } else if (newLotNumber) {
@@ -846,19 +901,24 @@ class AuditService {
         throw new HttpError(400, "Ngày sản xuất không được sau hạn sử dụng.");
       }
 
+      // A lot number is shared by every variant in the batch, so the number being taken only blocks
+      // this row when the same variant is already inside that batch.
       const existingLot = await prisma.productLot.findFirst({
-        where: { businessId, variantId: item.variantId, lotNumber: newLotNumber },
-        select: { id: true },
+        where: { businessId, lotNumber: newLotNumber },
+        select: { id: true, items: { where: { variantId: item.variantId }, select: { id: true } } },
       });
-      if (existingLot) {
-        throw new HttpError(409, `Lô "${newLotNumber}" đã tồn tại. Hãy chọn lô có sẵn trong danh sách.`);
+      if (existingLot && existingLot.items.length > 0) {
+        throw new HttpError(
+          409,
+          `Lô "${newLotNumber}" đã có SKU này. Hãy chọn lô có sẵn trong danh sách.`,
+        );
       }
 
       const sameNewLot = await prisma.stockAuditItem.findFirst({
         where: {
           auditId,
           variantId: item.variantId,
-          lotId: null,
+          lotItemId: null,
           lotNumber: newLotNumber,
           id: { not: itemId },
         },
@@ -868,7 +928,7 @@ class AuditService {
         throw new HttpError(409, `Đợt kiểm kê này đã có lô mới "${newLotNumber}" cho SKU này.`);
       }
 
-      lotData.lotId = null;
+      lotData.lotItemId = null;
       lotData.lotNumber = newLotNumber;
       lotData.lotMode = "NEW";
       lotData.newLotExpirationDate = expiration;
@@ -922,7 +982,7 @@ class AuditService {
         id: true,
         auditId: true,
         variantId: true,
-        lotId: true,
+        lotItemId: true,
         lotNumber: true,
         newLotExpirationDate: true,
         snapshotQty: true,
@@ -949,7 +1009,7 @@ class AuditService {
     if (!item.lotNumber) {
       throw new HttpError(400, "Cần chọn lô có sẵn hoặc nhập số lô trước khi nộp.");
     }
-    if (!item.lotId && !item.newLotExpirationDate) {
+    if (!item.lotItemId && !item.newLotExpirationDate) {
       throw new HttpError(400, "Lô mới cần có hạn sử dụng trước khi nộp.");
     }
 
@@ -1065,7 +1125,7 @@ class AuditService {
         id: true,
         auditId: true,
         variantId: true,
-        lotId: true,
+        lotItemId: true,
         snapshotQty: true,
         countedQty: true,
         diffQty: true,
@@ -1196,7 +1256,7 @@ class AuditService {
             id: true,
             auditId: true,
             variantId: true,
-            lotId: true,
+            lotItemId: true,
             snapshotQty: true,
             countedQty: true,
             diffQty: true,
@@ -1286,7 +1346,7 @@ class AuditService {
             select: {
               id: true,
               variantId: true,
-              lotId: true,
+              lotItemId: true,
               lotNumber: true,
               newLotExpirationDate: true,
               newLotManufacturingDate: true,
@@ -1296,7 +1356,15 @@ class AuditService {
               diffQty: true,
               discrepancyReason: true,
               variant: { select: { costPrice: true } },
-              lot: { select: { id: true, expirationDate: true, status: true } },
+              lotItem: {
+                select: {
+                  id: true,
+                  lotId: true,
+                  expirationDate: true,
+                  manufacturingDate: true,
+                  status: true,
+                },
+              },
             },
           },
         },
@@ -1331,32 +1399,40 @@ class AuditService {
       const ledgerEntries = [];
       
       for (const item of audit.stockAuditItems) {
-        // The lot this item is applied to. Starts as the existing lot (if any).
-        let lotId: string | null = item.lotId;
+        // The lot item this row is applied to. Starts as the existing item (if any).
+        let lotItemId: string | null = item.lotItemId;
 
-        // Step 1: Handle ProductLot creation/update with auto-calculated status
-        if (!lotId && item.lotNumber) {
-          // New lot typed by the employee: create the product_lots row now and link it.
+        // Step 1: Resolve the batch header and its item, creating both when the employee typed a new lot.
+        if (!lotItemId && item.lotNumber) {
+          // New lot typed by the employee: the batch header is created only if the number is new,
+          // so two variants entered with the same number end up in one batch.
           if (!item.newLotExpirationDate) {
             throw new HttpError(400, `Lô mới "${item.lotNumber}" thiếu hạn sử dụng.`);
           }
 
-          const clash = await tx.productLot.findFirst({
-            where: { businessId, variantId: item.variantId, lotNumber: item.lotNumber },
+          const lot = await tx.productLot.upsert({
+            where: { businessId_lotNumber: { businessId, lotNumber: item.lotNumber } },
+            create: { businessId, lotNumber: item.lotNumber },
+            update: {},
+            select: { id: true },
+          });
+
+          const clash = await tx.productLotItem.findFirst({
+            where: { lotId: lot.id, variantId: item.variantId },
             select: { id: true },
           });
           if (clash) {
             throw new HttpError(
               409,
-              `Lô "${item.lotNumber}" đã được tạo ở nơi khác trong lúc kiểm kê. Hãy đổi dòng này sang lô có sẵn.`,
+              `Lô "${item.lotNumber}" đã có SKU này ở nơi khác trong lúc kiểm kê. Hãy đổi dòng này sang lô có sẵn.`,
             );
           }
 
-          const createdLot = await tx.productLot.create({
+          const createdItem = await tx.productLotItem.create({
             data: {
               businessId,
+              lotId: lot.id,
               variantId: item.variantId,
-              lotNumber: item.lotNumber,
               manufacturingDate: item.newLotManufacturingDate,
               expirationDate: item.newLotExpirationDate,
               status: lotStatusService.calculateStatus(item.newLotExpirationDate),
@@ -1365,30 +1441,30 @@ class AuditService {
             select: { id: true },
           });
 
-          lotId = createdLot.id;
+          lotItemId = createdItem.id;
           await tx.stockAuditItem.update({
             where: { id: item.id },
-            data: { lotId },
+            data: { lotItemId },
           });
-        } else if (item.lot) {
-          // Existing lot. The employee may have corrected its expiry / manufacturing date during the count.
+        } else if (item.lotItem) {
+          // Existing lot item. The employee may have corrected its expiry / manufacturing date during the count.
           const correctedExpiration = item.newLotExpirationDate;
           const correctedManufacturing = item.newLotManufacturingDate;
           const hasCorrection = Boolean(correctedExpiration || correctedManufacturing);
 
           if (hasCorrection || audit.auditType === "RE_AUDIT") {
-            const expirationDate = correctedExpiration ?? item.lot.expirationDate;
+            const expirationDate = correctedExpiration ?? item.lotItem.expirationDate;
             const calculatedStatus = lotStatusService.calculateStatus(expirationDate);
 
-            await tx.productLot.update({
-              where: { id: item.lot.id },
+            await tx.productLotItem.update({
+              where: { id: item.lotItem.id },
               data: {
                 ...(correctedExpiration ? { expirationDate: correctedExpiration } : {}),
                 ...(correctedManufacturing ? { manufacturingDate: correctedManufacturing } : {}),
                 // Recalculate the status from the (possibly corrected) expiry, but never undo a manual
                 // quarantine or scrap decision
                 ...(audit.auditType !== "RE_AUDIT" &&
-                (item.lot.status === "QUARANTINED" || item.lot.status === "SCRAPPED")
+                (item.lotItem.status === "QUARANTINED" || item.lotItem.status === "SCRAPPED")
                   ? {}
                   : { status: calculatedStatus }),
                 ...(audit.auditType === "RE_AUDIT" ? { isLockedForAudit: false } : {}),
@@ -1402,7 +1478,7 @@ class AuditService {
           where: {
             businessId,
             variantId: item.variantId,
-            lotId,
+            lotItemId,
           },
         });
 
@@ -1419,7 +1495,7 @@ class AuditService {
             data: {
               businessId,
               variantId: item.variantId,
-              lotId,
+              lotItemId,
               quantityOnHand: item.countedQty,
               damagedQuantity: 0,
             },
@@ -1444,7 +1520,7 @@ class AuditService {
           ledgerEntries.push({
             businessId,
             variantId: item.variantId,
-            lotId,
+            lotItemId,
             transactionType,
             quantityChanged: diffQty,
             balanceAfter: totalBalance._sum.quantityOnHand ?? item.countedQty,

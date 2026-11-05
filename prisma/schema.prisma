@@ -30,6 +30,7 @@ model Business {
   suppliers           Supplier[]           @relation("suppliers_business_id")
   customers           Customer[]           @relation("customers_business_id")
   productLots         ProductLot[]         @relation("product_lots_business_id")
+  productLotItems     ProductLotItem[]     @relation("product_lot_items_business_id")
   inventoryBalances   InventoryBalance[]   @relation("inventory_balances_business_id")
   inventoryLedger     InventoryLedger[]    @relation("inventory_ledger_business_id")
   openingStockSheets  OpeningStockSheet[]  @relation("opening_stock_sheets_business_id")
@@ -46,7 +47,7 @@ model Business {
   dailyProductMetrics DailyProductMetric[] @relation("daily_product_metrics_business_id")
   forecastRuns        ForecastRun[]        @relation("forecast_runs_business_id")
 
-@@map("businesses")
+  @@map("businesses")
 }
 
 model User {
@@ -61,31 +62,31 @@ model User {
   platformRoles   PlatformUserRole[]
   sentInvitations BusinessInvitation[] @relation("business_invitations_invited_by")
 
-  inventoryLedger    InventoryLedger[]   @relation("inventory_ledger_created_by")
-  openingStockSheets OpeningStockSheet[] @relation("opening_stock_sheets_created_by")
-  purchaseOrders     PurchaseOrder[]     @relation("purchase_orders_created_by")
-  purchaseReceipts   PurchaseReceipt[]   @relation("purchase_receipts_created_by")
-  vendorReturns      VendorReturn[]      @relation("vendor_returns_created_by")
-  cashShifts         CashShift[]         @relation("cash_shifts_user_id")
-  cashTransactions   CashTransaction[]   @relation("cash_transactions_created_by")
-  orders             Order[]             @relation("orders_cashier_id")
-  customerReturns    CustomerReturn[]    @relation("customer_returns_cashier_id")
-  stockAudits        StockAudit[]        @relation("stock_audits_approved_by")
-  stockAuditsCreated StockAudit[]        @relation("stock_audits_created_by")
-  stockAuditItemsCreatedBy StockAuditItem[] @relation("stock_audit_items_created_by_user_id")
-  stockAuditItemsAssignedTo StockAuditItem[] @relation("stock_audit_items_assigned_to_user_id")
-  stockAuditItemsSubmittedBy StockAuditItem[] @relation("stock_audit_items_submitted_by_user_id")
-  stockAuditItemsApprovedBy StockAuditItem[] @relation("stock_audit_items_approved_by_user_id")
-  stockAuditItemsRejectedBy StockAuditItem[] @relation("stock_audit_items_rejected_by_user_id")
-  scrapOrders        ScrapOrder[]        @relation("scrap_orders_created_by")
-  scrapOrdersApproved ScrapOrder[]       @relation("scrap_orders_approved_by")
-  scrapOrdersRejected ScrapOrder[]       @relation("scrap_orders_rejected_by")
-  scrapImagesUploaded ScrapOrderImage[]  @relation("scrap_order_images_uploaded_by")
-  scrapImagesDeleted  ScrapOrderImage[]  @relation("scrap_order_images_deleted_by")
-  lotsQuarantined     ProductLot[]       @relation("product_lots_quarantined_by")
-  forecastRuns       ForecastRun[]       @relation("forecast_runs_executed_by")
+  inventoryLedger            InventoryLedger[]   @relation("inventory_ledger_created_by")
+  openingStockSheets         OpeningStockSheet[] @relation("opening_stock_sheets_created_by")
+  purchaseOrders             PurchaseOrder[]     @relation("purchase_orders_created_by")
+  purchaseReceipts           PurchaseReceipt[]   @relation("purchase_receipts_created_by")
+  vendorReturns              VendorReturn[]      @relation("vendor_returns_created_by")
+  cashShifts                 CashShift[]         @relation("cash_shifts_user_id")
+  cashTransactions           CashTransaction[]   @relation("cash_transactions_created_by")
+  orders                     Order[]             @relation("orders_cashier_id")
+  customerReturns            CustomerReturn[]    @relation("customer_returns_cashier_id")
+  stockAudits                StockAudit[]        @relation("stock_audits_approved_by")
+  stockAuditsCreated         StockAudit[]        @relation("stock_audits_created_by")
+  stockAuditItemsCreatedBy   StockAuditItem[]    @relation("stock_audit_items_created_by_user_id")
+  stockAuditItemsAssignedTo  StockAuditItem[]    @relation("stock_audit_items_assigned_to_user_id")
+  stockAuditItemsSubmittedBy StockAuditItem[]    @relation("stock_audit_items_submitted_by_user_id")
+  stockAuditItemsApprovedBy  StockAuditItem[]    @relation("stock_audit_items_approved_by_user_id")
+  stockAuditItemsRejectedBy  StockAuditItem[]    @relation("stock_audit_items_rejected_by_user_id")
+  scrapOrders                ScrapOrder[]        @relation("scrap_orders_created_by")
+  scrapOrdersApproved        ScrapOrder[]        @relation("scrap_orders_approved_by")
+  scrapOrdersRejected        ScrapOrder[]        @relation("scrap_orders_rejected_by")
+  scrapImagesUploaded        ScrapOrderImage[]   @relation("scrap_order_images_uploaded_by")
+  scrapImagesDeleted         ScrapOrderImage[]   @relation("scrap_order_images_deleted_by")
+  lotItemsQuarantined        ProductLotItem[]    @relation("product_lot_items_quarantined_by")
+  forecastRuns               ForecastRun[]       @relation("forecast_runs_executed_by")
 
-@@map("users")
+  @@map("users")
 }
 
 model Role {
@@ -191,11 +192,11 @@ model Category {
   createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  business         Business          @relation("categories_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  parent           Category?         @relation("categories_parent_id", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  children         Category[]        @relation("categories_parent_id")
+  business           Business            @relation("categories_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  parent             Category?           @relation("categories_parent_id", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  children           Category[]          @relation("categories_parent_id")
   categoryAttributes CategoryAttribute[] @relation("category_attributes_category_id")
-  productTemplates ProductTemplate[] @relation("product_templates_category_id")
+  productTemplates   ProductTemplate[]   @relation("product_templates_category_id")
 
   @@unique([businessId, name], map: "uq_category_tenant_name")
   @@unique([businessId, code], map: "uq_category_tenant_code")
@@ -297,7 +298,7 @@ model ProductVariant {
   business               Business                @relation("product_variants_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   template               ProductTemplate         @relation("product_variants_template_id", fields: [templateId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   variantAttributeValues VariantAttributeValue[] @relation("variant_attribute_values_variant_id")
-  productLots            ProductLot[]            @relation("product_lots_variant_id")
+  productLotItems        ProductLotItem[]        @relation("product_lot_items_variant_id")
   inventoryBalances      InventoryBalance[]      @relation("inventory_balances_variant_id")
   inventoryLedger        InventoryLedger[]       @relation("inventory_ledger_variant_id")
   openingStockItems      OpeningStockItem[]      @relation("opening_stock_items_variant_id")
@@ -362,11 +363,26 @@ model Customer {
   @@map("customers")
 }
 
+/// Batch header. The batch code only; dates, status and quarantine live on ProductLotItem, one row per variant.
 model ProductLot {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId String    @map("business_id") @db.Uuid
+  lotNumber  String    @map("lot_number") @db.VarChar(100)
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  business Business         @relation("product_lots_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  items    ProductLotItem[] @relation("product_lot_items_lot_id")
+
+  @@unique([businessId, lotNumber], map: "uq_lot_tenant_number")
+  @@map("product_lots")
+}
+
+/// One variant inside a batch. Expiry, status and quarantine live here because they differ per variant.
+model ProductLotItem {
   id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   businessId        String    @map("business_id") @db.Uuid
+  lotId             String    @map("lot_id") @db.Uuid
   variantId         String    @map("variant_id") @db.Uuid
-  lotNumber         String    @map("lot_number") @db.VarChar(100)
   manufacturingDate DateTime? @map("manufacturing_date") @db.Date
   expirationDate    DateTime  @map("expiration_date") @db.Date
   /// SQL CHECK (alert_days_before >= 0); can ap dung bang SQL rieng.
@@ -374,35 +390,40 @@ model ProductLot {
   /// Status: HEALTHY / WARNING / UNUSABLE (calculated from expiration date), QUARANTINED, SCRAPPED
   status            String    @default("HEALTHY") @map("status") @db.VarChar(30)
   isLockedForAudit  Boolean   @default(false) @map("is_locked_for_audit")
-  /// Quantity staff pulled off the shelf when quarantining the lot. SQL CHECK (quarantine_qty > 0).
+  /// Quantity staff pulled off the shelf when quarantining this item. SQL CHECK (quarantine_qty > 0).
   quarantineQty     Int?      @map("quarantine_qty")
   quarantinedAt     DateTime? @map("quarantined_at") @db.Timestamptz(6)
   quarantinedBy     String?   @map("quarantined_by") @db.Uuid
   quarantineNote    String?   @map("quarantine_note") @db.VarChar(500)
   createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  quarantinedByUser    User?                 @relation("product_lots_quarantined_by", fields: [quarantinedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  business             Business              @relation("product_lots_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant              ProductVariant        @relation("product_lots_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  inventoryBalances    InventoryBalance[]    @relation("inventory_balances_lot_id")
-  inventoryLedger      InventoryLedger[]     @relation("inventory_ledger_lot_id")
-  openingStockItems    OpeningStockItem[]    @relation("opening_stock_items_lot_id")
-  purchaseReceiptItems PurchaseReceiptItem[] @relation("purchase_receipt_items_lot_id")
-  vendorReturnItems    VendorReturnItem[]    @relation("vendor_return_items_lot_id")
-  orderItems           OrderItem[]           @relation("order_items_lot_id")
-  customerReturnItems  CustomerReturnItem[]  @relation("customer_return_items_lot_id")
-  stockAuditItems      StockAuditItem[]      @relation("stock_audit_items_lot_id")
-  scrapOrders          ScrapOrder[]          @relation("scrap_orders_lot_id")
+  quarantinedByUser    User?                 @relation("product_lot_items_quarantined_by", fields: [quarantinedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business             Business              @relation("product_lot_items_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lot                  ProductLot            @relation("product_lot_items_lot_id", fields: [lotId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variant              ProductVariant        @relation("product_lot_items_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  inventoryBalances    InventoryBalance[]    @relation("inventory_balances_lot_item_id")
+  inventoryLedger      InventoryLedger[]     @relation("inventory_ledger_lot_item_id")
+  openingStockItems    OpeningStockItem[]    @relation("opening_stock_items_lot_item_id")
+  purchaseReceiptItems PurchaseReceiptItem[] @relation("purchase_receipt_items_lot_item_id")
+  vendorReturnItems    VendorReturnItem[]    @relation("vendor_return_items_lot_item_id")
+  orderItems           OrderItem[]           @relation("order_items_lot_item_id")
+  customerReturnItems  CustomerReturnItem[]  @relation("customer_return_items_lot_item_id")
+  stockAuditItems      StockAuditItem[]      @relation("stock_audit_items_lot_item_id")
+  scrapOrders          ScrapOrder[]          @relation("scrap_orders_lot_item_id")
 
-  @@unique([businessId, variantId, lotNumber], map: "uq_lot_tenant_variant_number")
-  @@map("product_lots")
+  @@unique([businessId, lotId, variantId], map: "uq_product_lot_item")
+  @@index([businessId, status], map: "idx_product_lot_items_business_status")
+  @@index([businessId, expirationDate], map: "idx_product_lot_items_expiration_date")
+  @@index([businessId, variantId], map: "idx_product_lot_items_business_variant")
+  @@index([lotId], map: "idx_product_lot_items_lot")
+  @@map("product_lot_items")
 }
 
 model InventoryBalance {
   id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   businessId      String    @map("business_id") @db.Uuid
   variantId       String    @map("variant_id") @db.Uuid
-  lotId           String?   @map("lot_id") @db.Uuid
+  lotItemId       String?   @map("lot_item_id") @db.Uuid
   quantityOnHand  Int       @default(0) @map("quantity_on_hand")
   /// SQL CHECK (damaged_quantity >= 0); can ap dung bang SQL rieng.
   damagedQuantity Int       @default(0) @map("damaged_quantity")
@@ -410,12 +431,12 @@ model InventoryBalance {
   outOfStockSince DateTime? @map("out_of_stock_since") @db.Timestamptz(6)
   updatedAt       DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  business Business       @relation("inventory_balances_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant  ProductVariant @relation("inventory_balances_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  lot      ProductLot?    @relation("inventory_balances_lot_id", fields: [lotId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  business Business        @relation("inventory_balances_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant  ProductVariant  @relation("inventory_balances_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  lotItem  ProductLotItem? @relation("inventory_balances_lot_item_id", fields: [lotItemId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@unique([businessId, variantId], map: "uq_inventory_balance_no_lot", where: raw("(lot_id IS NULL)"))
-  @@unique([businessId, variantId, lotId], map: "uq_inventory_balance_with_lot", where: raw("(lot_id IS NOT NULL)"))
+  @@unique([businessId, variantId], map: "uq_inventory_balance_no_lot", where: raw("(lot_item_id IS NULL)"))
+  @@unique([businessId, variantId, lotItemId], map: "uq_inventory_balance_with_lot", where: raw("(lot_item_id IS NOT NULL)"))
   @@map("inventory_balances")
 }
 
@@ -423,7 +444,7 @@ model InventoryLedger {
   id               String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   businessId       String               @map("business_id") @db.Uuid
   variantId        String               @map("variant_id") @db.Uuid
-  lotId            String?              @map("lot_id") @db.Uuid
+  lotItemId        String?              @map("lot_item_id") @db.Uuid
   transactionType  StockTransactionType @map("transaction_type")
   quantityChanged  Int                  @map("quantity_changed")
   balanceAfter     Int                  @map("balance_after")
@@ -435,10 +456,10 @@ model InventoryLedger {
   createdBy        String?              @map("created_by") @db.Uuid
   createdAt        DateTime?            @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business      Business       @relation("inventory_ledger_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant       ProductVariant @relation("inventory_ledger_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot           ProductLot?    @relation("inventory_ledger_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser User?          @relation("inventory_ledger_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business      Business        @relation("inventory_ledger_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant       ProductVariant  @relation("inventory_ledger_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem       ProductLotItem? @relation("inventory_ledger_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  createdByUser User?           @relation("inventory_ledger_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@map("inventory_ledger")
 }
@@ -470,7 +491,7 @@ model OpeningStockItem {
   id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sheetId   String  @map("sheet_id") @db.Uuid
   variantId String  @map("variant_id") @db.Uuid
-  lotId     String? @map("lot_id") @db.Uuid
+  lotItemId String? @map("lot_item_id") @db.Uuid
   /// SQL CHECK (quantity > 0); can ap dung bang SQL rieng.
   quantity  Int
   /// SQL CHECK (unit_cost >= 0); can ap dung bang SQL rieng.
@@ -478,7 +499,7 @@ model OpeningStockItem {
 
   sheet   OpeningStockSheet @relation("opening_stock_items_sheet_id", fields: [sheetId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   variant ProductVariant    @relation("opening_stock_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot     ProductLot?       @relation("opening_stock_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem ProductLotItem?   @relation("opening_stock_items_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@map("opening_stock_items")
 }
@@ -559,7 +580,7 @@ model PurchaseReceiptItem {
   receiptId   String   @map("receipt_id") @db.Uuid
   poItemId    String?  @map("po_item_id") @db.Uuid
   variantId   String   @map("variant_id") @db.Uuid
-  lotId       String?  @map("lot_id") @db.Uuid
+  lotItemId   String?  @map("lot_item_id") @db.Uuid
   /// SQL CHECK (received_qty > 0); can ap dung bang SQL rieng.
   receivedQty Int      @map("received_qty")
   /// SQL CHECK (actual_cost >= 0); can ap dung bang SQL rieng.
@@ -570,7 +591,7 @@ model PurchaseReceiptItem {
   receipt PurchaseReceipt    @relation("purchase_receipt_items_receipt_id", fields: [receiptId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   poItem  PurchaseOrderItem? @relation("purchase_receipt_items_po_item_id", fields: [poItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   variant ProductVariant     @relation("purchase_receipt_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot     ProductLot?        @relation("purchase_receipt_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem ProductLotItem?    @relation("purchase_receipt_items_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@map("purchase_receipt_items")
 }
@@ -602,15 +623,15 @@ model VendorReturnItem {
   id              String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   returnId        String  @map("return_id") @db.Uuid
   variantId       String  @map("variant_id") @db.Uuid
-  lotId           String? @map("lot_id") @db.Uuid
+  lotItemId       String? @map("lot_item_id") @db.Uuid
   /// SQL CHECK (return_qty > 0); can ap dung bang SQL rieng.
   returnQty       Int     @map("return_qty")
   /// SQL CHECK (return_unit_price >= 0); can ap dung bang SQL rieng.
   returnUnitPrice Decimal @map("return_unit_price") @db.Decimal(12, 2)
 
-  return  VendorReturn   @relation("vendor_return_items_return_id", fields: [returnId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variant ProductVariant @relation("vendor_return_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot     ProductLot?    @relation("vendor_return_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  return  VendorReturn    @relation("vendor_return_items_return_id", fields: [returnId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variant ProductVariant  @relation("vendor_return_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem ProductLotItem? @relation("vendor_return_items_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@map("vendor_return_items")
 }
@@ -701,7 +722,7 @@ model OrderItem {
   id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orderId        String  @map("order_id") @db.Uuid
   variantId      String  @map("variant_id") @db.Uuid
-  lotId          String? @map("lot_id") @db.Uuid
+  lotItemId      String? @map("lot_item_id") @db.Uuid
   /// SQL CHECK (quantity > 0); can ap dung bang SQL rieng.
   quantity       Int
   /// SQL CHECK (unit_price >= 0); can ap dung bang SQL rieng.
@@ -715,7 +736,7 @@ model OrderItem {
 
   order               Order                @relation("order_items_order_id", fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   variant             ProductVariant       @relation("order_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot                 ProductLot?          @relation("order_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem             ProductLotItem?      @relation("order_items_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   customerReturnItems CustomerReturnItem[] @relation("customer_return_items_order_item_id")
 
   @@map("order_items")
@@ -770,7 +791,7 @@ model CustomerReturnItem {
   returnId        String  @map("return_id") @db.Uuid
   orderItemId     String? @map("order_item_id") @db.Uuid
   variantId       String  @map("variant_id") @db.Uuid
-  lotId           String? @map("lot_id") @db.Uuid
+  lotItemId       String? @map("lot_item_id") @db.Uuid
   /// SQL CHECK (return_qty > 0); can ap dung bang SQL rieng.
   returnQty       Int     @map("return_qty")
   /// SQL CHECK (refund_unit_price >= 0); can ap dung bang SQL rieng.
@@ -779,10 +800,10 @@ model CustomerReturnItem {
   itemCondition   String  @map("item_condition") @db.VarChar(30)
   returnReason    String  @map("return_reason") @db.VarChar(255)
 
-  return    CustomerReturn @relation("customer_return_items_return_id", fields: [returnId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  orderItem OrderItem?     @relation("customer_return_items_order_item_id", fields: [orderItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant   ProductVariant @relation("customer_return_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot       ProductLot?    @relation("customer_return_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  return    CustomerReturn  @relation("customer_return_items_return_id", fields: [returnId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  orderItem OrderItem?      @relation("customer_return_items_order_item_id", fields: [orderItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant   ProductVariant  @relation("customer_return_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem   ProductLotItem? @relation("customer_return_items_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@map("customer_return_items")
 }
@@ -795,10 +816,10 @@ model StockAudit {
   completedAt      DateTime? @map("completed_at") @db.Timestamptz(6)
   /// SQL CHECK (scope_type IN ('FULL_STORE', 'CATEGORY', 'SHELF')); can ap dung bang SQL rieng.
   scopeType        String    @default("FULL_STORE") @map("scope_type") @db.VarChar(30)
-  /// SQL CHECK (audit_type IN ('NEW_LOTS', 'RE_AUDIT', 'CATEGORY_AUDIT')); can ap dung bang SQL rieng.
-  auditType        String    @default("CATEGORY_AUDIT") @map("audit_type") @db.VarChar(30)
+  /// SQL CHECK (audit_type IN ('NEW_LOTS', 'RE_AUDIT')); can ap dung bang SQL rieng.
+  auditType        String    @default("NEW_LOTS") @map("audit_type") @db.VarChar(30)
   isLockedForAudit Boolean   @default(true) @map("is_locked_for_audit")
-  /// SQL CHECK (status IN ('IN_PROGRESS', 'PENDING_APPROVAL', 'APPLIED', 'CANCELLED')); can ap dung bang SQL rieng.
+  /// SQL CHECK (status IN ('DONE', 'IN_PROGRESS', 'PENDING_APPROVAL', 'APPLIED', 'CANCELLED')); DONE is the terminal status written on apply.
   status           String    @default("IN_PROGRESS") @db.VarChar(30)
   approvedBy       String?   @map("approved_by") @db.Uuid
   createdBy        String?   @map("created_by") @db.Uuid
@@ -813,29 +834,29 @@ model StockAudit {
 }
 
 model StockAuditItem {
-  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  auditId           String    @map("audit_id") @db.Uuid
-  variantId         String    @map("variant_id") @db.Uuid
-  lotId             String?   @map("lot_id") @db.Uuid
-  snapshotQty       Int       @map("snapshot_qty")
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  auditId                 String    @map("audit_id") @db.Uuid
+  variantId               String    @map("variant_id") @db.Uuid
+  lotItemId               String?   @map("lot_item_id") @db.Uuid
+  snapshotQty             Int       @map("snapshot_qty")
   /// SQL CHECK (counted_qty >= 0); can ap dung bang SQL rieng.
-  countedQty        Int       @map("counted_qty")
+  countedQty              Int       @map("counted_qty")
   /// SQL GENERATED ALWAYS AS (counted_qty - snapshot_qty) STORED; dbgenerated() chi danh dau gia tri do DB sinh.
-  diffQty           Int?      @default(dbgenerated()) @map("diff_qty")
-  discrepancyReason String?   @map("discrepancy_reason") @db.Text
+  diffQty                 Int?      @default(dbgenerated()) @map("diff_qty")
+  discrepancyReason       String?   @map("discrepancy_reason") @db.Text
   /// SQL CHECK (item_status IN ('IN_PROGRESS', 'PENDING_APPROVAL', 'APPROVED')); can ap dung bang SQL rieng.
-  itemStatus        String    @default("IN_PROGRESS") @map("item_status") @db.VarChar(30)
-  assignedToUserId  String?   @map("assigned_to_user_id") @db.Uuid
-  submittedAt       DateTime? @map("submitted_at") @db.Timestamptz(6)
-  submittedBy       String?   @map("submitted_by") @db.Uuid
-  approvedAt        DateTime? @map("approved_at") @db.Timestamptz(6)
-  approvedBy        String?   @map("approved_by") @db.Uuid
+  itemStatus              String    @default("IN_PROGRESS") @map("item_status") @db.VarChar(30)
+  assignedToUserId        String?   @map("assigned_to_user_id") @db.Uuid
+  submittedAt             DateTime? @map("submitted_at") @db.Timestamptz(6)
+  submittedBy             String?   @map("submitted_by") @db.Uuid
+  approvedAt              DateTime? @map("approved_at") @db.Timestamptz(6)
+  approvedBy              String?   @map("approved_by") @db.Uuid
   /// Set when the owner sends a submitted item back for a recount. Cleared when the employee submits again.
-  rejectionReason   String?   @map("rejection_reason") @db.Text
-  rejectedAt        DateTime? @map("rejected_at") @db.Timestamptz(6)
-  rejectedBy        String?   @map("rejected_by") @db.Uuid
-  createdBy         String?   @map("created_by") @db.Uuid
-  /// Lot number: autofilled from product_lots when lot_id is set; typed by the employee for a new lot.
+  rejectionReason         String?   @map("rejection_reason") @db.Text
+  rejectedAt              DateTime? @map("rejected_at") @db.Timestamptz(6)
+  rejectedBy              String?   @map("rejected_by") @db.Uuid
+  createdBy               String?   @map("created_by") @db.Uuid
+  /// Lot number: autofilled from product_lot_items when lot_item_id is set; typed by the employee for a new lot.
   lotNumber               String?   @map("lot_number") @db.VarChar(100)
   /// Task type set by the owner: EXISTING (employee counts a lot already in the system) or NEW (employee types a new lot).
   /// The employee cannot switch between the two.
@@ -843,51 +864,51 @@ model StockAuditItem {
   newLotExpirationDate    DateTime? @map("new_lot_expiration_date") @db.Date
   newLotManufacturingDate DateTime? @map("new_lot_manufacturing_date") @db.Date
 
-  audit              StockAudit     @relation("stock_audit_items_audit_id", fields: [auditId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variant            ProductVariant @relation("stock_audit_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot                ProductLot?    @relation("stock_audit_items_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  assignedToUser     User?          @relation("stock_audit_items_assigned_to_user_id", fields: [assignedToUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  submittedByUser    User?          @relation("stock_audit_items_submitted_by_user_id", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  approvedByUser     User?          @relation("stock_audit_items_approved_by_user_id", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  rejectedByUser     User?          @relation("stock_audit_items_rejected_by_user_id", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser      User?          @relation("stock_audit_items_created_by_user_id", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  audit           StockAudit      @relation("stock_audit_items_audit_id", fields: [auditId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variant         ProductVariant  @relation("stock_audit_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem         ProductLotItem? @relation("stock_audit_items_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  assignedToUser  User?           @relation("stock_audit_items_assigned_to_user_id", fields: [assignedToUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  submittedByUser User?           @relation("stock_audit_items_submitted_by_user_id", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  approvedByUser  User?           @relation("stock_audit_items_approved_by_user_id", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  rejectedByUser  User?           @relation("stock_audit_items_rejected_by_user_id", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  createdByUser   User?           @relation("stock_audit_items_created_by_user_id", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@map("stock_audit_items")
 }
 
 model ScrapOrder {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId     String    @map("business_id") @db.Uuid
-  scrapCode      String    @map("scrap_code") @db.VarChar(50)
-  variantId      String    @map("variant_id") @db.Uuid
-  lotId          String?   @map("lot_id") @db.Uuid
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId          String    @map("business_id") @db.Uuid
+  scrapCode           String    @map("scrap_code") @db.VarChar(50)
+  variantId           String    @map("variant_id") @db.Uuid
+  lotItemId           String?   @map("lot_item_id") @db.Uuid
   /// SQL CHECK (scrap_qty > 0); can ap dung bang SQL rieng.
-  scrapQty       Int       @map("scrap_qty")
+  scrapQty            Int       @map("scrap_qty")
   /// SQL CHECK (unit_cost >= 0); can ap dung bang SQL rieng.
-  unitCost       Decimal   @map("unit_cost") @db.Decimal(12, 2)
+  unitCost            Decimal   @map("unit_cost") @db.Decimal(12, 2)
   /// Plain nullable column in the live database (not generated). Set to scrap_qty * unit_cost when the order is approved.
-  totalLossValue Decimal?  @default(dbgenerated()) @map("total_loss_value") @db.Decimal(14, 2)
+  totalLossValue      Decimal?  @default(dbgenerated()) @map("total_loss_value") @db.Decimal(14, 2)
   /// SQL CHECK (scrap_source IN ('DAMAGED_STOCK', 'SELLABLE_STOCK')); can ap dung bang SQL rieng.
-  scrapSource    String    @default("DAMAGED_STOCK") @map("scrap_source") @db.VarChar(30)
-  scrapReason    String    @map("scrap_reason") @db.VarChar(255)
+  scrapSource         String    @default("DAMAGED_STOCK") @map("scrap_source") @db.VarChar(30)
+  scrapReason         String    @map("scrap_reason") @db.VarChar(255)
   /// SQL CHECK (status IN ('PENDING', 'COMPLETED', 'REJECTED', 'CANCELLED')); CANCELLED is kept for old rows.
-  status         String    @default("PENDING") @db.VarChar(30)
-  createdBy      String    @map("created_by") @db.Uuid
-  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-  approvedBy     String?   @map("approved_by") @db.Uuid
-  approvedAt     DateTime? @map("approved_at") @db.Timestamptz(6)
-  rejectedBy     String?   @map("rejected_by") @db.Uuid
-  rejectedAt     DateTime? @map("rejected_at") @db.Timestamptz(6)
+  status              String    @default("PENDING") @db.VarChar(30)
+  createdBy           String    @map("created_by") @db.Uuid
+  createdAt           DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  approvedBy          String?   @map("approved_by") @db.Uuid
+  approvedAt          DateTime? @map("approved_at") @db.Timestamptz(6)
+  rejectedBy          String?   @map("rejected_by") @db.Uuid
+  rejectedAt          DateTime? @map("rejected_at") @db.Timestamptz(6)
   /// SQL CHECK (rejection_reason_code IN ('WRONG_QUANTITY', 'PHOTO_UNCLEAR', 'NOT_REMOVED_FROM_SHELF', 'OTHER')).
-  rejectionReasonCode String? @map("rejection_reason_code") @db.VarChar(40)
-  rejectionNote       String? @map("rejection_note") @db.VarChar(500)
+  rejectionReasonCode String?   @map("rejection_reason_code") @db.VarChar(40)
+  rejectionNote       String?   @map("rejection_note") @db.VarChar(500)
 
-  business       Business       @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant        ProductVariant @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lot            ProductLot?    @relation("scrap_orders_lot_id", fields: [lotId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser  User           @relation("scrap_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  approvedByUser User?          @relation("scrap_orders_approved_by", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  rejectedByUser User?          @relation("scrap_orders_rejected_by", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business       Business          @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant        ProductVariant    @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem        ProductLotItem?   @relation("scrap_orders_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  createdByUser  User              @relation("scrap_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  approvedByUser User?             @relation("scrap_orders_approved_by", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  rejectedByUser User?             @relation("scrap_orders_rejected_by", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   images         ScrapOrderImage[] @relation("scrap_order_images_scrap_order_id")
 
   @@unique([businessId, scrapCode], map: "uq_scrap_tenant_code")
@@ -1003,6 +1024,7 @@ enum StockTransactionType {
 view ProductLotStatus {
   id                String    @unique @db.Uuid
   businessId        String    @map("business_id") @db.Uuid
+  lotId             String    @map("lot_id") @db.Uuid
   variantId         String    @map("variant_id") @db.Uuid
   lotNumber         String    @map("lot_number") @db.VarChar(100)
   manufacturingDate DateTime? @map("manufacturing_date") @db.Date
