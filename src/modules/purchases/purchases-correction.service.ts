@@ -66,14 +66,14 @@ export class PurchasesCorrectionService {
         money(costPrice.toFixed(2), "costPrice");
         let runningBalance = onHand;
         for (const change of group.lines) {
-          const balance = await tx.inventoryBalance.findFirst({ where: { businessId, variantId, lotId: change.old.lotId } });
+          const balance = await tx.inventoryBalance.findFirst({ where: { businessId, variantId, lotItemId: change.old.lotItemId } });
           if (!balance || balance.quantityOnHand + change.quantity < balance.damagedQuantity || balance.quantityOnHand + change.quantity > 2_147_483_647) throw new HttpError(409, "Insufficient available lot stock for correction.");
           await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantityOnHand: { increment: change.quantity }, updatedAt: new Date() } });
           runningBalance += change.quantity;
           if (runningBalance < 0 || runningBalance > 2_147_483_647) throw new HttpError(409, "Intermediate inventory balance is out of range.");
           await tx.purchaseReceiptItem.update({ where: { id: change.old.id }, data: { receivedQty: change.next.receivedQty, actualCost: change.next.actualCost } });
           await tx.inventoryLedger.create({ data: {
-            businessId, variantId, lotId: change.old.lotId, createdBy,
+            businessId, variantId, lotItemId: change.old.lotItemId, createdBy,
             transactionType: change.quantity > 0 || (change.quantity === 0 && change.value.gte(0)) ? "STOCK_ADJUSTMENT_IN" : "STOCK_ADJUSTMENT_OUT",
             quantityChanged: change.quantity, balanceAfter: runningBalance,
             unitCost: change.next.actualCost, totalCostValue: change.value,

@@ -1,3 +1,4 @@
+import { activeFilter } from "./suppliers.input";
 import { Prisma } from "@prisma/client";
 
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
@@ -104,7 +105,7 @@ export class PurchasesService {
           ...receiptInclude, po: { select: { id: true, poCode: true, status: true } },
           purchaseReceiptItems: {
             orderBy: { id: "asc" }, include: {
-              variant, lot: { select: { id: true, lotNumber: true, manufacturingDate: true, expirationDate: true } },
+              variant, lotItem: { select: { id: true, manufacturingDate: true, expirationDate: true, lot: { select: { lotNumber: true } } } },
               poItem: { select: { id: true, orderedQty: true, receivedQty: true, unitPrice: true } },
             },
           },
@@ -119,7 +120,16 @@ export class PurchasesService {
       });
       return {
         ...receiptResult(row),
-        purchaseReceiptItems: row.purchaseReceiptItems.map((item) => ({ ...item, subtotal: item.actualCost.mul(item.receivedQty).toFixed(2) })),
+        purchaseReceiptItems: row.purchaseReceiptItems.map((item) => ({
+          ...item,
+          lot: item.lotItem ? {
+            id: item.lotItem.id,
+            lotNumber: item.lotItem.lot?.lotNumber,
+            manufacturingDate: item.lotItem.manufacturingDate,
+            expirationDate: item.lotItem.expirationDate,
+          } : null,
+          subtotal: item.actualCost.mul(item.receivedQty).toFixed(2),
+        })),
         inventoryLedger: ledger,
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
@@ -128,8 +138,10 @@ export class PurchasesService {
   async listSuppliers(businessId: string, query: PurchaseQuery) {
     const f = filters(query, []);
     const where: Prisma.SupplierWhereInput = {
-      businessId,
+      businessId, isActive: activeFilter(query.isActive),
       ...(f.search ? { OR: [
+        { supplierCode: { contains: f.search, mode: "insensitive" } },
+        { email: { contains: f.search, mode: "insensitive" } },
         { name: { contains: f.search, mode: "insensitive" } },
         { phone: { contains: f.search, mode: "insensitive" } },
         { contactPerson: { contains: f.search, mode: "insensitive" } },
