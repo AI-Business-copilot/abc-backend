@@ -5,10 +5,6 @@ import { prisma } from "../../shared/infrastructure/database/prisma.client";
 
 const shiftInclude = {
   user: { select: { id: true, fullName: true } },
-  cashTransactions: {
-    orderBy: { createdAt: "desc" as const },
-    include: { createdByUser: { select: { id: true, fullName: true } } },
-  },
   closeReviews: {
     orderBy: { revision: "desc" as const },
     take: 1,
@@ -33,9 +29,32 @@ const shiftHistoryInclude = {
   incomingHandoff: { include: { reviewRecords: { orderBy: { revision: "desc" as const }, take: 1 } } },
 };
 
-const incomingCategories = new Set(["SALE_CASH", "OTHER_IN"]);
+const incomingCategories = new Set(["OTHER_IN"]);
 const outgoingCategories = new Set(["CASH_EXPENSE", "CUSTOMER_REFUND", "OTHER_OUT"]);
 const maximumAmount = new Prisma.Decimal("9999999999.99");
+const defaultPageSize = 10;
+
+function parsePage(query: Record<string, unknown>) {
+  const page = Number(query.page ?? 1);
+  const pageSize = Number(query.pageSize ?? defaultPageSize);
+  if (!Number.isInteger(page) || page < 1) throw new HttpError(400, "Trang phải là số nguyên dương.");
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) {
+    throw new HttpError(400, "Số dòng mỗi trang phải từ 1 đến 50.");
+  }
+  return { page, pageSize, skip: (page - 1) * pageSize };
+}
+
+function parseSearch(value: unknown) {
+  if (value === undefined || value === "") return "";
+  if (typeof value !== "string" || value.length > 100) {
+    throw new HttpError(400, "Từ khóa tìm kiếm không được vượt quá 100 ký tự.");
+  }
+  return value.trim();
+}
+
+function pageInfo(page: number, pageSize: number, total: number) {
+  return { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
+}
 
 function parseMoney(value: unknown, field: string) {
   if (typeof value !== "string" && typeof value !== "number") {
@@ -60,6 +79,60 @@ function calculateExpectedCash(
         : total.minus(transaction.amount),
     openingCash,
   );
+}
+
+async function getCashDataCompleteness(tx: Prisma.TransactionClient, shiftId: string) {
+  const [result] = await tx.$queryRaw<{
+    untrackedOrders: number;
+    untrackedCashSales: number;
+    untrackedCashRefunds: number;
+  }[]>`
+    SELECT
+      (
+        SELECT COUNT(*)::int
+          FROM "orders" o
+         WHERE o."shift_id" = ${shiftId}::uuid
+           AND o."status" = 'COMPLETED'
+           AND NOT EXISTS (
+             SELECT 1 FROM "order_payments" p WHERE p."order_id" = o."id"
+           )
+      ) AS "untrackedOrders",
+      (
+        SELECT COUNT(*)::int
+          FROM "order_payments" p
+         WHERE p."shift_id" = ${shiftId}::uuid
+           AND p."payment_method" = 'CASH'
+           AND NOT EXISTS (
+             SELECT 1
+               FROM "cash_transactions" c
+              WHERE c."shift_id" = p."shift_id"
+                AND c."ref_doc_type" = 'ORDER'
+                AND c."ref_doc_id" = p."order_id"
+                AND c."category" IN ('POS_SALE', 'SALE_CASH')
+                AND c."transaction_type" = 'IN'
+           )
+      ) AS "untrackedCashSales",
+      (
+        SELECT COUNT(*)::int
+          FROM "customer_returns" r
+         WHERE r."shift_id" = ${shiftId}::uuid
+           AND r."status" = 'COMPLETED'
+           AND r."refund_method" = 'CASH'
+           AND r."total_refund_amount" > 0
+           AND NOT EXISTS (
+             SELECT 1
+               FROM "cash_transactions" c
+              WHERE c."shift_id" = r."shift_id"
+                AND c."ref_doc_type" = 'CUSTOMER_RETURN'
+                AND c."ref_doc_id" = r."id"
+                AND c."category" = 'CUSTOMER_REFUND'
+                AND c."transaction_type" = 'OUT'
+           )
+      ) AS "untrackedCashRefunds"
+  `;
+  const untrackedCount =
+    result.untrackedOrders + result.untrackedCashSales + result.untrackedCashRefunds;
+  return { isComplete: untrackedCount === 0, untrackedCount };
 }
 
 function requireText(value: unknown, field: string) {
@@ -129,19 +202,51 @@ function presentShift<T extends {
 }
 
 export class CashShiftsService {
-  async getSummary(businessId: string, canReconcile: boolean) {
+  async getSummary(businessId: string, canReconcile: boolean, query: Record<string, unknown>) {
+    const { page, pageSize, skip } = parsePage(query);
+    const search = parseSearch(query.search);
+    const status = query.status ?? "ALL";
+    if (status !== "ALL" && status !== "OPEN" && status !== "CLOSED") {
+      throw new HttpError(400, "Bộ lọc trạng thái ca không hợp lệ.");
+    }
+    const sort = query.sort ?? "newest";
+    if (sort !== "newest" && sort !== "oldest") throw new HttpError(400, "Thứ tự sắp xếp ca không hợp lệ.");
+    const where: Prisma.CashShiftWhereInput = {
+      businessId,
+      ...(status === "ALL" ? {} : { status }),
+      ...(search ? { user: { fullName: { contains: search, mode: "insensitive" } } } : {}),
+    };
     const [current, shifts] = await Promise.all([
       prisma.cashShift.findFirst({
         where: { businessId, status: "OPEN" },
         include: shiftInclude,
       }),
-      prisma.cashShift.findMany({
-        where: { businessId },
-        orderBy: { openedAt: "desc" },
-        take: 20,
-        include: shiftHistoryInclude,
+      prisma.$transaction(async (tx) => {
+        const [items, total] = await Promise.all([
+          tx.cashShift.findMany({
+            where,
+            orderBy: [{ openedAt: sort === "newest" ? "desc" : "asc" }, { id: "desc" }],
+            skip,
+            take: pageSize,
+            include: shiftHistoryInclude,
+          }),
+          tx.cashShift.count({ where }),
+        ]);
+        return { items, pagination: pageInfo(page, pageSize, total) };
       }),
     ]);
+    const cashData = current && canReconcile
+      ? await prisma.$transaction(async (tx) => {
+          const [completeness, transactions] = await Promise.all([
+            getCashDataCompleteness(tx, current.id),
+            tx.cashTransaction.findMany({ where: { shiftId: current.id } }),
+          ]);
+          return {
+            ...completeness,
+            expectedCash: calculateExpectedCash(current.openingCash, transactions).toFixed(2),
+          };
+        })
+      : null;
 
     return {
       currentShift: current
@@ -149,16 +254,67 @@ export class CashShiftsService {
             ...presentShift(current, canReconcile),
             ...(canReconcile
               ? {
-                  systemExpectedCash: calculateExpectedCash(
-                    current.openingCash,
-                    current.cashTransactions,
-                  ).toFixed(2),
+                  cashDataComplete: cashData!.isComplete,
+                  untrackedCashEventCount: cashData!.untrackedCount,
+                  ...(cashData!.isComplete
+                    ? { systemExpectedCash: cashData!.expectedCash }
+                    : {}),
                 }
               : {}),
           }
         : null,
-      shifts: shifts.map((shift) => presentShift(shift, canReconcile)),
+      shifts: shifts.items.map((shift) => presentShift(shift, canReconcile)),
+      pagination: shifts.pagination,
     };
+  }
+
+  async listTransactions(businessId: string, shiftId: string, query: Record<string, unknown>) {
+    const { page, pageSize, skip } = parsePage(query);
+    const search = parseSearch(query.search);
+    const type = query.type ?? "ALL";
+    if (type !== "ALL" && type !== "IN" && type !== "OUT") {
+      throw new HttpError(400, "Bộ lọc chiều giao dịch không hợp lệ.");
+    }
+    const sort = query.sort ?? "newest";
+    if (sort !== "newest" && sort !== "oldest" && sort !== "amount_high" && sort !== "amount_low") {
+      throw new HttpError(400, "Thứ tự sắp xếp giao dịch không hợp lệ.");
+    }
+    const shift = await prisma.cashShift.findFirst({
+      where: { id: shiftId, businessId },
+      select: { id: true },
+    });
+    if (!shift) throw new HttpError(404, "Không tìm thấy ca trực.");
+    const where: Prisma.CashTransactionWhereInput = {
+      businessId,
+      shiftId,
+      ...(type === "ALL" ? {} : { transactionType: type }),
+      ...(search
+        ? {
+            OR: [
+              { notes: { contains: search, mode: "insensitive" } },
+              { recipientOrPayer: { contains: search, mode: "insensitive" } },
+              { category: { contains: search, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+    const orderBy: Prisma.CashTransactionOrderByWithRelationInput[] =
+      sort === "amount_high" ? [{ amount: "desc" }, { createdAt: "desc" }]
+        : sort === "amount_low" ? [{ amount: "asc" }, { createdAt: "desc" }]
+          : [{ createdAt: sort === "newest" ? "desc" : "asc" }, { id: "desc" }];
+    return prisma.$transaction(async (tx) => {
+      const [items, total] = await Promise.all([
+        tx.cashTransaction.findMany({
+          where,
+          orderBy,
+          skip,
+          take: pageSize,
+          include: { createdByUser: { select: { id: true, fullName: true } } },
+        }),
+        tx.cashTransaction.count({ where }),
+      ]);
+      return { items, pagination: pageInfo(page, pageSize, total) };
+    });
   }
 
   async previewHandoff(businessId: string, openingCashInput: unknown, canReconcile: boolean) {
@@ -350,9 +506,11 @@ export class CashShiftsService {
       throw new HttpError(403, "Chỉ nhân viên chịu trách nhiệm ca mới được gửi kiểm đếm.");
     }
     const expectedCash = calculateExpectedCash(shift.openingCash, shift.cashTransactions);
+    const cashData = await prisma.$transaction((tx) => getCashDataCompleteness(tx, shift.id));
     return {
-      isMatched: actualCash.equals(expectedCash),
-      requiresExplanation: !actualCash.equals(expectedCash),
+      isMatched: cashData.isComplete && actualCash.equals(expectedCash),
+      requiresExplanation: !cashData.isComplete || !actualCash.equals(expectedCash),
+      isDataComplete: cashData.isComplete,
     };
   }
 
@@ -386,12 +544,13 @@ export class CashShiftsService {
       }
 
       const expectedCash = calculateExpectedCash(shift.openingCash, shift.cashTransactions);
+      const cashData = await getCashDataCompleteness(tx, shiftId);
       if (expectedCash.isNegative() || expectedCash.greaterThan(maximumAmount)) {
         throw new HttpError(409, "Số tiền dự kiến vượt giới hạn lưu trữ; vui lòng kiểm tra các giao dịch.");
       }
       const differenceCash = actualCash.minus(expectedCash);
-      if (!differenceCash.isZero() && !explanation) {
-        throw new HttpError(400, "Có chênh lệch. Vui lòng nhập lý do trước khi gửi yêu cầu kết thúc ca.");
+      if ((!differenceCash.isZero() || !cashData.isComplete) && !explanation) {
+        throw new HttpError(400, "Cần giải trình chênh lệch hoặc dữ liệu bán hàng/hoàn tiền chưa đầy đủ trước khi gửi yêu cầu kết thúc ca.");
       }
       const submittedAt = new Date();
       const [closedShift, review] = await Promise.all([
@@ -404,7 +563,7 @@ export class CashShiftsService {
             status: "CLOSED",
             expectedCash,
             differenceCash,
-            reconciliationStatus: "INCOMPLETE_DATA",
+            reconciliationStatus: cashData.isComplete ? "RECONCILED" : "INCOMPLETE_DATA",
           },
         }),
         tx.cashShiftCloseReview.create({
@@ -429,6 +588,7 @@ export class CashShiftsService {
           id: review.id,
           status: review.status,
           isMatched: review.isMatched,
+          isDataComplete: cashData.isComplete,
           ...(canReconcile
             ? {
                 expectedCash: review.expectedCash.toFixed(2),
@@ -469,10 +629,14 @@ export class CashShiftsService {
 
       const actualCash = requestedActualCash ?? previousReview.actualCash;
       const expectedCash = calculateExpectedCash(shift.openingCash, shift.cashTransactions);
+      const cashData = await getCashDataCompleteness(tx, shiftId);
       if (expectedCash.isNegative() || expectedCash.greaterThan(maximumAmount)) {
         throw new HttpError(409, "Số tiền dự kiến vượt giới hạn lưu trữ; vui lòng kiểm tra các giao dịch.");
       }
       const differenceCash = actualCash.minus(expectedCash);
+      if (!cashData.isComplete && !explanation.trim()) {
+        throw new HttpError(400, "Cần giải trình vì dữ liệu bán hàng hoặc hoàn tiền của ca chưa đầy đủ.");
+      }
       const revision = previousReview.revision + 1;
       const [review] = await Promise.all([
         tx.cashShiftCloseReview.create({
@@ -495,7 +659,7 @@ export class CashShiftsService {
             expectedCash,
             differenceCash,
             shiftNotes: explanation,
-            reconciliationStatus: "INCOMPLETE_DATA",
+            reconciliationStatus: cashData.isComplete ? "RECONCILED" : "INCOMPLETE_DATA",
           },
         }),
       ]);
@@ -504,6 +668,7 @@ export class CashShiftsService {
         id: review.id,
         status: review.status,
         isMatched: review.isMatched,
+        isDataComplete: cashData.isComplete,
         ...(canReconcile
           ? {
               expectedCash: review.expectedCash.toFixed(2),
@@ -618,7 +783,7 @@ export class CashShiftsService {
         take: 50,
         include: {
           submittedByUser: { select: { id: true, fullName: true } },
-          shift: { select: { id: true, openedAt: true, closedAt: true, userId: true } },
+          shift: { select: { id: true, openedAt: true, closedAt: true, userId: true, reconciliationStatus: true } },
         },
       }),
       prisma.cashShiftHandoffReview.findMany({
@@ -674,10 +839,6 @@ export class CashShiftsService {
         data: { status, reviewedBy: reviewerId, reviewedAt: new Date(), reviewerNote },
       });
       if (updateResult.count !== 1) throw new HttpError(409, "Yêu cầu này đã được một người khác xử lý.");
-      await tx.cashShift.update({
-        where: { id: review.shiftId },
-        data: { reconciliationStatus: "INCOMPLETE_DATA" },
-      });
       return tx.cashShiftCloseReview.findUniqueOrThrow({ where: { id: reviewId } });
     });
   }

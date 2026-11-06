@@ -11,6 +11,16 @@ export async function recordSupplierPayment(tx: Prisma.TransactionClient, busine
   const shiftId = requestedShiftId === undefined ? undefined : uuid(requestedShiftId, "shiftId");
   const shift = await tx.cashShift.findFirst({ where: { id: shiftId, businessId, userId, status: "OPEN" }, orderBy: [{ openedAt: "desc" }, { id: "desc" }] });
   if (!shift) throw new HttpError(409, "Open a cash shift for this user before recording a supplier payment.");
+  const lockedShift = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+      FROM "cash_shifts"
+     WHERE "id" = ${shift.id}::uuid
+       AND "business_id" = ${businessId}::uuid
+       AND "user_id" = ${userId}::uuid
+       AND "status" = 'OPEN'
+     FOR UPDATE
+  `;
+  if (!lockedShift.length) throw new HttpError(409, "Open a cash shift for this user before recording a supplier payment.");
   await tx.cashTransaction.create({ data: {
     businessId, shiftId: shift.id, transactionType: "OUT", category: "SUPPLIER_PAYMENT",
     amount, refDocType: "PURCHASE_RECEIPT", refDocId: receiptId, createdBy: userId,

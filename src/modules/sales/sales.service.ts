@@ -11,6 +11,16 @@ const zero = () => new Prisma.Decimal(0);
 async function openShift(tx: Prisma.TransactionClient, businessId: string, userId: string, id?: string) {
   const shift = await tx.cashShift.findFirst({ where: { id, businessId, userId, status: "OPEN" }, orderBy: [{ openedAt: "desc" }, { id: "desc" }] });
   if (!shift) throw new HttpError(409, "Open a cash shift owned by the current user first.");
+  const lockedShift = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+      FROM "cash_shifts"
+     WHERE "id" = ${shift.id}::uuid
+       AND "business_id" = ${businessId}::uuid
+       AND "user_id" = ${userId}::uuid
+       AND "status" = 'OPEN'
+     FOR UPDATE
+  `;
+  if (!lockedShift.length) throw new HttpError(409, "Open a cash shift owned by the current user first.");
   return shift;
 }
 
@@ -123,6 +133,22 @@ export class SalesService {
         }
       }
       await tx.orderPayment.create({ data: { orderId: id, shiftId: order.shiftId, paymentMethod, amount, paymentReference } });
+      if (paymentMethod === "CASH") {
+        await tx.cashTransaction.create({
+          data: {
+            businessId,
+            shiftId: order.shiftId,
+            transactionType: "IN",
+            category: "POS_SALE",
+            amount,
+            refDocType: "ORDER",
+            refDocId: id,
+            recipientOrPayer: order.customer?.name ?? "Khách lẻ",
+            notes: `Thu tiền mặt hóa đơn ${order.orderCode}`,
+            createdBy: userId,
+          },
+        });
+      }
       return tx.order.update({ where: { id }, data: { status: "COMPLETED", totalCogsAmount: cogs, grossProfit: order.totalNetAmount.minus(cogs) }, include });
     });
   }

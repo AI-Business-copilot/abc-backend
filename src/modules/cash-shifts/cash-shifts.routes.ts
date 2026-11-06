@@ -13,6 +13,7 @@ router.use(requireBusinessScope);
 
 router.get("/", requirePermission("cash.shift.read"), controller.summary.bind(controller));
 router.get("/reviews", requirePermission("cash.shift.review"), requirePermission("cash.shift.reconcile"), controller.reviewQueue.bind(controller));
+router.get("/:id/transactions", requirePermission("cash.shift.read"), controller.transactions.bind(controller));
 router.post("/handoffs/preview", requirePermission("cash.shift.manage"), controller.previewHandoff.bind(controller));
 router.post("/reviews/:reviewId/decision", requirePermission("cash.shift.review"), requirePermission("cash.shift.reconcile"), controller.decideCloseReview.bind(controller));
 router.post("/handoff-reviews/:reviewId/decision", requirePermission("cash.shift.review"), requirePermission("cash.shift.reconcile"), controller.decideHandoffReview.bind(controller));

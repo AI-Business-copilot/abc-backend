@@ -8,10 +8,20 @@ const hasPermission = (res: Response, permission: string) =>
   ((res.locals.permissionCodes as string[] | undefined) ?? []).includes(permission);
 
 export class CashShiftsController {
-  async summary(_req: Request, res: Response) {
+  async summary(req: Request, res: Response) {
     const result = await service.getSummary(
       String(res.locals.businessId ?? ""),
       hasPermission(res, "cash.shift.reconcile"),
+      req.query as Record<string, unknown>,
+    );
+    return res.json(result);
+  }
+
+  async transactions(req: Request, res: Response) {
+    const result = await service.listTransactions(
+      String(res.locals.businessId ?? ""),
+      String(req.params.id),
+      req.query as Record<string, unknown>,
     );
     return res.json(result);
   }
