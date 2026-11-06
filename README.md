@@ -1,5 +1,9 @@
 # Backend setup
 
+## F04 sales API
+
+Run `npm run dev`, then open [F04 Swagger UI](http://localhost:5000/fo4/) to test counter sales independently of F03. See [F04 flow, API and test guide](docs/f04-sales.md) for setup, request examples and stock/payment checks. The API requires the existing sales and inventory domain tables; the auth-only Prisma migration does not create those tables.
+
 ## Supabase configuration
 
 1. In Supabase **Authentication → Providers**, enable Google and Email as needed. Configure the Google OAuth callback shown by Supabase in the Google Cloud OAuth client.
