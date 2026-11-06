@@ -9,14 +9,14 @@ export async function cleanupInactiveAccounts(inactiveDays = 180) {
 
   const result = await prisma.user.updateMany({
     where: {
-      isActive: true,
+      status: "ACTIVE",
       createdAt: { lt: cutoffDate },
       // Chưa từng có giao dịch hoặc phiên làm việc trong 180 ngày qua
       inventoryLedger: { none: { createdAt: { gte: cutoffDate } } },
       openingStockSheets: { none: { createdAt: { gte: cutoffDate } } },
     },
     data: {
-      isActive: false,
+      status: "INACTIVE",
     },
   });
 

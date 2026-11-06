@@ -137,7 +137,7 @@ export class VariantGeneratorService {
             data: {
               businessId,
               variantId: v.id,
-              lotId: null,
+              lotItemId: null,
               quantityOnHand: 0,
               damagedQuantity: 0,
             },
@@ -262,7 +262,7 @@ export class VariantGeneratorService {
             data: {
               businessId,
               variantId: variant.id,
-              lotId: null,
+              lotItemId: null,
               quantityOnHand: 0,
               damagedQuantity: 0,
             },

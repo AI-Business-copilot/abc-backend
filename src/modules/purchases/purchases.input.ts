@@ -37,15 +37,22 @@ function items(value: unknown) {
   return value.map(object);
 }
 
+export function purchaseToday() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+}
+
 export function orderInput(value: unknown) {
   const body = object(value);
   const lines = items(body.items).map((item) => ({
     variantId: uuid(item.variantId, "variantId"), orderedQty: quantity(item.orderedQty), unitPrice: money(item.unitPrice, "unitPrice"),
   }));
   if (new Set(lines.map((item) => item.variantId)).size !== lines.length) throw new HttpError(400, "Duplicate SKU in purchase order.");
-  const orderDate = date(body.orderDate, "orderDate") ?? new Date(new Date().toISOString().slice(0, 10));
-  const expectedDeliveryDate = date(body.expectedDeliveryDate, "expectedDeliveryDate");
-  if (expectedDeliveryDate && expectedDeliveryDate < orderDate) throw new HttpError(400, "Expected delivery cannot precede order date.");
+  const orderDate = date(body.orderDate, "orderDate") ?? new Date(`${purchaseToday()}T00:00:00.000Z`);
+  if (body.expectedDeliveryDate === undefined || body.expectedDeliveryDate === null || body.expectedDeliveryDate === "") throw new HttpError(400, "Vui lòng chọn ngày giao dự kiến.");
+  const expectedDeliveryDate = date(body.expectedDeliveryDate, "expectedDeliveryDate")!;
+  if (expectedDeliveryDate < orderDate) throw new HttpError(400, "Ngày giao dự kiến không được trước ngày đặt.");
   for (const line of lines) money(line.unitPrice.mul(line.orderedQty).toFixed(2), "subtotal", 14);
   return { poCode: requiredText(body.poCode, "poCode", 50), supplierId: uuid(body.supplierId, "supplierId"), orderDate, expectedDeliveryDate, items: lines };
 }

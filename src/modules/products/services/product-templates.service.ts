@@ -221,7 +221,7 @@ export class ProductTemplatesService {
                 attributeValue: { select: { id: true, value: true } },
               },
             },
-            inventoryBalances: { select: { quantityOnHand: true, lotId: true } },
+            inventoryBalances: { select: { quantityOnHand: true, lotItemId: true } },
           },
           orderBy: { sku: "asc" },
         },
@@ -281,7 +281,7 @@ export class ProductTemplatesService {
       if (variantIds.length > 0) {
         await tx.variantAttributeValue.deleteMany({ where: { variantId: { in: variantIds } } });
         await tx.inventoryBalance.deleteMany({ where: { variantId: { in: variantIds } } });
-        await tx.productLot.deleteMany({ where: { variantId: { in: variantIds } } });
+        await tx.productLotItem.deleteMany({ where: { variantId: { in: variantIds } } });
         await tx.productVariant.deleteMany({ where: { id: { in: variantIds } } });
       }
       await tx.productTemplate.delete({ where: { id: templateId } });

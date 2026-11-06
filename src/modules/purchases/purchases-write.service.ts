@@ -1,7 +1,9 @@
+import { supplierInput } from "./suppliers.input";
+import { validateSupplierOrder } from "./supplier-order";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../shared/http/http-error";
-import { money, object, orderInput, receiptInput, requiredText } from "./purchases.input";
+import { money, object, orderInput, purchaseToday, receiptInput } from "./purchases.input";
 import { uuid } from "./purchases.query";
 import { recordSupplierPayment } from "./purchases-payments.service";
 import { actor, atomic, supplierInBusiness, changeDebt } from "./purchases-transaction";
@@ -9,19 +11,28 @@ import { orderFingerprint } from "./purchases-fingerprint";
 
 export class PurchasesWriteService {
   async createSupplier(businessId: string, value: unknown) {
-    const body = object(value);
-    return prisma.supplier.create({ data: {
-      businessId, name: requiredText(body.name, "name", 255),
-      phone: body.phone === undefined ? undefined : requiredText(body.phone, "phone", 20),
-      contactPerson: body.contactPerson === undefined ? undefined : requiredText(body.contactPerson, "contactPerson", 100),
-    } });
+    const data = supplierInput(value);
+    return prisma.supplier.create({ data: { ...data, businessId, name: data.name! } });
+  }
+
+  async updateSupplier(businessId: string, id: string, value: unknown) {
+    const supplierId = uuid(id, "supplierId");
+    const data = supplierInput(value, true);
+    return atomic(async tx => {
+      await supplierInBusiness(tx, businessId, supplierId);
+      if (data.isActive === false) await tx.supplierProduct.updateMany({ where: { businessId, supplierId, isPreferred: true }, data: { isPreferred: false } });
+      return tx.supplier.update({ where: { id: supplierId }, data });
+    });
   }
 
   async createOrder(businessId: string, authUserId: string, value: unknown) {
     const input = orderInput(value);
+    if (input.orderDate.toISOString().slice(0, 10) < purchaseToday()) {
+      throw new HttpError(400, "Ngày đặt không được trước hôm nay.");
+    }
     return atomic(async (tx) => {
       const createdBy = await actor(tx, authUserId);
-      await supplierInBusiness(tx, businessId, input.supplierId);
+      await validateSupplierOrder(tx, businessId, input.supplierId, input.items);
       const variants = await tx.productVariant.findMany({ where: { businessId, id: { in: input.items.map((item) => item.variantId) }, isActive: true } });
       if (variants.length !== input.items.length) throw new HttpError(404, "An active SKU was not found in this business.");
       const { items, ...data } = input;
@@ -72,18 +83,37 @@ export class PurchasesWriteService {
         const variant = variantMap.get(item.variantId);
         if (!variant || !variant.isActive) throw new HttpError(404, "Active SKU not found in this business.");
         if (variant.isLockedForAudit) throw new HttpError(409, "SKU is locked for stock audit.");
-        let lotId: string | null = null;
+        let lotItemId: string | null = null;
         if (variant.template.hasLotTracking) {
           if (!line.lotNumber || !line.expirationDate) throw new HttpError(400, "Lot-tracked SKU requires lotNumber and expirationDate.");
           assertUsableLot(line.expirationDate);
-          const where = { businessId_variantId_lotNumber: { businessId, variantId: variant.id, lotNumber: line.lotNumber } };
-          let lot = await tx.productLot.findUnique({ where });
-          if (lot) {
-            if (lot.expirationDate.getTime() !== line.expirationDate.getTime() || (line.manufacturingDate && lot.manufacturingDate?.getTime() !== line.manufacturingDate.getTime())) throw new HttpError(409, "Existing lot has different dates.");
-          } else {
-            lot = await tx.productLot.create({ data: { businessId, variantId: variant.id, lotNumber: line.lotNumber, expirationDate: line.expirationDate, manufacturingDate: line.manufacturingDate } });
+          let lot = await tx.productLot.findUnique({
+            where: { businessId_lotNumber: { businessId, lotNumber: line.lotNumber } },
+          });
+          if (!lot) {
+            lot = await tx.productLot.create({
+              data: { businessId, lotNumber: line.lotNumber },
+            });
           }
-          lotId = lot.id;
+          let lotItem = await tx.productLotItem.findUnique({
+            where: { businessId_lotId_variantId: { businessId, lotId: lot.id, variantId: variant.id } },
+          });
+          if (lotItem) {
+            if (lotItem.expirationDate.getTime() !== line.expirationDate.getTime() || (line.manufacturingDate && lotItem.manufacturingDate?.getTime() !== line.manufacturingDate.getTime())) {
+              throw new HttpError(409, "Existing lot has different dates.");
+            }
+          } else {
+            lotItem = await tx.productLotItem.create({
+              data: {
+                businessId,
+                lotId: lot.id,
+                variantId: variant.id,
+                expirationDate: line.expirationDate,
+                manufacturingDate: line.manufacturingDate,
+              },
+            });
+          }
+          lotItemId = lotItem.id;
         } else if (line.lotNumber || line.expirationDate || line.manufacturingDate) {
           throw new HttpError(400, "SKU does not use lot tracking.");
         }
@@ -98,16 +128,16 @@ export class PurchasesWriteService {
         const costPrice = cost.value.div(cost.quantity).toDecimalPlaces(2);
         await tx.productVariant.update({ where: { id: variant.id }, data: { costPrice, updatedAt: new Date() } });
         variant.costPrice = costPrice;
-        const balance = await tx.inventoryBalance.findFirst({ where: { businessId, variantId: variant.id, lotId } });
+        const balance = await tx.inventoryBalance.findFirst({ where: { businessId, variantId: variant.id, lotItemId } });
         if (balance) {
           if (balance.quantityOnHand + line.receivedQty > 2_147_483_647) throw new HttpError(400, "Lot inventory exceeds supported range.");
           await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantityOnHand: { increment: line.receivedQty }, outOfStockSince: null, updatedAt: new Date() } });
         } else {
-          await tx.inventoryBalance.create({ data: { businessId, variantId: variant.id, lotId, quantityOnHand: line.receivedQty } });
+          await tx.inventoryBalance.create({ data: { businessId, variantId: variant.id, lotItemId, quantityOnHand: line.receivedQty } });
         }
-        await tx.purchaseReceiptItem.create({ data: { receiptId: receipt.id, poItemId: item.id, variantId: variant.id, lotId, receivedQty: line.receivedQty, actualCost: line.actualCost } });
+        await tx.purchaseReceiptItem.create({ data: { receiptId: receipt.id, poItemId: item.id, variantId: variant.id, lotItemId, receivedQty: line.receivedQty, actualCost: line.actualCost } });
         await tx.inventoryLedger.create({ data: {
-          businessId, variantId: variant.id, lotId, transactionType: "PURCHASE_RECEIPT",
+          businessId, variantId: variant.id, lotItemId, transactionType: "PURCHASE_RECEIPT",
           quantityChanged: line.receivedQty, balanceAfter: onHand + line.receivedQty,
           unitCost: line.actualCost, totalCostValue: line.actualCost.mul(line.receivedQty),
           referenceDocType: "PURCHASE_RECEIPT", referenceDocId: receipt.id, createdBy,

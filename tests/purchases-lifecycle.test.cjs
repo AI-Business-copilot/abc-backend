@@ -9,7 +9,7 @@ const variantId = "33333333-3333-4333-8333-333333333333";
 let order, supplier, receiptCount, receiptSum, returnSum;
 const calls = [];
 const tx = {
-  user: { findUnique: async () => ({ id, isActive: true }) },
+  user: { findUnique: async () => ({ id, status: "ACTIVE" }) },
   supplier: {
     findFirst: async ({ where }) => { calls.push(["supplier", where]); return supplier; },
     update: async ({ data }) => { calls.push(["debtWrite", data]); supplier.debtAmount = data.debtAmount; return supplier; },
@@ -18,6 +18,7 @@ const tx = {
     findFirst: async ({ where }) => { calls.push(["order", where]); return order; },
     update: async ({ data }) => { calls.push(["orderWrite", data]); return { ...order, ...data }; },
   },
+  supplierProduct: { findMany: async () => [{ variantId, minOrderQty: 1, orderMultiple: 1, isActive: true }] },
   productVariant: { findMany: async ({ where }) => { calls.push(["variants", where]); return [{ id: variantId }]; } },
   purchaseOrderItem: {
     deleteMany: async ({ where }) => calls.push(["deleteItems", where]),
@@ -37,9 +38,9 @@ const { assertUsableLot } = require("../src/modules/purchases/purchases-write.se
 const service = new PurchasesLifecycleService();
 beforeEach(() => {
   calls.length = 0; receiptCount = 0;
-  order = { id, businessId, supplierId: id, poCode: "PO-1", status: "ORDERED", orderDate: new Date("2026-10-01"), expectedDeliveryDate: null,
+  order = { id, businessId, supplierId: id, poCode: "PO-1", status: "ORDERED", orderDate: new Date("2026-10-01"), expectedDeliveryDate: new Date("2026-10-02"),
     purchaseOrderItems: [{ id, variantId, orderedQty: 10, receivedQty: 0, unitPrice: D(20) }] };
-  supplier = { id, debtAmount: D(90) }; receiptSum = { totalAmount: D(100), paidAmount: D(30) }; returnSum = D(10);
+  supplier = { id, isActive: true, debtAmount: D(90) }; receiptSum = { totalAmount: D(100), paidAmount: D(30) }; returnSum = D(10);
 });
 
 test("PO update preserves existing item IDs and scopes lookups", async () => {
@@ -51,6 +52,17 @@ test("PO update preserves existing item IDs and scopes lookups", async () => {
   assert.equal(update.where.id, id); assert.equal(update.data.orderedQty, 15);
   assert.equal(update.data.unitPrice.toFixed(2), "25.00");
   assert.equal(calls.some(([key]) => key === "createItem"), false);
+});
+
+test("PO edits require delivery date for legacy orders and cannot clear an existing date", async () => {
+  for (const expectedDeliveryDate of [null, ""]) {
+    await assert.rejects(service.updateOrder(businessId, "auth", id, { expectedDeliveryDate }), (err) => err.statusCode === 400);
+  }
+  order.expectedDeliveryDate = null;
+  await assert.rejects(service.updateOrder(businessId, "auth", id, { poCode: "PO-2" }), (err) => err.statusCode === 400);
+  assert.equal(calls.some(([key]) => ["updateItem", "deleteItems", "orderWrite"].includes(key)), false);
+  const saved = await service.updateOrder(businessId, "auth", id, { expectedDeliveryDate: "2026-10-01" });
+  assert.equal(saved.expectedDeliveryDate.toISOString().slice(0, 10), "2026-10-01");
 });
 
 test("editing received PO, unknown fields or invalid dates fails before writes", async () => {
@@ -106,4 +118,11 @@ test("foreign/missing PO and supplier return 404", async () => {
   await assert.rejects(service.finishOrder(businessId, "auth", id, "cancel"), (err) => err.statusCode === 404);
   supplier = null;
   await assert.rejects(service.reconcileDebt(businessId, "auth", id), (err) => err.statusCode === 404);
+});
+
+test("unchanged legacy lines allow document edits after supplier retirement, buying changes fail", async () => {
+  supplier.isActive = false;
+  const saved = await service.updateOrder(businessId, "auth", id, { expectedDeliveryDate: "2026-10-03" });
+  assert.equal(saved.expectedDeliveryDate.toISOString().slice(0, 10), "2026-10-03");
+  await assert.rejects(service.updateOrder(businessId, "auth", id, { items: [{ variantId, orderedQty: 15, unitPrice: "25" }] }), err => err.statusCode === 409);
 });

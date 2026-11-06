@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { inventoryService, auditService } from "./inventory.service";
 import { LotService } from "./services/lot.service";
 import { ScrapService } from "./services/scrap.service";
+import { ScrapImageService } from "./services/scrap-image.service";
 import { LotStatusService } from "./services/lot-status.service";
 
 const fail = (res: Response, err: any) => {
@@ -12,8 +13,15 @@ const fail = (res: Response, err: any) => {
 
 const authUserId = (req: Request) => String(req.identity?.id || "");
 
+/** users.id and business role set by requireBusinessScope. Used for the F08 role and ownership rules. */
+const actorOf = (res: Response) => ({
+  userId: String(res.locals.userId || ""),
+  role: String(res.locals.businessRole || ""),
+});
+
 const lotService = new LotService(new LotStatusService());
 const scrapService = new ScrapService();
+const scrapImageService = new ScrapImageService();
 
 export class InventoryController {
   async listSheets(req: Request, res: Response) {
@@ -190,10 +198,41 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await auditService.recordCount(
         businessId,
+        authUserId(req),
+        String(req.params.id),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async addAuditItems(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.addAuditItems(
+        businessId,
+        authUserId(req),
         String(req.params.id),
         req.body ?? {},
       );
       return res.status(201).json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async reassignAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.reassignAuditItem(
+        businessId,
+        String(req.params.id),
+        String(req.params.itemId),
+        req.body ?? {},
+      );
+      return res.json(result);
     } catch (err: any) {
       return fail(res, err);
     }
@@ -204,6 +243,68 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await auditService.updateCount(
         businessId,
+        authUserId(req),
+        String(req.params.id),
+        String(req.params.itemId),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async submitAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.submitAuditItem(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
+        String(req.params.itemId),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async getAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.getAuditItem(
+        businessId,
+        String(req.params.id),
+        String(req.params.itemId),
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async approveAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.approveAuditItem(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
+        String(req.params.itemId),
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async rejectAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.rejectAuditItem(
+        businessId,
+        authUserId(req),
         String(req.params.id),
         String(req.params.itemId),
         req.body ?? {},
@@ -217,10 +318,16 @@ export class InventoryController {
   async getAuditItems(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      const result = await auditService.getAuditItems(businessId, String(req.params.id), {
-        page: Number(req.query.page) || 1,
-        pageSize: Number(req.query.pageSize) || 20,
-      });
+      const result = await auditService.getAuditItems(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
+        {
+          page: Number(req.query.page) || 1,
+          pageSize: Number(req.query.pageSize) || 20,
+          mine: String(req.query.mine || "") === "true",
+        },
+      );
       return res.json(result);
     } catch (err: any) {
       return fail(res, err);
@@ -271,6 +378,7 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await lotService.getExpiringLots(businessId, {
         status: (String(req.query.status || "").toUpperCase() as any) || undefined,
+        groupBy: String(req.query.groupBy || "") || undefined,
         skip: Math.max(0, Number(req.query.skip) || 0),
         take: Math.min(100, Math.max(1, Number(req.query.take) || 20)),
       });
@@ -293,7 +401,12 @@ export class InventoryController {
   async quarantineLot(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      const result = await lotService.quarantineLot(businessId, String(req.params.id));
+      const result = await lotService.quarantineLot(
+        businessId,
+        String(req.params.itemId),
+        String(res.locals.userId || ""),
+        req.body ?? {},
+      );
       return res.json(result);
     } catch (err: any) {
       return fail(res, err);
@@ -303,7 +416,12 @@ export class InventoryController {
   async createScrapOrder(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      const result = await scrapService.createScrapOrder(businessId, authUserId(req), req.body ?? {});
+      const result = await scrapService.createScrapOrder(
+        businessId,
+        actorOf(res),
+        req.body ?? {},
+        req.files as Express.Multer.File[] | undefined,
+      );
       return res.status(201).json(result);
     } catch (err: any) {
       return fail(res, err);
@@ -342,6 +460,7 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await scrapService.updateScrapOrder(
         businessId,
+        actorOf(res),
         String(req.params.id),
         req.body ?? {},
       );
@@ -354,7 +473,7 @@ export class InventoryController {
   async deleteScrapOrder(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      await scrapService.deleteScrapOrder(businessId, String(req.params.id));
+      await scrapService.deleteScrapOrder(businessId, actorOf(res), String(req.params.id));
       return res.status(204).send();
     } catch (err: any) {
       return fail(res, err);
@@ -366,8 +485,9 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await scrapService.approveScrapOrder(
         businessId,
+        actorOf(res),
         String(req.params.id),
-        authUserId(req),
+        req.body ?? {},
       );
       return res.json(result);
     } catch (err: any) {
@@ -380,10 +500,40 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await scrapService.rejectScrapOrder(
         businessId,
+        actorOf(res),
         String(req.params.id),
-        req.body?.reason,
+        req.body ?? {},
       );
       return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async getScrapStatistics(_req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(await scrapService.getScrapStatistics(businessId));
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  // F08: scrap order evidence images
+
+  async listScrapImages(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(await scrapImageService.listImages(businessId, String(req.params.id)));
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async getScrapImage(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(await scrapImageService.getImage(businessId, String(req.params.imageId)));
     } catch (err: any) {
       return fail(res, err);
     }

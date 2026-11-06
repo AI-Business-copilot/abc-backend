@@ -14,7 +14,7 @@ function clone(v) {
   return v;
 }
 const tx = {
-  user: { findUnique: async () => ({ id, isActive: true }) },
+  user: { findUnique: async () => ({ id, status: "ACTIVE" }) },
   purchaseReceipt: {
     findFirst: async ({ where }) => { calls.push(where); return clone(state.receipt); },
     update: async ({ data }) => Object.assign(state.receipt, data),

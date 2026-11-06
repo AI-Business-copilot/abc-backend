@@ -2,6 +2,7 @@ import { Prisma, StockTransactionType } from "@prisma/client";
 
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../shared/http/http-error";
+import { LotStatusService } from "./services/lot-status.service";
 
 const num = (value: unknown) => Number(value ?? 0);
 const likeTerm = (value: string) => `%${value.replace(/[%_]/g, "")}%`;
@@ -72,16 +73,8 @@ function isLotTracking(template: { hasLotTracking: boolean | null } | null | und
 }
 
 async function resolveUser(authUserId: string) {
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authUserId);
-  const user = await prisma.user.findFirst({
-    where: {
-      OR: [
-        { authUserId },
-        ...(isUuid ? [{ id: authUserId }] : []),
-      ],
-    },
-  });
-  if (!user || user.isActive === false) {
+  const user = await prisma.user.findUnique({ where: { authUserId } });
+  if (!user || user.status !== "ACTIVE") {
     throw new HttpError(403, "Tài khoản chưa được đồng bộ với cửa hàng.");
   }
   return user;
@@ -176,12 +169,12 @@ async function loadItemsForSheet(
           },
         },
       },
-      lot: {
+      lotItem: {
         select: {
           id: true,
-          lotNumber: true,
           manufacturingDate: true,
           expirationDate: true,
+          lot: { select: { id: true, lotNumber: true } },
         },
       },
     },
@@ -219,13 +212,16 @@ async function writeItems(
       throw new HttpError(404, "Có SKU không thuộc cửa hàng hiện tại.");
     }
 
-    const tracksLot = isLotTracking(variant.template) || Boolean(item.lotNumber);
-    let lotId: string | null = null;
+    const tracksLot = isLotTracking(variant.template);
+    let lotItemId: string | null = null;
 
-    if (item.lotNumber && item.lotNumber.trim()) {
-      const cleanLotNum = item.lotNumber.trim();
-
-      // Kiểm tra ràng buộc ngày sản xuất và hạn sử dụng
+    if (tracksLot) {
+      if (!item.lotNumber) {
+        throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập số lô.`);
+      }
+      if (!item.expirationDate) {
+        throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập hạn sử dụng.`);
+      }
       if (item.manufacturingDate && item.expirationDate) {
         const mfg = new Date(item.manufacturingDate);
         const exp = new Date(item.expirationDate);
@@ -234,80 +230,53 @@ async function writeItems(
         }
       }
 
-      let lot = await tx.productLot.findFirst({
+      const lotStatusService = new LotStatusService();
+      const calculatedStatus = lotStatusService.calculateStatus(item.expirationDate);
+
+      const lot = await tx.productLot.upsert({
         where: {
-          businessId,
-          variantId: variant.id,
-          lotNumber: cleanLotNum,
+          businessId_lotNumber: {
+            businessId,
+            lotNumber: item.lotNumber,
+          },
         },
+        create: {
+          businessId,
+          lotNumber: item.lotNumber,
+        },
+        update: {},
       });
 
-      if (lot) {
-        lot = await tx.productLot.update({
-          where: { id: lot.id },
-          data: {
-            manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : undefined,
-            expirationDate: item.expirationDate ? new Date(item.expirationDate) : undefined,
-            status: "HEALTHY",
-          },
-        });
-      } else {
-        lot = await tx.productLot.create({
-          data: {
+      const lotItem = await tx.productLotItem.upsert({
+        where: {
+          businessId_lotId_variantId: {
             businessId,
+            lotId: lot.id,
             variantId: variant.id,
-            lotNumber: cleanLotNum,
-            manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : null,
-            expirationDate: item.expirationDate ? new Date(item.expirationDate) : new Date("2099-12-31"),
-            status: "HEALTHY",
           },
-        });
-      }
-      lotId = lot.id;
-
-      // Đồng bộ an toàn vào bảng product_lot_items trên Supabase (status chuẩn 'HEALTHY')
-      try {
-        const existingLotItem = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id FROM product_lot_items
-          WHERE business_id = ${businessId}::uuid
-            AND lot_id = ${lot.id}::uuid
-            AND variant_id = ${variant.id}::uuid
-          LIMIT 1
-        `;
-
-        if (existingLotItem && existingLotItem.length > 0) {
-          await tx.$executeRaw`
-            UPDATE product_lot_items
-            SET manufacturing_date = ${item.manufacturingDate ? new Date(item.manufacturingDate) : null},
-                expiration_date = ${item.expirationDate ? new Date(item.expirationDate) : null},
-                status = 'HEALTHY'
-            WHERE id = ${existingLotItem[0].id}::uuid;
-          `;
-        } else {
-          await tx.$executeRaw`
-            INSERT INTO product_lot_items (
-              id, business_id, lot_id, variant_id, manufacturing_date, expiration_date, status, is_locked_for_audit
-            )
-            VALUES (
-              gen_random_uuid(),
-              ${businessId}::uuid, ${lot.id}::uuid, ${variant.id}::uuid,
-              ${item.manufacturingDate ? new Date(item.manufacturingDate) : null},
-              ${item.expirationDate ? new Date(item.expirationDate) : null},
-              'HEALTHY',
-              false
-            );
-          `;
-        }
-      } catch {
-        // do not fail transaction if optional dev table sync encounters issue
-      }
+        },
+        create: {
+          businessId,
+          lotId: lot.id,
+          variantId: variant.id,
+          manufacturingDate: item.manufacturingDate,
+          expirationDate: item.expirationDate,
+          status: calculatedStatus,
+        },
+        update: {
+          manufacturingDate: item.manufacturingDate ?? undefined,
+          expirationDate: item.expirationDate,
+          status: calculatedStatus,
+        },
+      });
+      lotItemId = lotItem.id;
     }
 
     await tx.openingStockItem.create({
       data: {
         sheetId,
         variantId: variant.id,
-        lotId,
+        lotItemId,
         quantity: item.quantity,
         unitCost: new Prisma.Decimal(item.unitCost),
       },
@@ -315,9 +284,23 @@ async function writeItems(
   }
 }
 
-async function cleanupOrphanLots(_tx: Prisma.TransactionClient, _lotIds: string[]) {
-  // Giữ lại dữ liệu lô trong product_lots & product_lot_items khi lưu nháp
-  // Không xóa lô để không làm mất dữ liệu của người dùng và đồng nghiệp
+async function cleanupOrphanLotItems(tx: Prisma.TransactionClient, lotItemIds: string[]) {
+  for (const lotItemId of Array.from(new Set(lotItemIds.filter(Boolean)))) {
+    const [items, balances, ledger] = await Promise.all([
+      tx.openingStockItem.count({ where: { lotItemId } }),
+      tx.inventoryBalance.count({ where: { lotItemId } }),
+      tx.inventoryLedger.count({ where: { lotItemId } }),
+    ]);
+    if (items + balances + ledger > 0) continue;
+
+    const deleted = await tx.productLotItem.delete({ where: { id: lotItemId } }).catch(() => null);
+    if (!deleted) continue;
+
+    const remaining = await tx.productLotItem.count({ where: { lotId: deleted.lotId } });
+    if (remaining === 0) {
+      await tx.productLot.delete({ where: { id: deleted.lotId } }).catch(() => undefined);
+    }
+  }
 }
 
 class InventoryService {
@@ -370,10 +353,10 @@ class InventoryService {
         attributeText: item.variant.variantAttributeValues
           .map((value) => value.attributeValue.value)
           .join(" · "),
-        lotId: item.lot?.id ?? null,
-        lotNumber: item.lot?.lotNumber ?? null,
-        manufacturingDate: item.lot?.manufacturingDate ?? null,
-        expirationDate: item.lot?.expirationDate ?? null,
+        lotItemId: item.lotItem?.id ?? null,
+        lotNumber: item.lotItem?.lot?.lotNumber ?? null,
+        manufacturingDate: item.lotItem?.manufacturingDate ?? null,
+        expirationDate: item.lotItem?.expirationDate ?? null,
         quantity: item.quantity,
         unitCost: num(item.unitCost),
         lineTotal: num(item.unitCost) * item.quantity,
@@ -528,7 +511,7 @@ class InventoryService {
 
       const oldItems = await tx.openingStockItem.findMany({
         where: { sheetId },
-        select: { lotId: true },
+        select: { lotItemId: true },
       });
       await tx.openingStockItem.deleteMany({ where: { sheetId } });
       await writeItems(tx, businessId, sheetId, items);
@@ -536,9 +519,9 @@ class InventoryService {
         where: { id: sheetId },
         data: { note, updatedAt: new Date() },
       });
-      await cleanupOrphanLots(
+      await cleanupOrphanLotItems(
         tx,
-        oldItems.map((item) => item.lotId).filter((id): id is string => Boolean(id)),
+        oldItems.map((item) => item.lotItemId).filter((id): id is string => Boolean(id)),
       );
     }, { timeout: 30000 });
 
@@ -566,7 +549,7 @@ class InventoryService {
   ) {
     const sheet = await tx.openingStockSheet.findFirst({
       where: { id: sheetId, businessId },
-      include: { openingStockItems: { include: { lot: true } } },
+      include: { openingStockItems: { include: { lotItem: true } } },
     });
     if (!sheet) throw new HttpError(404, "Không tìm thấy phiếu nạp tồn.");
     if (sheet.status === "APPLIED") return;
@@ -578,9 +561,8 @@ class InventoryService {
     }
 
     for (const item of sheet.openingStockItems) {
-      const lotId = item.lotId || null;
       let balance = await tx.inventoryBalance.findFirst({
-        where: { businessId, variantId: item.variantId, lotId },
+        where: { businessId, variantId: item.variantId, lotItemId: item.lotItemId },
       });
 
       if (!balance) {
@@ -588,7 +570,7 @@ class InventoryService {
           data: {
             businessId,
             variantId: item.variantId,
-            lotId,
+            lotItemId: item.lotItemId,
             quantityOnHand: 0,
             damagedQuantity: 0,
           },
@@ -609,7 +591,7 @@ class InventoryService {
         data: {
           businessId,
           variantId: item.variantId,
-          lotId: item.lotId,
+          lotItemId: item.lotItemId,
           transactionType: StockTransactionType.OPENING_STOCK,
           quantityChanged: item.quantity,
           balanceAfter: total._sum.quantityOnHand ?? updated.quantityOnHand,
@@ -637,13 +619,13 @@ class InventoryService {
       }
       const items = await tx.openingStockItem.findMany({
         where: { sheetId },
-        select: { lotId: true },
+        select: { lotItemId: true },
       });
       await tx.openingStockItem.deleteMany({ where: { sheetId } });
       await tx.openingStockSheet.delete({ where: { id: sheetId } });
-      await cleanupOrphanLots(
+      await cleanupOrphanLotItems(
         tx,
-        items.map((item) => item.lotId).filter((id): id is string => Boolean(id)),
+        items.map((item) => item.lotItemId).filter((id): id is string => Boolean(id)),
       );
     }, { timeout: 30000 });
     return { id: sheetId };
@@ -742,21 +724,25 @@ class InventoryService {
   }
 
   async getLots(businessId: string, variantId: string) {
-    const lots = await prisma.productLot.findMany({
+    const lotItems = await prisma.productLotItem.findMany({
       where: { businessId, variantId },
-      include: { inventoryBalances: { select: { quantityOnHand: true } } },
+      include: {
+        lot: { select: { id: true, lotNumber: true } },
+        inventoryBalances: { select: { quantityOnHand: true } },
+      },
       orderBy: { expirationDate: "asc" },
     });
-    const mapped = lots.map((lot) => {
-      const onHand = lot.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0);
+    const mapped = lotItems.map((item) => {
+      const onHand = item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0);
       return {
-        id: lot.id,
-        lotNumber: lot.lotNumber,
-        manufacturingDate: lot.manufacturingDate,
-        expirationDate: lot.expirationDate,
+        id: item.id,
+        lotId: item.lot.id,
+        lotNumber: item.lot.lotNumber,
+        manufacturingDate: item.manufacturingDate,
+        expirationDate: item.expirationDate,
+        status: item.status,
         quantityOnHand: onHand,
         onHand,
-        status: lot.status,
       };
     });
     return {

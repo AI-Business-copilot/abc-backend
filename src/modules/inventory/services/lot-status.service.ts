@@ -26,8 +26,12 @@ export class LotStatusService {
   }
 
   /**
-   * Get effective status combining database status and calculated status
-   * @param dbStatus Database status (ACTIVE, QUARANTINED, SCRAPPED)
+   * Get effective status: the stored status is checked first, then the expiration date is used.
+   * 1. QUARANTINED, SCRAPPED and UNUSABLE in the database are final and returned as they are.
+   *    UNUSABLE cannot go stale because a lot never gets further from its expiry date.
+   * 2. Otherwise (HEALTHY, WARNING, legacy values) the status is calculated from the expiration date
+   *    and today's date, because a stored HEALTHY or WARNING gets out of date as days pass.
+   * @param dbStatus Status stored in product_lot_items.status
    * @param expirationDate Lot expiration date
    * @returns Effective status to display
    */
@@ -35,12 +39,10 @@ export class LotStatusService {
     dbStatus: string,
     expirationDate: Date,
   ): 'HEALTHY' | 'WARNING' | 'UNUSABLE' | 'QUARANTINED' | 'SCRAPPED' {
-    // If explicitly quarantined or scrapped, override calculated status
-    if (dbStatus === 'QUARANTINED' || dbStatus === 'SCRAPPED') {
-      return dbStatus as 'QUARANTINED' | 'SCRAPPED';
+    if (dbStatus === 'QUARANTINED' || dbStatus === 'SCRAPPED' || dbStatus === 'UNUSABLE') {
+      return dbStatus;
     }
 
-    // dbStatus = ACTIVE, calculate based on expiration
     return this.calculateStatus(expirationDate) as
       | 'HEALTHY'
       | 'WARNING'
