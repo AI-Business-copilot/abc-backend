@@ -12,6 +12,7 @@ let state, failLedger, conflicts, attempts, seen;
 const tx = {
   user: { findUnique: async () => ({ id: uid, isActive: true }) },
   cashShift: { findFirst: async ({ where }) => { seen.push(['shift', where]); return state.shift && (!where.id || where.id === state.shift.id) && where.businessId === bid && where.userId === uid ? state.shift : null; } },
+  $queryRaw: async () => [{ id: sid }],
   customer: {
     findFirst: async ({ where }) => where.businessId === bid && where.id === state.customer?.id ? state.customer : null,
     findMany: async args => { seen.push(['customers', args]); return state.customer ? [state.customer] : []; },
@@ -20,11 +21,11 @@ const tx = {
   },
   productVariant: { findFirst: async ({ where }) => where.businessId === bid && where.id === vid ? state.variant : null },
   inventoryBalance: {
-    findMany: async ({ where }) => { seen.push(['stock', where]); return state.balances.filter(b => where.lotId === null ? b.lotId === null : b.lot && b.lot.expirationDate >= where.lot.is.expirationDate.gte); },
+    findMany: async ({ where }) => { seen.push(['stock', where]); return state.balances.filter(b => where.lotItemId === null ? b.lotItemId === null : b.lotItem && b.lotItem.expirationDate >= where.lotItem.is.expirationDate.gte); },
     update: async ({ where, data }) => Object.assign(state.balances.find(b => b.id === where.id), data),
   },
   order: {
-    create: async ({ data }) => { const { orderItems, ...rest } = data; return state.order = { id: oid, discountAmount: D(0), ...rest, orderItems: orderItems.create.map((item, i) => ({ id: `line${i}`, lotId: null, discountAmount: D(0), ...item })), orderPayments: [] }; },
+    create: async ({ data }) => { const { orderItems, ...rest } = data; return state.order = { id: oid, discountAmount: D(0), ...rest, orderItems: orderItems.create.map((item, i) => ({ id: `line${i}`, lotItemId: null, discountAmount: D(0), ...item })), orderPayments: [] }; },
     findFirst: async ({ where }) => { seen.push(['order', where]); return where.businessId === bid && where.id === oid && state.order ? { ...state.order, orderItems: [...state.order.orderItems], orderPayments: [...state.order.orderPayments] } : null; },
     update: async ({ data }) => Object.assign(state.order, data),
     findMany: async args => { seen.push(['orders', args]); return state.order ? [state.order] : []; },
@@ -32,6 +33,7 @@ const tx = {
   },
   orderItem: { deleteMany: async () => { state.order.orderItems = []; }, create: async ({ data }) => { state.order.orderItems.push(data); } },
   orderPayment: { create: async ({ data }) => { state.order.orderPayments.push(data); } },
+  cashTransaction: { create: async ({ data }) => { state.cashTransactions.push(data); return data; } },
   inventoryLedger: { create: async ({ data }) => { state.ledger.push(data); if (failLedger) throw Error('late failure'); }, findMany: async () => state.ledger },
 };
 const dbPath = require.resolve('../src/shared/infrastructure/database/prisma.client.ts');
@@ -40,7 +42,7 @@ require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
   if (conflicts-- > 0) throw Object.assign(Error('conflict'), { code: 'P2034' });
   // Copy mutable state so a failed transaction restores the fixture.
   const original = state;
-  state = { ...state, variant: { ...state.variant }, balances: state.balances.map(b => ({ ...b })), ledger: [...state.ledger], order: state.order ? { ...state.order, orderItems: [...state.order.orderItems], orderPayments: [...state.order.orderPayments] } : null };
+  state = { ...state, variant: { ...state.variant }, balances: state.balances.map(b => ({ ...b })), ledger: [...state.ledger], cashTransactions: [...state.cashTransactions], order: state.order ? { ...state.order, orderItems: [...state.order.orderItems], orderPayments: [...state.order.orderPayments] } : null };
   try { return await work(tx); } catch (e) { state = original; throw e; }
 } } } };
 const { SalesService } = require('../src/modules/sales/sales.service.ts');
@@ -50,7 +52,7 @@ const pay = (extra = {}, business = bid) => service.complete(business, 'auth', o
 const status = code => e => e.statusCode === code;
 beforeEach(() => {
   failLedger = false; conflicts = 0; attempts = 0; seen = [];
-  state = { shift: { id: sid }, customer: null, variant: { id: vid, sku: 'SKU', isActive: true, isLockedForAudit: false, basePrice: D(50), costPrice: D(20), template: { hasLotTracking: false } }, balances: [{ id: 'balance', lotId: null, quantityOnHand: 10, damagedQuantity: 2, lot: null }], ledger: [], order: null };
+  state = { shift: { id: sid }, customer: null, variant: { id: vid, sku: 'SKU', isActive: true, isLockedForAudit: false, basePrice: D(50), costPrice: D(20), template: { hasLotTracking: false } }, balances: [{ id: 'balance', lotItemId: null, quantityOnHand: 10, damagedQuantity: 2, lotItem: null }], ledger: [], cashTransactions: [], order: null };
 });
 
 test('draft checks stock and server price, without payment, reservation or stock change', async () => {
@@ -65,18 +67,21 @@ test('payment atomically completes order, links shift, decreases stock and write
   assert.equal(state.balances[0].quantityOnHand, 7); assert.equal(state.balances[0].damagedQuantity, 2);
   assert.equal(result.orderPayments[0].shiftId, sid); assert.equal(state.ledger[0].quantityChanged, -3);
   assert.equal(state.ledger[0].totalCostValue.toString(), '-60'); assert.equal(state.ledger[0].transactionType, 'POS_SALE');
+  assert.equal(state.cashTransactions.length, 1); assert.equal(state.cashTransactions[0].transactionType, 'IN');
+  assert.equal(state.cashTransactions[0].amount.toString(), '150'); assert.equal(state.cashTransactions[0].refDocId, oid);
   await assert.rejects(pay(), status(409)); assert.equal(state.ledger.length, 1); assert.equal(state.order.orderPayments.length, 1);
 });
 test('FEFO skips expired and damaged stock, splits lots, and reallocates at payment', async () => {
   state.variant.template.hasLotTracking = true;
-  const lot = (id, expires, qty, damaged = 0) => ({ id, lotId: id, lot: { expirationDate: new Date(expires) }, quantityOnHand: qty, damagedQuantity: damaged });
+  const lot = (id, expires, qty, damaged = 0) => ({ id, lotItemId: id, lotItem: { expirationDate: new Date(expires) }, quantityOnHand: qty, damagedQuantity: damaged });
   state.balances = [lot('late', '2099-12-01', 5), lot('expired', '2000-01-01', 99), lot('early', '2099-01-01', 3, 1)];
   await draft();
   state.balances[2].quantityOnHand = 2;
   const result = await pay({ paymentMethod: 'BANK_TRANSFER', paymentReference: 'BANK-1' });
-  assert.deepEqual(result.orderItems.map(l => [l.lotId, l.quantity]), [['early', 1], ['late', 2]]);
+  assert.deepEqual(result.orderItems.map(l => [l.lotItemId, l.quantity]), [['early', 1], ['late', 2]]);
   assert.equal(state.balances[1].quantityOnHand, 99);
   assert.equal(result.orderPayments[0].paymentMethod, 'BANK_TRANSFER');
+  assert.equal(state.cashTransactions.length, 0);
 });
 test('stock changed after draft blocks payment and rolls back draft lines', async () => {
   await draft(); state.balances[0].quantityOnHand = 4;
@@ -143,9 +148,7 @@ test('get scopes order before loading its ledger; foreign order is hidden', asyn
 test('FEFO allows expiration today in Vietnam', async () => {
   const today = new Date(new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10));
   state.variant.template.hasLotTracking = true;
-  state.balances = [{ id: 'today', lotId: 'today', lot: { expirationDate: today }, quantityOnHand: 3, damagedQuantity: 0 }];
+  state.balances = [{ id: 'today', lotItemId: 'today', lotItem: { expirationDate: today }, quantityOnHand: 3, damagedQuantity: 0 }];
   await draft(); await pay(); assert.equal(state.balances[0].quantityOnHand, 0);
   assert.ok(state.balances[0].outOfStockSince instanceof Date);
 });
-
-

@@ -454,6 +454,17 @@ export class CustomerReturnsService {
           where: { businessId, userId, status: "OPEN" },
           orderBy: { openedAt: "desc" },
         });
+        if (activeShift) {
+          const lockedShift = await tx.$queryRaw<{ id: string }[]>`
+            SELECT "id"
+              FROM "cash_shifts"
+             WHERE "id" = ${activeShift.id}::uuid
+               AND "business_id" = ${businessId}::uuid
+               AND "status" = 'OPEN'
+             FOR UPDATE
+          `;
+          if (!lockedShift.length) throw new HttpError(409, "Open a cash shift owned by the current user first.");
+        }
 
         if (refundMethod === "CASH" && totalRefundAmount > 0) {
           if (!activeShift) {
