@@ -41,7 +41,7 @@ export class PurchasesPaymentsService {
 
   async getOpenShift(businessId: string, authUserId: string) {
     const user = await prisma.user.findUnique({ where: { authUserId } });
-    if (!user?.isActive) throw new HttpError(403, "Active user required.");
+    if (user?.status !== "ACTIVE") throw new HttpError(403, "Active user required.");
     return prisma.cashShift.findFirst({ where: { businessId, userId: user.id, status: "OPEN" }, orderBy: [{ openedAt: "desc" }, { id: "desc" }] });
   }
 

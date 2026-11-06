@@ -10,7 +10,7 @@ const uid = '44444444-4444-4444-8444-444444444444';
 const sid = '55555555-5555-4555-8555-555555555555';
 let state, failLedger, conflicts, attempts, seen;
 const tx = {
-  user: { findUnique: async () => ({ id: uid, isActive: true }) },
+  user: { findUnique: async () => ({ id: uid, status: "ACTIVE" }) },
   cashShift: { findFirst: async ({ where }) => { seen.push(['shift', where]); return state.shift && (!where.id || where.id === state.shift.id) && where.businessId === bid && where.userId === uid ? state.shift : null; } },
   $queryRaw: async () => [{ id: sid }],
   customer: {

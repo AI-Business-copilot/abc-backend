@@ -16,7 +16,7 @@ export async function atomic<T>(work: (tx: Prisma.TransactionClient) => Promise<
 
 export async function actor(tx: Prisma.TransactionClient, authUserId: string) {
   const user = await tx.user.findUnique({ where: { authUserId } });
-  if (!user?.isActive) throw new HttpError(403, "Active user required.");
+  if (user?.status !== "ACTIVE") throw new HttpError(403, "Active user required.");
   return user.id;
 }
 

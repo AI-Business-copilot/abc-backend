@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import authRoutes from "../modules/auth/auth.routes";
+import adminRoutes from "../modules/admin/admin.routes";
 import businessRoutes from "../modules/businesses/business.routes";
 import categoriesRoutes from "../modules/categories/categories.routes";
 import cashShiftsRoutes from "../modules/cash-shifts/cash-shifts.routes";
@@ -14,6 +15,7 @@ import vendorReturnsRoutes from "../modules/vendor-returns/vendor-returns.routes
 const router = Router();
 
 router.use("/auth", authRoutes);
+router.use("/admin", adminRoutes);
 router.use("/businesses", businessRoutes);
 router.use("/categories", categoriesRoutes);
 router.use("/cash-shifts", cashShiftsRoutes);

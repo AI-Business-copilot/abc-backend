@@ -20,9 +20,10 @@ function clone(value) {
   return value;
 }
 const tx = {
+  $queryRaw: async () => [{ id: "44444444-4444-4444-8444-444444444444" }],
   cashShift: { findFirst: async () => state.shift },
   cashTransaction: { create: async ({ data }) => state.payments.push(data) },
-  user: { findUnique: async () => ({ id: "actor", isActive: true }) },
+  user: { findUnique: async () => ({ id: "actor", status: "ACTIVE" }) },
   supplier: {
     findFirst: async ({ where }) => { calls.push(["supplierScope", where]); return state.supplier; },
     update: async ({ data }) => Object.assign(state.supplier, data),

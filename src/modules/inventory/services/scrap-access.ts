@@ -2,13 +2,13 @@ import type { Prisma } from "@prisma/client";
 
 import { HttpError } from "../../../shared/http/http-error";
 
-/** The signed-in user as the services see them: users.id plus the business role code (OWNER or STAFF). */
+/** The signed-in user as the services see them: users.id plus the business role code. */
 export type ScrapActor = { userId: string; role: string };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function assertStaff(actor: ScrapActor): void {
-  if (!actor.userId || actor.role !== "STAFF") {
+  if (!actor.userId || !actor.role || actor.role === "OWNER") {
     throw new HttpError(403, "Only staff members can do this.");
   }
 }

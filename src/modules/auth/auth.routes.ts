@@ -2,7 +2,10 @@ import { Router } from "express";
 
 import { requireSupabaseIdentity } from "../../shared/auth/supabase-auth.middleware";
 import { getAccessContext } from "../../shared/auth/access-context.service";
-import { bootstrapConfiguredSystemAdmin } from "../../shared/auth/system-admin-bootstrap.service";
+import {
+  bootstrapConfiguredSystemAdmin,
+  isConfiguredSystemAdminEmail,
+} from "../../shared/auth/system-admin-bootstrap.service";
 import { ensureUserProfile } from "../../shared/auth/user-profile.service";
 import { HttpError } from "../../shared/http/http-error";
 
@@ -33,10 +36,17 @@ router.get("/me", requireSupabaseIdentity, async (req, res) => {
         industryType: access.membership.business.industryType,
         createdAt: access.membership.business.createdAt,
         role: access.membership.role.code,
+        roleName: access.membership.role.displayName,
+        status: access.membership.business.status,
+        membershipStatus: access.membership.status,
       }
       : null,
     platformRoles: access.platformRoles,
     permissions: access.permissionCodes,
+    canManageSystemAdmins:
+      req.identity.emailVerified &&
+      isConfiguredSystemAdminEmail(user.email) &&
+      access.permissionCodes.includes("platform.roles.manage"),
     onboardingRequired:
       !access.membership && access.platformRoles.length === 0,
   });

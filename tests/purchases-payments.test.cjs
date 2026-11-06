@@ -8,7 +8,8 @@ const businessId = "22222222-2222-4222-8222-222222222222";
 let shift, receipt, payments;
 const calls = [];
 const tx = {
-  user: { findUnique: async () => ({ id, isActive: true }) },
+  $queryRaw: async () => [{ id }],
+  user: { findUnique: async () => ({ id, status: "ACTIVE" }) },
   cashShift: {
     findFirst: async ({ where }) => { calls.push(["shift", where]); return shift; },
     create: async ({ data }) => (shift = { id, ...data }),

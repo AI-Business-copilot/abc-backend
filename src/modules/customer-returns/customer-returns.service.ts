@@ -56,7 +56,7 @@ export class CustomerReturnsService {
         : {}),
     };
 
-    const isStaff = userRole === "STAFF";
+    const isStaff = userRole !== "OWNER";
 
     const [total, data] = await Promise.all([
       prisma.customerReturn.count({ where }),
@@ -190,7 +190,7 @@ export class CustomerReturnsService {
       throw new HttpError(400, "Chỉ được phép trả hàng cho đơn hàng đã hoàn thành (COMPLETED).");
     }
 
-    const isStaff = userRole === "STAFF";
+    const isStaff = userRole !== "OWNER";
 
     const itemsWithReturnable = await Promise.all(
       order.orderItems.map(async (item) => {
@@ -821,7 +821,7 @@ export class CustomerReturnsService {
       throw new HttpError(404, "Không tìm thấy phiếu trả hàng.");
     }
 
-    const isStaff = userRole === "STAFF";
+    const isStaff = userRole !== "OWNER";
 
     return {
       ...customerReturn,
