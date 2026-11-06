@@ -40,6 +40,9 @@ model Business {
   vendorReturns       VendorReturn[]       @relation("vendor_returns_business_id")
   cashShifts          CashShift[]          @relation("cash_shifts_business_id")
   cashTransactions    CashTransaction[]    @relation("cash_transactions_business_id")
+  cashShiftHandoffs   CashShiftHandoff[]   @relation("cash_shift_handoffs_business_id")
+  cashShiftHandoffReviews CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_business_id")
+  cashShiftCloseReviews CashShiftCloseReview[] @relation("cash_shift_close_reviews_business_id")
   orders              Order[]              @relation("orders_business_id")
   customerReturns     CustomerReturn[]     @relation("customer_returns_business_id")
   stockAudits         StockAudit[]         @relation("stock_audits_business_id")
@@ -70,6 +73,12 @@ model User {
   vendorReturns              VendorReturn[]      @relation("vendor_returns_created_by")
   cashShifts                 CashShift[]         @relation("cash_shifts_user_id")
   cashTransactions           CashTransaction[]   @relation("cash_transactions_created_by")
+  cashShiftHandoffsRecorded CashShiftHandoff[] @relation("cash_shift_handoffs_recorded_by")
+  cashShiftHandoffsReviewed CashShiftHandoff[] @relation("cash_shift_handoffs_reviewed_by")
+  cashShiftHandoffReviewsSubmitted CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_submitted_by")
+  cashShiftHandoffReviewsReviewed CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_reviewed_by")
+  cashShiftReviewsSubmitted CashShiftCloseReview[] @relation("cash_shift_close_reviews_submitted_by")
+  cashShiftReviewsReviewed CashShiftCloseReview[] @relation("cash_shift_close_reviews_reviewed_by")
   orders                     Order[]             @relation("orders_cashier_id")
   customerReturns            CustomerReturn[]    @relation("customer_returns_cashier_id")
   stockAudits                StockAudit[]        @relation("stock_audits_approved_by")
@@ -691,6 +700,7 @@ model CashShift {
   expectedCash   Decimal?  @map("expected_cash") @db.Decimal(12, 2)
   actualCash     Decimal?  @map("actual_cash") @db.Decimal(12, 2)
   differenceCash Decimal?  @map("difference_cash") @db.Decimal(12, 2)
+  reconciliationStatus String    @default("INCOMPLETE_DATA") @map("reconciliation_status") @db.VarChar(30)
   shiftNotes     String?   @map("shift_notes") @db.Text
   /// SQL CHECK (status IN ('OPEN', 'CLOSED')); can ap dung bang SQL rieng.
   status         String    @default("OPEN") @db.VarChar(20)
@@ -701,7 +711,11 @@ model CashShift {
   orders           Order[]           @relation("orders_shift_id")
   orderPayments    OrderPayment[]    @relation("order_payments_shift_id")
   customerReturns  CustomerReturn[]  @relation("customer_returns_shift_id")
+  outgoingHandoff  CashShiftHandoff? @relation("cash_shift_handoffs_previous_shift_id")
+  incomingHandoff  CashShiftHandoff? @relation("cash_shift_handoffs_next_shift_id")
+  closeReviews     CashShiftCloseReview[] @relation("cash_shift_close_reviews_shift_id")
 
+  @@unique([businessId], where: raw("(status = 'OPEN')"), map: "uq_cash_shifts_one_open_per_business")
   @@map("cash_shifts")
 }
 
@@ -726,6 +740,83 @@ model CashTransaction {
   createdByUser User      @relation("cash_transactions_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@map("cash_transactions")
+}
+
+model CashShiftHandoff {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId       String   @map("business_id") @db.Uuid
+  previousShiftId  String   @unique(map: "uq_cash_shift_handoffs_previous_shift") @map("previous_shift_id") @db.Uuid
+  nextShiftId      String   @unique(map: "uq_cash_shift_handoffs_next_shift") @map("next_shift_id") @db.Uuid
+  handedOverCash   Decimal  @map("handed_over_cash") @db.Decimal(12, 2)
+  receivedCash     Decimal  @map("received_cash") @db.Decimal(12, 2)
+  differenceCash   Decimal  @map("difference_cash") @db.Decimal(12, 2)
+  recordedBy       String   @map("recorded_by") @db.Uuid
+  notes            String?  @db.Text
+  status           String   @default("APPROVED") @db.VarChar(30)
+  explanation      String?  @db.Text
+  reviewedBy       String?  @map("reviewed_by") @db.Uuid
+  reviewedAt       DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewerNote     String?  @map("reviewer_note") @db.Text
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  business        Business  @relation("cash_shift_handoffs_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  previousShift   CashShift @relation("cash_shift_handoffs_previous_shift_id", fields: [previousShiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  nextShift       CashShift @relation("cash_shift_handoffs_next_shift_id", fields: [nextShiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  recordedByUser  User      @relation("cash_shift_handoffs_recorded_by", fields: [recordedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewedByUser  User?     @relation("cash_shift_handoffs_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewRecords   CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_handoff_id")
+
+  @@map("cash_shift_handoffs")
+}
+
+model CashShiftHandoffReview {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId    String    @map("business_id") @db.Uuid
+  handoffId     String    @map("handoff_id") @db.Uuid
+  revision      Int
+  explanation   String    @db.Text
+  status        String    @default("PENDING_REVIEW") @db.VarChar(30)
+  submittedBy   String    @map("submitted_by") @db.Uuid
+  submittedAt   DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  reviewedBy    String?   @map("reviewed_by") @db.Uuid
+  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewerNote  String?   @map("reviewer_note") @db.Text
+
+  business        Business        @relation("cash_shift_handoff_reviews_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  handoff         CashShiftHandoff @relation("cash_shift_handoff_reviews_handoff_id", fields: [handoffId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  submittedByUser User            @relation("cash_shift_handoff_reviews_submitted_by", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewedByUser  User?           @relation("cash_shift_handoff_reviews_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([handoffId, revision], map: "uq_cash_shift_handoff_reviews_revision")
+  @@index([businessId, status, submittedAt(sort: Desc)], map: "idx_cash_shift_handoff_reviews_business_status")
+  @@map("cash_shift_handoff_reviews")
+}
+
+model CashShiftCloseReview {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId    String    @map("business_id") @db.Uuid
+  shiftId       String    @map("shift_id") @db.Uuid
+  revision      Int
+  expectedCash  Decimal   @map("expected_cash") @db.Decimal(12, 2)
+  actualCash    Decimal   @map("actual_cash") @db.Decimal(12, 2)
+  differenceCash Decimal  @map("difference_cash") @db.Decimal(12, 2)
+  isMatched     Boolean   @map("is_matched")
+  explanation   String?   @db.Text
+  status        String    @default("PENDING_REVIEW") @db.VarChar(30)
+  submittedBy   String    @map("submitted_by") @db.Uuid
+  submittedAt   DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  reviewedBy    String?   @map("reviewed_by") @db.Uuid
+  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewerNote  String?   @map("reviewer_note") @db.Text
+
+  business       Business  @relation("cash_shift_close_reviews_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  shift          CashShift @relation("cash_shift_close_reviews_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  submittedByUser User     @relation("cash_shift_close_reviews_submitted_by", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewedByUser  User?    @relation("cash_shift_close_reviews_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([shiftId, revision], map: "uq_cash_shift_close_reviews_shift_revision")
+  @@index([businessId, status, submittedAt(sort: Desc)], map: "idx_cash_shift_close_reviews_business_status")
+  @@map("cash_shift_close_reviews")
 }
 
 model Order {
