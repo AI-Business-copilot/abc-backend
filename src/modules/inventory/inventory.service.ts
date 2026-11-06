@@ -74,7 +74,7 @@ function isLotTracking(template: { hasLotTracking: boolean | null } | null | und
 
 async function resolveUser(authUserId: string) {
   const user = await prisma.user.findUnique({ where: { authUserId } });
-  if (!user || !user.isActive) {
+  if (!user || user.status !== "ACTIVE") {
     throw new HttpError(403, "Tài khoản chưa được đồng bộ với cửa hàng.");
   }
   return user;

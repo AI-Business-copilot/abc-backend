@@ -9,7 +9,7 @@ const variantId = "33333333-3333-4333-8333-333333333333";
 let order, supplier, receiptCount, receiptSum, returnSum;
 const calls = [];
 const tx = {
-  user: { findUnique: async () => ({ id, isActive: true }) },
+  user: { findUnique: async () => ({ id, status: "ACTIVE" }) },
   supplier: {
     findFirst: async ({ where }) => { calls.push(["supplier", where]); return supplier; },
     update: async ({ data }) => { calls.push(["debtWrite", data]); supplier.debtAmount = data.debtAmount; return supplier; },

@@ -27,6 +27,12 @@ export async function requireBusinessScope(
     if (!access.membership) {
       throw new HttpError(403, "Tai khoan chua thuoc cua hang nao.");
     }
+    if (access.membership.status !== "ACTIVE") {
+      throw new HttpError(403, "Thanh vien doanh nghiep khong con hoat dong.");
+    }
+    if (access.membership.business.status !== "ACTIVE") {
+      throw new HttpError(403, "Doanh nghiep dang bi tam khoa.");
+    }
 
     const bodyBusinessId =
       req.body && typeof req.body === "object"

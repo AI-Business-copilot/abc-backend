@@ -6,7 +6,7 @@ export async function getAccessContext(userId: string) {
     where: { id: userId },
     include: {
       memberships: {
-        where: { status: "ACTIVE" },
+        where: { status: { in: ["ACTIVE", "SUSPENDED"] } },
         include: {
           business: {
             select: {
@@ -16,6 +16,7 @@ export async function getAccessContext(userId: string) {
               address: true,
               industryType: true,
               createdAt: true,
+              status: true,
             },
           },
           role: {
@@ -36,14 +37,17 @@ export async function getAccessContext(userId: string) {
       },
     },
   });
-  console.log(user);
-  if (!user || !user.isActive) {
+  if (!user || user.status !== "ACTIVE") {
     throw new HttpError(403, "This account is not active.");
   }
 
   const membership = user.memberships[0] ?? null;
+  const activeBusinessMembership =
+    membership?.status === "ACTIVE" && membership.business.status === "ACTIVE"
+      ? membership
+      : null;
   const roles = [
-    ...(membership ? [membership.role] : []),
+    ...(activeBusinessMembership ? [activeBusinessMembership.role] : []),
     ...user.platformRoles.map(({ role }) => role),
   ];
 

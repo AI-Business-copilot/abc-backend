@@ -106,7 +106,7 @@ export class VendorReturnsService {
       }),
     ]);
 
-    const isStaff = userRole === "STAFF";
+    const isStaff = userRole !== "OWNER";
     const data = records.map((vr) => {
       const items = vr.vendorReturnItems.map((item) => {
         const variantObj = item.variant
@@ -476,7 +476,7 @@ export class VendorReturnsService {
       throw new HttpError(404, "Không tìm thấy phiếu trả hàng nhà cung cấp.");
     }
 
-    const isStaff = userRole === "STAFF";
+    const isStaff = userRole !== "OWNER";
     const items = record.vendorReturnItems.map((item) => {
       const variantObj = item.variant
         ? {

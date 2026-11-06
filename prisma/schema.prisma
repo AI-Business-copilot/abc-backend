@@ -16,10 +16,13 @@ model Business {
   phone        String    @db.VarChar(20)
   address      String?   @db.Text
   industryType String    @map("industry_type") @db.VarChar(50)
+  status       String    @default("ACTIVE") @db.VarChar(20)
   createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships BusinessMembership[]
   invitations BusinessInvitation[]
+  auditLogs   PlatformAuditLog[]
+  roles       Role[]
 
   categories          Category[]           @relation("categories_business_id")
   categoryAttributes  CategoryAttribute[]  @relation("category_attributes_business_id")
@@ -59,12 +62,13 @@ model User {
   authUserId String    @unique(map: "uq_users_auth_user_id") @map("auth_user_id") @db.Uuid
   email      String    @unique(map: "uq_users_email") @db.VarChar(320)
   fullName   String    @map("full_name") @db.VarChar(150)
-  isActive   Boolean   @default(true) @map("is_active")
+  status     String    @default("ACTIVE") @db.VarChar(20)
   createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships     BusinessMembership[]
   platformRoles   PlatformUserRole[]
   sentInvitations BusinessInvitation[] @relation("business_invitations_invited_by")
+  auditLogs       PlatformAuditLog[]   @relation("platform_audit_actor")
 
   inventoryLedger            InventoryLedger[]   @relation("inventory_ledger_created_by")
   openingStockSheets         OpeningStockSheet[] @relation("opening_stock_sheets_created_by")
@@ -105,13 +109,19 @@ model Role {
   scope       String   @db.VarChar(20)
   displayName String   @map("display_name") @db.VarChar(100)
   description String?  @db.Text
+  businessId  String?  @map("business_id") @db.Uuid
+  isDefault   Boolean  @default(false) @map("is_default")
+  isArchived  Boolean  @default(false) @map("is_archived")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  business      Business? @relation(fields: [businessId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   permissions   RolePermission[]
   memberships   BusinessMembership[]
   platformUsers PlatformUserRole[]
   invitations   BusinessInvitation[]
 
+  @@unique([businessId, displayName], map: "uq_roles_business_display_name")
+  @@index([businessId, scope, isArchived], map: "idx_roles_business_scope_archived")
   @@map("roles")
 }
 
@@ -141,7 +151,7 @@ model RolePermission {
 model BusinessMembership {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   businessId String   @map("business_id") @db.Uuid
-  userId     String   @unique(map: "uq_business_memberships_user") @map("user_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
   roleId     String   @map("role_id") @db.Uuid
   status     String   @default("ACTIVE") @db.VarChar(20)
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -152,6 +162,7 @@ model BusinessMembership {
   role     Role     @relation(fields: [roleId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@unique([businessId, userId], map: "uq_business_memberships_business_user")
+  @@unique([userId], where: raw("(status IN ('ACTIVE', 'SUSPENDED'))"), map: "uq_business_memberships_current_user")
   @@index([businessId, status], map: "idx_business_memberships_business_status")
   @@map("business_memberships")
 }
@@ -189,6 +200,25 @@ model BusinessInvitation {
   @@index([businessId, status], map: "idx_business_invitations_business_status")
   @@index([invitedEmail, status], map: "idx_business_invitations_email_status")
   @@map("business_invitations")
+}
+
+model PlatformAuditLog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId String   @map("actor_user_id") @db.Uuid
+  businessId  String?  @map("business_id") @db.Uuid
+  action      String   @db.VarChar(100)
+  targetType  String   @map("target_type") @db.VarChar(50)
+  targetId    String   @map("target_id") @db.Uuid
+  changes     Json?    @db.JsonB
+  reason      String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  actor    User      @relation("platform_audit_actor", fields: [actorUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business Business? @relation(fields: [businessId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([createdAt(sort: Desc)], map: "idx_platform_audit_logs_created_at")
+  @@index([businessId, createdAt(sort: Desc)], map: "idx_platform_audit_logs_business_created_at")
+  @@map("platform_audit_logs")
 }
 
 model Category {

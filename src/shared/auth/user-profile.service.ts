@@ -29,8 +29,8 @@ export async function ensureUserProfile(identity: AuthenticatedIdentity) {
     },
   });
 
-  if (!user.isActive) {
-    throw new HttpError(403, "This account has been deactivated.");
+  if (user.status !== "ACTIVE") {
+    throw new HttpError(403, "This account has been suspended.");
   }
 
   return user;
