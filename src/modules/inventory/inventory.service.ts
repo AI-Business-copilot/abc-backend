@@ -561,20 +561,38 @@ class InventoryService {
     }
 
     for (const item of sheet.openingStockItems) {
+      const lotItemId = item.lotItemId || null;
       let balance = await tx.inventoryBalance.findFirst({
-        where: { businessId, variantId: item.variantId, lotItemId: item.lotItemId },
+        where: lotItemId
+          ? { businessId, variantId: item.variantId, lotItemId }
+          : { businessId, variantId: item.variantId, lotItemId: null },
       });
 
-      if (!balance) {
-        balance = await tx.inventoryBalance.create({
-          data: {
-            businessId,
-            variantId: item.variantId,
-            lotItemId: item.lotItemId,
-            quantityOnHand: 0,
-            damagedQuantity: 0,
-          },
+      // Nếu SKU không quản lý lô mà chưa tìm thấy theo filter null, fallback tìm bất kỳ record nào theo variant
+      if (!balance && !lotItemId) {
+        balance = await tx.inventoryBalance.findFirst({
+          where: { businessId, variantId: item.variantId },
         });
+      }
+
+      if (!balance) {
+        try {
+          balance = await tx.inventoryBalance.create({
+            data: {
+              businessId,
+              variantId: item.variantId,
+              lotItemId,
+              quantityOnHand: 0,
+              damagedQuantity: 0,
+            },
+          });
+        } catch (createErr: any) {
+          // Bắt trường hợp đã tồn tại bản ghi do race condition hoặc unique constraint uq_inventory_balance_no_lot
+          balance = await tx.inventoryBalance.findFirst({
+            where: { businessId, variantId: item.variantId },
+          });
+          if (!balance) throw createErr;
+        }
       }
 
       const updated = await tx.inventoryBalance.update({
@@ -591,7 +609,7 @@ class InventoryService {
         data: {
           businessId,
           variantId: item.variantId,
-          lotItemId: item.lotItemId,
+          lotItemId,
           transactionType: StockTransactionType.OPENING_STOCK,
           quantityChanged: item.quantity,
           balanceAfter: total._sum.quantityOnHand ?? updated.quantityOnHand,
