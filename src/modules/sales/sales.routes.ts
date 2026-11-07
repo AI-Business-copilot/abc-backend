@@ -11,6 +11,7 @@ router.get("/customers", async (req, res) => { res.json(await salesService.list(
 router.post("/customers", requirePermission("orders.create"), async (req, res) => { res.status(201).json(await salesService.createCustomer(String(res.locals.businessId), req.body)); });
 router.get("/cash-shifts/current", async (req, res) => { res.json(await purchasesPaymentsService.getOpenShift(String(res.locals.businessId), req.identity!.id)); });
 router.post("/cash-shifts", requirePermission("orders.create"), async (req, res) => { res.json(await purchasesPaymentsService.openShift(String(res.locals.businessId), req.identity!.id, req.body ?? {})); });
+router.post("/orders/promotion-preview", async (req, res) => { res.json(await salesService.previewPromotion(String(res.locals.businessId), req.body)); });
 router.get("/orders", async (req, res) => { res.json(await salesService.list(String(res.locals.businessId), req.query)); });
 router.get("/orders/:id", async (req, res) => { res.json(await salesService.get(String(res.locals.businessId), String(req.params.id))); });
 router.post("/orders", requirePermission("orders.create"), async (req, res) => { res.status(201).json(await salesService.create(String(res.locals.businessId), req.identity!.id, req.body)); });
