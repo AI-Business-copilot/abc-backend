@@ -568,31 +568,16 @@ class InventoryService {
           : { businessId, variantId: item.variantId, lotItemId: null },
       });
 
-      // Nếu SKU không quản lý lô mà chưa tìm thấy theo filter null, fallback tìm bất kỳ record nào theo variant
-      if (!balance && !lotItemId) {
-        balance = await tx.inventoryBalance.findFirst({
-          where: { businessId, variantId: item.variantId },
-        });
-      }
-
       if (!balance) {
-        try {
-          balance = await tx.inventoryBalance.create({
-            data: {
-              businessId,
-              variantId: item.variantId,
-              lotItemId,
-              quantityOnHand: 0,
-              damagedQuantity: 0,
-            },
-          });
-        } catch (createErr: any) {
-          // Bắt trường hợp đã tồn tại bản ghi do race condition hoặc unique constraint uq_inventory_balance_no_lot
-          balance = await tx.inventoryBalance.findFirst({
-            where: { businessId, variantId: item.variantId },
-          });
-          if (!balance) throw createErr;
-        }
+        balance = await tx.inventoryBalance.create({
+          data: {
+            businessId,
+            variantId: item.variantId,
+            lotItemId,
+            quantityOnHand: 0,
+            damagedQuantity: 0,
+          },
+        });
       }
 
       const updated = await tx.inventoryBalance.update({
