@@ -222,12 +222,17 @@ async function writeItems(
       if (!item.expirationDate) {
         throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập hạn sử dụng.`);
       }
-      // Calculate lot status based on expiration date
+      if (item.manufacturingDate && item.expirationDate) {
+        const mfg = new Date(item.manufacturingDate);
+        const exp = new Date(item.expirationDate);
+        if (exp < mfg) {
+          throw new HttpError(400, `Hạn sử dụng (${item.expirationDate}) phải lớn hơn hoặc bằng ngày sản xuất (${item.manufacturingDate}).`);
+        }
+      }
+
       const lotStatusService = new LotStatusService();
       const calculatedStatus = lotStatusService.calculateStatus(item.expirationDate);
 
-      // The lot number identifies the batch, so a second variant using the same number joins that batch
-      // instead of creating a rival lot.
       const lot = await tx.productLot.upsert({
         where: {
           businessId_lotNumber: {
@@ -291,7 +296,6 @@ async function cleanupOrphanLotItems(tx: Prisma.TransactionClient, lotItemIds: s
     const deleted = await tx.productLotItem.delete({ where: { id: lotItemId } }).catch(() => null);
     if (!deleted) continue;
 
-    // The batch header only exists to group items, so it goes once its last item is gone.
     const remaining = await tx.productLotItem.count({ where: { lotId: deleted.lotId } });
     if (remaining === 0) {
       await tx.productLot.delete({ where: { id: deleted.lotId } }).catch(() => undefined);
@@ -341,11 +345,11 @@ class InventoryService {
       items: pairItems.map(({ item, onHand }) => ({
         id: item.id,
         variantId: item.variantId,
-        sku: item.variant.sku,
-        barcode: item.variant.barcode,
-        productName: item.variant.template.name,
-        imageUrl: item.variant.template.imageUrl,
-        unit: item.variant.template.unitOfMeasure || "cái",
+        sku: item.variant?.sku ?? "SKU",
+        barcode: item.variant?.barcode ?? null,
+        productName: item.variant?.template?.name ?? "Sản phẩm",
+        imageUrl: item.variant?.template?.imageUrl ?? null,
+        unit: item.variant?.template?.unitOfMeasure || "cái",
         attributeText: item.variant.variantAttributeValues
           .map((value) => value.attributeValue.value)
           .join(" · "),
@@ -647,8 +651,6 @@ class InventoryService {
 
     const where: Prisma.ProductVariantWhereInput = {
       businessId,
-      isActive: true,
-      ...(categoryIds.length > 0 ? { template: { categoryId: { in: categoryIds } } } : {}),
       ...(search
         ? {
             OR: [
@@ -657,7 +659,8 @@ class InventoryService {
               { template: { name: { contains: search, mode: "insensitive" } } },
             ],
           }
-        : {}),
+        : { isActive: true }),
+      ...(categoryIds.length > 0 ? { template: { categoryId: { in: categoryIds } } } : {}),
     };
 
     const [rows, total, categories] = await Promise.all([
@@ -703,12 +706,12 @@ class InventoryService {
         id: row.id,
         sku: row.sku,
         barcode: row.barcode,
-        productName: row.template.name,
-        imageUrl: row.template.imageUrl,
-        unit: row.template.unitOfMeasure || "cái",
-        hasLotTracking: Boolean(row.template.hasLotTracking),
-        categoryId: row.template.category?.id ?? null,
-        categoryName: row.template.category?.name ?? null,
+        productName: row.template?.name ?? (row.sku || "Sản phẩm"),
+        imageUrl: row.template?.imageUrl ?? null,
+        unit: row.template?.unitOfMeasure || "cái",
+        hasLotTracking: Boolean(row.template?.hasLotTracking),
+        categoryId: row.template?.category?.id ?? null,
+        categoryName: row.template?.category?.name ?? null,
         costPrice: num(row.costPrice),
         basePrice: num(row.basePrice),
         onHand: row.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
@@ -729,16 +732,22 @@ class InventoryService {
       },
       orderBy: { expirationDate: "asc" },
     });
-    return {
-      items: lotItems.map((item) => ({
+    const mapped = lotItems.map((item) => {
+      const onHand = item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0);
+      return {
         id: item.id,
         lotId: item.lot.id,
         lotNumber: item.lot.lotNumber,
         manufacturingDate: item.manufacturingDate,
         expirationDate: item.expirationDate,
         status: item.status,
-        onHand: item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
-      })),
+        quantityOnHand: onHand,
+        onHand,
+      };
+    });
+    return {
+      lots: mapped,
+      items: mapped,
     };
   }
 
@@ -865,7 +874,9 @@ class InventoryService {
           id: row.id,
           createdAt: row.created_at,
           reference,
+          sheetCode: row.sheet_code || reference,
           type: row.transaction_type,
+          transactionType: row.transaction_type,
           typeLabel: LEDGER_LABELS[row.transaction_type] ?? row.transaction_type,
           quantityChanged: row.quantity_changed,
           balanceAfter: row.balance_after,

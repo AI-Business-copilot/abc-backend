@@ -2,8 +2,6 @@
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { NotFoundException, BadRequestException } from "../../../shared/exceptions/http-exceptions";
 import { cartesian } from "../utils/cartesian";
-import { SkuGeneratorService } from "./sku-generator.service";
-import { BarcodeGeneratorService } from "./barcode-generator.service";
 
 interface ComboItem {
   attributeId: string;
@@ -12,9 +10,79 @@ interface ComboItem {
   attribute: { id: string; name: string };
 }
 
+function calcEan13CheckDigit(d12: string): string {
+  let sum = 0;
+  for (let i = 0; i < 12; i++) {
+    const n = parseInt(d12[i], 10);
+    sum += i % 2 === 0 ? n : n * 3;
+  }
+  const mod = sum % 10;
+  const check = mod === 0 ? 0 : 10 - mod;
+  return check.toString();
+}
+
+function randomDigits(len: number): string {
+  let s = "";
+  for (let i = 0; i < len; i++) s += Math.floor(Math.random() * 10).toString();
+  return s;
+}
+
+function slugify(str: string, max = 8): string {
+  return (
+    str
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/g, "d")
+      .replace(/Đ/g, "D")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, "")
+      .slice(0, max) || "PRD"
+  );
+}
+
 export class VariantGeneratorService {
-  private skuGen = new SkuGeneratorService();
-  private barcodeGen = new BarcodeGeneratorService();
+  private generateUniqueSku(
+    base: string,
+    usedSkus: Set<string>,
+  ): string {
+    let candidate = base;
+    let counter = 1;
+    while (usedSkus.has(candidate)) {
+      candidate = `${base}-${String(counter).padStart(2, "0")}`;
+      counter++;
+      if (counter > 9999) break;
+    }
+    usedSkus.add(candidate);
+    return candidate;
+  }
+
+  private generateUniqueBarcode(
+    type: "EAN13" | "CODE128",
+    usedBarcodes: Set<string>,
+  ): string {
+    let attempts = 0;
+    while (attempts < 200) {
+      attempts++;
+      let barcode: string;
+      if (type === "EAN13") {
+        const prefix = "200";
+        const rest = randomDigits(9);
+        const d12 = prefix + rest;
+        barcode = d12 + calcEan13CheckDigit(d12);
+      } else {
+        const ts = Date.now().toString().slice(-6);
+        const rnd = randomDigits(6);
+        barcode = `C128${ts}${rnd}`;
+      }
+      if (!usedBarcodes.has(barcode)) {
+        usedBarcodes.add(barcode);
+        return barcode;
+      }
+    }
+    const fallback = `BC${Date.now()}${randomDigits(4)}`;
+    usedBarcodes.add(fallback);
+    return fallback;
+  }
 
   async generate(params: {
     businessId: string;
@@ -31,45 +99,54 @@ export class VariantGeneratorService {
     });
     if (!template) throw new NotFoundException("Không tìm thấy ProductTemplate trong cửa hàng này");
 
+    // Lấy trước toàn bộ SKU và Barcode đã dùng trong tenant để tra cứu siêu tốc trong bộ nhớ (In-memory)
+    const existingVariantsAll = await prisma.productVariant.findMany({
+      where: { businessId },
+      select: { sku: true, barcode: true },
+    });
+    const usedSkus = new Set(existingVariantsAll.map((v) => v.sku));
+    const usedBarcodes = new Set(existingVariantsAll.map((v) => v.barcode).filter(Boolean) as string[]);
+
     // 2) Nếu không có thuộc tính -> sinh 1 SKU mặc định (sản phẩm đơn)
     if (attributes.length === 0 || attributes.every((a) => !a.attributeValueIds || a.attributeValueIds.length === 0)) {
-      // kiểm tra đã tồn tại biến thể nào cho template này chưa? tuỳ nghiệp vụ
       const existingCount = await prisma.productVariant.count({ where: { businessId, templateId } });
       if (existingCount > 0) {
-        throw new BadRequestException("Template này đã có biến thể. Nếu muốn thêm biến thể, vui lòng chọn thuộc tính.");
+        throw new BadRequestException("Mẫu này đã có biến thể. Nếu muốn thêm biến thể, vui lòng chọn thuộc tính.");
       }
 
-      const sku = await this.skuGen.generateSingle({ businessId, templateName: template.name });
-      const barcode = await this.barcodeGen.generate({ businessId, type: barcodeType });
+      const tplCode = slugify(template.name, 10);
+      const sku = this.generateUniqueSku(tplCode, usedSkus);
+      const barcode = this.generateUniqueBarcode(barcodeType, usedBarcodes);
 
-      const variant = await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${templateId})::bigint)`;
-        const v = await tx.productVariant.create({
-          data: {
-            businessId,
-            templateId,
-            sku,
-            barcode,
-            basePrice: defaults.basePrice ?? 0,
-            costPrice: defaults.costPrice ?? 0,
-            isActive: defaults.isActive ?? true,
-            // các field khác giữ default theo schema
-          },
-        });
+      const variant = await prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${templateId})::bigint)`;
+          const v = await tx.productVariant.create({
+            data: {
+              businessId,
+              templateId,
+              sku,
+              barcode,
+              basePrice: defaults.basePrice ?? 0,
+              costPrice: defaults.costPrice ?? 0,
+              isActive: defaults.isActive ?? true,
+            },
+          });
 
-        // khởi tạo tồn kho (không lot)
-        await tx.inventoryBalance.create({
-          data: {
-            businessId,
-            variantId: v.id,
-            lotItemId: null,
-            quantityOnHand: 0,
-            damagedQuantity: 0,
-          },
-        });
+          await tx.inventoryBalance.create({
+            data: {
+              businessId,
+              variantId: v.id,
+              lotItemId: null,
+              quantityOnHand: 0,
+              damagedQuantity: 0,
+            },
+          });
 
-        return v;
-      }, { timeout: 30000 });
+          return v;
+        },
+        { timeout: 60000, maxWait: 15000 },
+      );
 
       return { mode: "SINGLE", count: 1, variants: [variant] };
     }
@@ -82,18 +159,24 @@ export class VariantGeneratorService {
         where: {
           attributeId: a.attributeId,
           id: { in: a.attributeValueIds },
-          businessId, // đảm bảo cùng tenant
+          businessId,
         },
         include: { attribute: true },
       });
       if (vals.length !== a.attributeValueIds.length) {
-        throw new BadRequestException("Một số attributeValueId không hợp lệ hoặc không thuộc business này");
+        throw new BadRequestException("Một số attributeValueId không hợp lệ hoặc không thuộc cửa hàng này");
       }
-      // giữ đúng thứ tự người dùng truyền để SKU nhất quán
       const ordered = a.attributeValueIds
         .map((id) => vals.find((v) => v.id === id))
         .filter(Boolean) as any[];
-      attrValueLists.push(ordered.map((v) => ({ attributeId: a.attributeId, attributeValueId: v.id, attributeValue: v, attribute: v.attribute })));
+      attrValueLists.push(
+        ordered.map((v) => ({
+          attributeId: a.attributeId,
+          attributeValueId: v.id,
+          attributeValue: v,
+          attribute: v.attribute,
+        })),
+      );
     }
 
     if (attrValueLists.length === 0) throw new BadRequestException("Danh sách thuộc tính không hợp lệ");
@@ -101,91 +184,97 @@ export class VariantGeneratorService {
     // 4) Tính tổ hợp Đề-các
     const combos = cartesian<ComboItem>(attrValueLists);
 
-    // 5) Sinh biến thể trong transaction
-    const created = await prisma.$transaction(async (tx) => {
-      // Khoá theo template để hai request đồng thời không tạo trùng SKU.
-      await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${templateId})::bigint)`;
-      const result: any[] = [];
-      for (const combo of combos) {
-        // Kiểm tra xem tổ hợp này đã tồn tại cho template chưa
-        // So sánh bằng cách: tìm variant có đúng bộ (attributeId, attributeValueId)
-        const candidateVariantIds = await tx.variantAttributeValue.findMany({
-          where: {
-            attributeValueId: { in: combo.map((c) => c.attributeValueId) },
-          },
-          select: { variantId: true, attributeId: true, attributeValueId: true },
-        });
+    // 5) Tối ưu hóa triệt để: Lấy toàn bộ biến thể hiện có của template đó 1 lần duy nhất trước khi lặp
+    const currentVariants = await prisma.productVariant.findMany({
+      where: { templateId, businessId },
+      include: {
+        variantAttributeValues: {
+          select: { attributeId: true, attributeValueId: true },
+        },
+      },
+    });
 
-        // gom theo variantId
-        const mapByVariant = new Map<string, Set<string>>();
-        for (const av of candidateVariantIds) {
-          if (!mapByVariant.has(av.variantId)) mapByVariant.set(av.variantId, new Set());
-          mapByVariant.get(av.variantId)!.add(`${av.attributeId}:${av.attributeValueId}`);
-        }
+    const existingSignatures = new Set<string>();
+    for (const v of currentVariants) {
+      const sig = v.variantAttributeValues
+        .map((x) => `${x.attributeId}:${x.attributeValueId}`)
+        .sort()
+        .join("|");
+      existingSignatures.add(sig);
+    }
 
-        const comboKeySet = new Set(combo.map((c) => `${c.attributeId}:${c.attributeValueId}`));
-        let isDuplicate = false;
-        for (const [vid, set] of mapByVariant.entries()) {
-          // kiểm tra variant thuộc template + business này và khớp 100% tổ hợp
-          const v = await tx.productVariant.findFirst({
-            where: { id: vid, templateId, businessId },
-            select: { id: true },
-          });
-          if (!v) continue;
-          if (set.size === comboKeySet.size) {
-            // so sánh tập
-            let match = true;
-            for (const k of comboKeySet) if (!set.has(k)) { match = false; break; }
-            if (match) { isDuplicate = true; break; }
-          }
-        }
-        if (isDuplicate) continue; // bỏ qua tổ hợp đã có
-
-        // sinh SKU + barcode
-        const sku = await this.skuGen.generate({
-          businessId,
-          templateName: template.name,
-          valueLabels: combo.map((c) => c.attributeValue.value),
-        });
-        const barcode = await this.barcodeGen.generate({ businessId, type: barcodeType });
-
-        // tạo variant
-        const variant = await tx.productVariant.create({
-          data: {
-            businessId,
-            templateId,
-            sku,
-            barcode,
-            basePrice: defaults.basePrice ?? 0,
-            costPrice: defaults.costPrice ?? 0,
-            isActive: defaults.isActive ?? true,
-          },
-        });
-
-        // tạo mapping variant_attribute_values
-        await tx.variantAttributeValue.createMany({
-          data: combo.map((c) => ({
-            variantId: variant.id,
-            attributeId: c.attributeId,
-            attributeValueId: c.attributeValueId,
-          })),
-        });
-
-        // tạo inventory_balance
-        await tx.inventoryBalance.create({
-          data: {
-            businessId,
-            variantId: variant.id,
-            lotItemId: null,
-            quantityOnHand: 0,
-            damagedQuantity: 0,
-          },
-        });
-
-        result.push(variant);
+    // Lọc ra các combo mới chưa từng tạo
+    const newCombos: ComboItem[][] = [];
+    for (const combo of combos) {
+      const sig = combo
+        .map((x) => `${x.attributeId}:${x.attributeValueId}`)
+        .sort()
+        .join("|");
+      if (!existingSignatures.has(sig)) {
+        newCombos.push(combo);
+        existingSignatures.add(sig); // Đánh dấu tránh trùng lặp nội bộ
       }
-      return result;
-    }, { timeout: 30000 });
+    }
+
+    if (newCombos.length === 0) {
+      // Toàn bộ tổ hợp đã tồn tại
+      return { mode: "VARIANTS", count: 0, variants: currentVariants };
+    }
+
+    // 6) Chuẩn bị trước SKU, Barcode cho các combo mới
+    const tplCode = slugify(template.name, 8);
+    const preparedItems = newCombos.map((combo) => {
+      const attrCodes = combo.map((c) => slugify(c.attributeValue.value, 4)).filter(Boolean);
+      const baseSku = [tplCode, ...attrCodes].join("-");
+      const sku = this.generateUniqueSku(baseSku, usedSkus);
+      const barcode = this.generateUniqueBarcode(barcodeType, usedBarcodes);
+      return { combo, sku, barcode };
+    });
+
+    // 7) Ghi vào CSDL trong Transaction nhanh gọn không bị nghẽn
+    const created = await prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${templateId})::bigint)`;
+        const result: any[] = [];
+
+        for (const item of preparedItems) {
+          const variant = await tx.productVariant.create({
+            data: {
+              businessId,
+              templateId,
+              sku: item.sku,
+              barcode: item.barcode,
+              basePrice: defaults.basePrice ?? 0,
+              costPrice: defaults.costPrice ?? 0,
+              isActive: defaults.isActive ?? true,
+            },
+          });
+
+          await tx.variantAttributeValue.createMany({
+            data: item.combo.map((c) => ({
+              variantId: variant.id,
+              attributeId: c.attributeId,
+              attributeValueId: c.attributeValueId,
+            })),
+          });
+
+          await tx.inventoryBalance.create({
+            data: {
+              businessId,
+              variantId: variant.id,
+              lotItemId: null,
+              quantityOnHand: 0,
+              damagedQuantity: 0,
+            },
+          });
+
+          result.push(variant);
+        }
+
+        return result;
+      },
+      { timeout: 60000, maxWait: 15000 },
+    );
 
     return { mode: "VARIANTS", count: created.length, variants: created };
   }

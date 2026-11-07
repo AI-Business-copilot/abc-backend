@@ -45,6 +45,17 @@ const orderInclude = {
 const lotStatusService = new LotStatusService();
 const imageService = new ScrapImageService();
 
+function formatScrapOrder<T extends { variant?: any } | null>(order: T): T {
+  if (!order || !order.variant) return order;
+  return {
+    ...order,
+    variant: {
+      ...order.variant,
+      name: order.variant.template?.name ?? '',
+    },
+  };
+}
+
 function parseQuantity(value: unknown, label: string): number {
   const quantity = Number(value);
   if (!Number.isInteger(quantity) || quantity <= 0) {
@@ -185,7 +196,7 @@ export class ScrapService {
 
         try {
           // One nested create: the order and its photos are saved together or not at all.
-          return await prisma.scrapOrder.create({
+          const created = await prisma.scrapOrder.create({
             data: {
               id: orderId,
               businessId,
@@ -210,6 +221,7 @@ export class ScrapService {
             },
             include: orderInclude,
           });
+          return formatScrapOrder(created);
         } catch (error) {
           // P2002 is either a duplicate scrap code (retry with a fresh one) or the one-PENDING-per-lot-item index.
           if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
@@ -263,7 +275,7 @@ export class ScrapService {
       prisma.scrapOrder.count({ where }),
     ]);
 
-    return { orders, total };
+    return { orders: orders.map(formatScrapOrder), total };
   }
 
   /** One order with its non-deleted photos as 5-minute signed links, so the Owner can review it. */
@@ -277,7 +289,7 @@ export class ScrapService {
       throw new HttpError(404, "Scrap order not found");
     }
     const images: ScrapImageDto[] = await imageService.listImagesForOrder(businessId, scrapOrderId);
-    return { ...order, images };
+    return formatScrapOrder({ ...order, images });
   }
 
   /** Only the STAFF member who created the order, and only while it is PENDING. */
@@ -330,7 +342,8 @@ export class ScrapService {
         }
       }
 
-      return tx.scrapOrder.update({ where: { id: scrapOrderId }, data: update, include: orderInclude });
+      const updated = await tx.scrapOrder.update({ where: { id: scrapOrderId }, data: update, include: orderInclude });
+      return formatScrapOrder(updated);
     });
   }
 
@@ -485,7 +498,7 @@ export class ScrapService {
       });
 
       return {
-        scrapOrder: completed,
+        scrapOrder: formatScrapOrder(completed),
         inventoryReduced: order.scrapQty,
         lossAmount: Number(totalCost),
         lotScrapped: lotRemaining === 0,
@@ -526,7 +539,7 @@ export class ScrapService {
       if (locked.status !== "PENDING") {
         throw new HttpError(409, `A ${locked.status} scrap order cannot be rejected.`);
       }
-      return tx.scrapOrder.update({
+      const rejected = await tx.scrapOrder.update({
         where: { id: scrapOrderId },
         data: {
           status: "REJECTED",
@@ -537,6 +550,7 @@ export class ScrapService {
         },
         include: orderInclude,
       });
+      return formatScrapOrder(rejected);
     });
   }
 

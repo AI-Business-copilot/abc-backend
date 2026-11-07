@@ -130,6 +130,17 @@ export class InventoryController {
     }
   }
 
+  async getVariantLots(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const variantId = String(req.params.variantId || "");
+      const result = await inventoryService.getLots(businessId, variantId);
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
   async ledger(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");

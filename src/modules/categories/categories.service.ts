@@ -285,22 +285,28 @@ export class CategoriesService {
     const current = await prisma.category.findFirst({
       where: { id: categoryId, businessId },
     });
-    if (!current) throw new NotFoundException("Khong tim thay danh muc");
+    if (!current) throw new NotFoundException("Không tìm thấy danh mục yêu cầu.");
 
-    const [children, templates] = await Promise.all([
+    const [children, templatesCount] = await Promise.all([
       prisma.category.count({ where: { parentId: categoryId } }),
       prisma.productTemplate.count({ where: { categoryId: categoryId } }),
     ]);
 
     if (children > 0) {
-      throw new HttpException(409, "Danh muc dang co danh muc con, khong the xoa");
+      throw new HttpException(409, "Danh mục đang có danh mục con trực thuộc. Vui lòng chuyển hoặc xóa các danh mục con trước khi xóa danh mục cha.");
     }
-    if (templates > 0) {
-      throw new HttpException(409, "Danh muc dang duoc gan cho san pham, khong the xoa");
+
+    // Nếu danh mục đang được gán cho các sản phẩm, tự động hủy gán (set categoryId = null)
+    // để người dùng dễ dàng gán danh mục mới đồng loạt cho các sản phẩm này
+    if (templatesCount > 0) {
+      await prisma.productTemplate.updateMany({
+        where: { categoryId, businessId },
+        data: { categoryId: null },
+      });
     }
 
     await prisma.category.delete({ where: { id: categoryId } });
-    return { id: categoryId };
+    return { id: categoryId, unassignedProducts: templatesCount };
   }
 
   private async nextCode(businessId: string, name: string) {
