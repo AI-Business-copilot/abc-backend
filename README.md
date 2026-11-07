@@ -42,6 +42,10 @@ Business roles are tenant-scoped. The migration creates a default Staff role for
 
 The custom-RBAC migration is `20261106174000_business_custom_rbac` and must be applied before using these endpoints. Platform and business API authorization remain the security boundary; frontend route and menu checks are for user experience only.
 
+## Business data foundation
+
+See [the channel data contract, API, and migration requirements](docs/business-data-foundation.md).
+
 ## Initial API
 
 - `GET /api/auth/me` — validate the Supabase access token, synchronize the app profile, and return membership/permissions or indicate onboarding is required.
