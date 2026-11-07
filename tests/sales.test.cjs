@@ -101,6 +101,39 @@ test('automatic promotion is snapshotted on the draft and redeemed only when pay
   assert.equal(state.redemptions.length, 1);
   assert.equal(state.redemptions[0].discountAmount.toString(), '15');
 });
+test('payment accepts an unchanged JSONB promotion snapshot with reordered object keys', async () => {
+  state.promotions = [{
+    id: '77777777-7777-4777-8777-777777777777', businessId: bid, name: '10% off',
+    discountType: 'PERCENTAGE', discountValue: D(10), scope: 'STORE',
+    minOrderAmount: null, startsAt: new Date('2020-01-01T00:00:00.000Z'),
+    endsAt: new Date('2099-01-01T00:00:00.000Z'), priority: 0,
+    updatedAt: new Date('2026-11-07T10:00:00.000Z'), targets: [], usageLimit: null,
+  }];
+  await draft();
+  state.order.promotionSnapshot = Object.fromEntries(
+    Object.entries(state.order.promotionSnapshot).reverse(),
+  );
+
+  const completed = await pay({ amount: '135' });
+  assert.equal(completed.status, 'COMPLETED');
+  assert.equal(completed.totalNetAmount.toString(), '135');
+});
+test('payment still rejects a promotion whose configuration changed after draft creation', async () => {
+  state.promotions = [{
+    id: '77777777-7777-4777-8777-777777777777', businessId: bid, name: '10% off',
+    discountType: 'PERCENTAGE', discountValue: D(10), scope: 'STORE',
+    minOrderAmount: null, startsAt: new Date('2020-01-01T00:00:00.000Z'),
+    endsAt: new Date('2099-01-01T00:00:00.000Z'), priority: 0,
+    updatedAt: new Date('2026-11-07T10:00:00.000Z'), targets: [], usageLimit: null,
+  }];
+  await draft();
+  state.promotions[0].discountValue = D(20);
+  state.promotions[0].updatedAt = new Date('2026-11-07T10:01:00.000Z');
+
+  await assert.rejects(pay({ amount: '135' }), status(409));
+  assert.equal(state.order.status, 'DRAFT');
+  assert.equal(state.order.orderPayments.length, 0);
+});
 test('a fully discounted order is completed without recording false cash income', async () => {
   state.promotions = [{
     id: '88888888-8888-4888-8888-888888888888', businessId: bid, name: '100% off',

@@ -165,6 +165,13 @@ function configSnapshot(calculation: PromotionCalculation) {
   };
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
+
 export class PromotionsService {
   async options(businessId: string) {
     const [categories, products] = await Promise.all([
@@ -314,7 +321,7 @@ export class PromotionsService {
     snapshot: Prisma.JsonValue | null,
   ) {
     const currentSnapshot = this.snapshot(calculation);
-    if (JSON.stringify(currentSnapshot) !== JSON.stringify(snapshot)) {
+    if (canonicalJson(currentSnapshot) !== canonicalJson(snapshot)) {
       throw new HttpError(409, "Eligible promotions changed after this draft was created. Reload the order and confirm the updated total.");
     }
     if (!calculation) return;
