@@ -25,13 +25,22 @@ const tx = {
     update: async ({ where, data }) => Object.assign(state.balances.find(b => b.id === where.id), data),
   },
   order: {
-    create: async ({ data }) => { const { orderItems, ...rest } = data; return state.order = { id: oid, discountAmount: D(0), ...rest, orderItems: orderItems.create.map((item, i) => ({ id: `line${i}`, lotItemId: null, discountAmount: D(0), ...item })), orderPayments: [] }; },
+    create: async ({ data }) => { const { orderItems, ...rest } = data; return state.order = { id: oid, discountAmount: D(0), ...rest, promotionSnapshot: rest.promotionSnapshot === Prisma.DbNull ? null : rest.promotionSnapshot, orderItems: orderItems.create.map((item, i) => ({ id: `line${i}`, lotItemId: null, discountAmount: D(0), variant: { sku: state.variant.sku, template: { id: state.variant.template.id, name: "Product", categoryId: state.variant.template.categoryId } }, ...item })), orderPayments: [] }; },
     findFirst: async ({ where }) => { seen.push(['order', where]); return where.businessId === bid && where.id === oid && state.order ? { ...state.order, orderItems: [...state.order.orderItems], orderPayments: [...state.order.orderPayments] } : null; },
     update: async ({ data }) => Object.assign(state.order, data),
     findMany: async args => { seen.push(['orders', args]); return state.order ? [state.order] : []; },
     count: async ({ where }) => { seen.push(['orderCount', where]); return state.order ? 1 : 0; },
   },
   orderItem: { deleteMany: async () => { state.order.orderItems = []; }, create: async ({ data }) => { state.order.orderItems.push(data); } },
+  promotion: {
+    findMany: async () => state.promotions.map(promotion => ({ ...promotion, _count: { redemptions: state.redemptions.filter(redemption => redemption.promotionId === promotion.id).length } })),
+    findFirst: async ({ where }) => state.promotions.find(promotion => promotion.id === where.id && promotion.businessId === where.businessId) ?? null,
+  },
+  category: { findMany: async () => state.categories },
+  promotionRedemption: {
+    count: async ({ where }) => state.redemptions.filter(redemption => redemption.businessId === where.businessId && redemption.promotionId === where.promotionId).length,
+    create: async ({ data }) => { state.redemptions.push(data); return data; },
+  },
   orderPayment: { create: async ({ data }) => { state.order.orderPayments.push(data); } },
   cashTransaction: { create: async ({ data }) => { state.cashTransactions.push(data); return data; } },
   inventoryLedger: { create: async ({ data }) => { state.ledger.push(data); if (failLedger) throw Error('late failure'); }, findMany: async () => state.ledger },
@@ -42,7 +51,7 @@ require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: {
   if (conflicts-- > 0) throw Object.assign(Error('conflict'), { code: 'P2034' });
   // Copy mutable state so a failed transaction restores the fixture.
   const original = state;
-  state = { ...state, variant: { ...state.variant }, balances: state.balances.map(b => ({ ...b })), ledger: [...state.ledger], cashTransactions: [...state.cashTransactions], order: state.order ? { ...state.order, orderItems: [...state.order.orderItems], orderPayments: [...state.order.orderPayments] } : null };
+  state = { ...state, variant: { ...state.variant }, balances: state.balances.map(b => ({ ...b })), ledger: [...state.ledger], cashTransactions: [...state.cashTransactions], redemptions: [...state.redemptions], order: state.order ? { ...state.order, orderItems: [...state.order.orderItems], orderPayments: [...state.order.orderPayments] } : null };
   try { return await work(tx); } catch (e) { state = original; throw e; }
 } } } };
 const { SalesService } = require('../src/modules/sales/sales.service.ts');
@@ -52,7 +61,7 @@ const pay = (extra = {}, business = bid) => service.complete(business, 'auth', o
 const status = code => e => e.statusCode === code;
 beforeEach(() => {
   failLedger = false; conflicts = 0; attempts = 0; seen = [];
-  state = { shift: { id: sid }, customer: null, variant: { id: vid, sku: 'SKU', isActive: true, isLockedForAudit: false, basePrice: D(50), costPrice: D(20), template: { hasLotTracking: false } }, balances: [{ id: 'balance', lotItemId: null, quantityOnHand: 10, damagedQuantity: 2, lotItem: null }], ledger: [], cashTransactions: [], order: null };
+  state = { shift: { id: sid }, customer: null, variant: { id: vid, sku: 'SKU', isActive: true, isLockedForAudit: false, basePrice: D(50), costPrice: D(20), template: { id: '66666666-6666-4666-8666-666666666666', name: 'Product', categoryId: null, hasLotTracking: false } }, balances: [{ id: 'balance', lotItemId: null, quantityOnHand: 10, damagedQuantity: 2, lotItem: null }], ledger: [], cashTransactions: [], promotions: [], categories: [], redemptions: [], order: null };
 });
 
 test('draft checks stock and server price, without payment, reservation or stock change', async () => {
@@ -70,6 +79,44 @@ test('payment atomically completes order, links shift, decreases stock and write
   assert.equal(state.cashTransactions.length, 1); assert.equal(state.cashTransactions[0].transactionType, 'IN');
   assert.equal(state.cashTransactions[0].amount.toString(), '150'); assert.equal(state.cashTransactions[0].refDocId, oid);
   await assert.rejects(pay(), status(409)); assert.equal(state.ledger.length, 1); assert.equal(state.order.orderPayments.length, 1);
+});
+test('automatic promotion is snapshotted on the draft and redeemed only when payment commits', async () => {
+  const promo = {
+    id: '77777777-7777-4777-8777-777777777777', businessId: bid, name: '10% off',
+    discountType: 'PERCENTAGE', discountValue: D(10), scope: 'STORE',
+    minOrderAmount: null, startsAt: new Date('2020-01-01T00:00:00.000Z'),
+    endsAt: new Date('2099-01-01T00:00:00.000Z'), priority: 0,
+    updatedAt: new Date('2026-11-07T10:00:00.000Z'), targets: [], usageLimit: 1,
+  };
+  state.promotions = [promo];
+  const created = await draft();
+  assert.equal(created.discountAmount.toString(), '15');
+  assert.equal(created.totalNetAmount.toString(), '135');
+  assert.equal(created.orderItems[0].discountAmount.toString(), '15');
+  assert.equal(state.redemptions.length, 0);
+
+  const completed = await pay({ amount: '135' });
+  assert.equal(completed.status, 'COMPLETED');
+  assert.equal(completed.grossProfit.toString(), '75');
+  assert.equal(state.redemptions.length, 1);
+  assert.equal(state.redemptions[0].discountAmount.toString(), '15');
+});
+test('a fully discounted order is completed without recording false cash income', async () => {
+  state.promotions = [{
+    id: '88888888-8888-4888-8888-888888888888', businessId: bid, name: '100% off',
+    discountType: 'PERCENTAGE', discountValue: D(100), scope: 'STORE',
+    minOrderAmount: null, startsAt: new Date('2020-01-01T00:00:00.000Z'),
+    endsAt: new Date('2099-01-01T00:00:00.000Z'), priority: 0,
+    updatedAt: new Date('2026-11-07T10:00:00.000Z'), targets: [], usageLimit: null,
+  }];
+  const created = await draft();
+  assert.equal(created.totalNetAmount.toString(), '0');
+
+  const completed = await pay({ amount: '0' });
+  assert.equal(completed.status, 'COMPLETED');
+  assert.equal(state.order.orderPayments[0].paymentMethod, 'PROMOTION');
+  assert.equal(state.order.orderPayments[0].amount.toString(), '0');
+  assert.equal(state.cashTransactions.length, 0);
 });
 test('FEFO skips expired and damaged stock, splits lots, and reallocates at payment', async () => {
   state.variant.template.hasLotTracking = true;

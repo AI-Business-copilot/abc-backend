@@ -9,6 +9,7 @@ import customerReturnsRoutes from "../modules/customer-returns/customer-returns.
 import inventoryRoutes from "../modules/inventory/inventory.routes";
 import productsRoutes from "../modules/products/routes/products.routes";
 import purchasesRoutes from "../modules/purchases/purchases.routes";
+import promotionsRoutes from "../modules/promotions/promotions.routes";
 import salesRoutes from "../modules/sales/sales.routes";
 import vendorReturnsRoutes from "../modules/vendor-returns/vendor-returns.routes";
 import uploadRouter from "./upload.routes";
@@ -24,6 +25,7 @@ router.use("/customer-returns", customerReturnsRoutes);
 router.use("/inventory", inventoryRoutes);
 router.use("/products", productsRoutes);
 router.use("/purchases", purchasesRoutes);
+router.use("/promotions", promotionsRoutes);
 router.use("/sales", salesRoutes);
 router.use("/vendor-returns", vendorReturnsRoutes);
 router.use("/upload", uploadRouter);

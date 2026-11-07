@@ -4,8 +4,10 @@ import { HttpError } from "../../shared/http/http-error";
 import { money, object, quantity, requiredText } from "../purchases/purchases.input";
 import { filters, pagination, uuid } from "../purchases/purchases.query";
 import { actor, atomic } from "../purchases/purchases-transaction";
+import { promotionsService } from "../promotions/promotions.service";
+import type { PromotionCartLine } from "../promotions/promotion-calculator";
 
-const include = { orderItems: { include: { lotItem: { include: { lot: true } }, variant: { select: { sku: true, template: { select: { name: true } } } } } }, orderPayments: true, customer: true } as const;
+const include = { orderItems: { include: { lotItem: { include: { lot: true } }, variant: { select: { sku: true, template: { select: { id: true, name: true, categoryId: true } } } } } }, orderPayments: true, customer: true } as const;
 const zero = () => new Prisma.Decimal(0);
 
 async function openShift(tx: Prisma.TransactionClient, businessId: string, userId: string, id?: string) {
@@ -49,6 +51,42 @@ export async function allocateStock(tx: Prisma.TransactionClient, businessId: st
 }
 
 export class SalesService {
+  async previewPromotion(businessId: string, value: unknown) {
+    const body = object(value);
+    if (!Array.isArray(body.items) || !body.items.length || body.items.length > 500) throw new HttpError(400, "items must contain 1-500 lines.");
+    const lines = body.items.map(value => {
+      const line = object(value);
+      return { variantId: uuid(line.variantId, "variantId"), quantity: quantity(line.quantity) };
+    });
+    if (new Set(lines.map(line => line.variantId)).size !== lines.length) throw new HttpError(400, "Duplicate SKU.");
+    return prisma.$transaction(async tx => {
+      const variants = await tx.productVariant.findMany({
+        where: { businessId, id: { in: lines.map(line => line.variantId) }, isActive: true },
+        include: { template: { select: { id: true, categoryId: true } } },
+      });
+      if (variants.length !== lines.length) throw new HttpError(404, "One or more active SKUs were not found in this business.");
+      const variantById = new Map(variants.map(variant => [variant.id, variant]));
+      const cart: PromotionCartLine[] = lines.map(line => {
+        const variant = variantById.get(line.variantId)!;
+        return {
+          ...line,
+          productTemplateId: variant.template.id,
+          categoryId: variant.template.categoryId,
+          unitPrice: variant.basePrice,
+        };
+      });
+      const gross = cart.reduce((sum, line) => sum.plus(line.unitPrice.mul(line.quantity)), zero());
+      const promotion = await promotionsService.bestForCart(tx, businessId, cart);
+      return {
+        totalGrossAmount: gross.toFixed(2),
+        discountAmount: promotion?.discountAmount.toFixed(2) ?? "0.00",
+        totalNetAmount: gross.minus(promotion?.discountAmount ?? zero()).toFixed(2),
+        promotion: promotion ? { id: promotion.promotion.id, name: promotion.promotion.name } : null,
+        lineDiscounts: Object.fromEntries([...(promotion?.lineDiscounts ?? new Map())].map(([id, amount]) => [id, amount.toFixed(2)])),
+      };
+    });
+  }
+
   async list(businessId: string, query: Record<string, unknown>, customers = false) {
     const f = filters(query, ["DRAFT", "COMPLETED", "CANCELLED"]);
     if (customers) {
@@ -87,15 +125,46 @@ export class SalesService {
       const shift = await openShift(tx, businessId, userId, shiftId);
       if (customerId && !await tx.customer.findFirst({ where: { id: customerId, businessId } })) throw new HttpError(404, "Customer not found.");
       const items = [];
+      const cart: PromotionCartLine[] = [];
       let total = zero();
       for (const line of lines.sort((a, b) => a.variantId.localeCompare(b.variantId))) {
         const { variant } = await allocateStock(tx, businessId, line.variantId, line.quantity);
         const subtotal = money(variant.basePrice.mul(line.quantity).toFixed(2), "subtotal");
         total = total.plus(subtotal);
         items.push({ ...line, unitPrice: variant.basePrice, unitCost: variant.costPrice, subtotal });
+        cart.push({
+          ...line,
+          productTemplateId: variant.template.id,
+          categoryId: variant.template.categoryId,
+          unitPrice: variant.basePrice,
+        });
       }
-      money(total.toFixed(2), "totalNetAmount");
-      return tx.order.create({ data: { businessId, shiftId: shift.id, cashierId: userId, customerId, orderCode, status: "DRAFT", totalGrossAmount: total, totalNetAmount: total, orderItems: { create: items } }, include });
+      money(total.toFixed(2), "totalGrossAmount");
+      const promotion = await promotionsService.bestForCart(tx, businessId, cart);
+      const discountAmount = promotion?.discountAmount ?? zero();
+      const discountedItems = items.map(item => ({
+        ...item,
+        discountAmount: promotion?.lineDiscounts.get(item.variantId) ?? zero(),
+      }));
+      const totalNetAmount = total.minus(discountAmount);
+      money(totalNetAmount.toFixed(2), "totalNetAmount");
+      return tx.order.create({
+        data: {
+          businessId,
+          shiftId: shift.id,
+          cashierId: userId,
+          customerId,
+          orderCode,
+          status: "DRAFT",
+          totalGrossAmount: total,
+          discountAmount,
+          totalNetAmount,
+          promotionId: promotion?.promotion.id,
+          promotionSnapshot: promotionsService.snapshot(promotion) ?? Prisma.DbNull,
+          orderItems: { create: discountedItems },
+        },
+        include,
+      });
     });
   }
 
@@ -106,34 +175,68 @@ export class SalesService {
     if (body.paymentMethod !== "CASH" && body.paymentMethod !== "BANK_TRANSFER") throw new HttpError(400, "paymentMethod must be CASH or BANK_TRANSFER.");
     const paymentMethod = body.paymentMethod;
     const amount = money(body.amount, "amount");
-    if (amount.lte(0)) throw new HttpError(400, "Payment must be positive.");
+    if (amount.lt(0)) throw new HttpError(400, "Payment cannot be negative.");
     const paymentReference = body.paymentReference === undefined ? undefined : requiredText(body.paymentReference, "paymentReference", 100);
     return atomic(async tx => {
       const userId = await actor(tx, authUserId);
       const order = await tx.order.findFirst({ where: { id, businessId }, include });
       if (!order) throw new HttpError(404, "Order not found.");
       if (order.status !== "DRAFT") throw new HttpError(409, "Only a draft can be paid; check order details before retrying.");
+      const completedPaymentMethod = order.totalNetAmount.isZero() ? "PROMOTION" : paymentMethod;
       await openShift(tx, businessId, userId, order.shiftId);
       if (order.cashierId !== userId) throw new HttpError(403, "Only the order cashier can complete this draft.");
       if (!amount.eq(order.totalNetAmount)) throw new HttpError(400, "Payment must equal the order total.");
+      if (amount.isZero() && !order.totalNetAmount.isZero()) throw new HttpError(400, "A zero payment is allowed only for a fully discounted order.");
       if (order.orderPayments.length) throw new HttpError(409, "Draft already has payments; reconciliation required.");
-      if (!order.orderItems.length || !order.discountAmount.eq(0) || order.orderItems.some(line => !line.discountAmount.eq(0))) throw new HttpError(409, "Unsupported draft contents; reconciliation required.");
+      if (!order.orderItems.length) throw new HttpError(409, "Empty draft contents; reconciliation required.");
+      const cart: PromotionCartLine[] = order.orderItems.map(line => ({
+        variantId: line.variantId,
+        productTemplateId: line.variant.template.id,
+        categoryId: line.variant.template.categoryId,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+      }));
+      const promotion = await promotionsService.bestForCart(tx, businessId, cart);
+      await promotionsService.assertSnapshotStillValid(tx, businessId, promotion, order.promotionSnapshot);
+      if (!order.discountAmount.eq(promotion?.discountAmount ?? zero())) {
+        throw new HttpError(409, "The order discount no longer matches its promotion. Reload the order before charging the customer.");
+      }
+      const discountByVariant = new Map(order.orderItems.map(line => [line.variantId, line.discountAmount]));
       let cogs = zero();
       await tx.orderItem.deleteMany({ where: { orderId: id } });
       for (const line of [...order.orderItems].sort((a, b) => a.variantId.localeCompare(b.variantId))) {
         const { variant, allocations } = await allocateStock(tx, businessId, line.variantId, line.quantity);
-        for (const { balance, quantity } of allocations) {
+        const lineDiscount = discountByVariant.get(line.variantId) ?? zero();
+        let remainingDiscount = lineDiscount;
+        for (const [allocationIndex, { balance, quantity }] of allocations.entries()) {
           const cost = variant.costPrice.mul(quantity);
           cogs = cogs.plus(cost);
           money(cogs.toFixed(2), "totalCogsAmount");
           const balanceAfter = balance.quantityOnHand - quantity;
+          const allocatedDiscount = allocationIndex === allocations.length - 1
+            ? remainingDiscount
+            : Prisma.Decimal.min(
+                remainingDiscount,
+                lineDiscount.mul(quantity).div(line.quantity).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+              );
+          remainingDiscount = remainingDiscount.minus(allocatedDiscount);
           await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantityOnHand: balanceAfter, updatedAt: new Date(), outOfStockSince: balanceAfter === 0 ? new Date() : null } });
-          await tx.orderItem.create({ data: { orderId: id, variantId: variant.id, lotItemId: balance.lotItemId, quantity, unitPrice: line.unitPrice, unitCost: variant.costPrice, subtotal: line.unitPrice.mul(quantity) } });
+          await tx.orderItem.create({ data: { orderId: id, variantId: variant.id, lotItemId: balance.lotItemId, quantity, unitPrice: line.unitPrice, unitCost: variant.costPrice, discountAmount: allocatedDiscount, subtotal: line.unitPrice.mul(quantity) } });
           await tx.inventoryLedger.create({ data: { businessId, variantId: variant.id, lotItemId: balance.lotItemId, transactionType: "POS_SALE", quantityChanged: -quantity, balanceAfter, unitCost: variant.costPrice, totalCostValue: cost.negated(), referenceDocType: "ORDER", referenceDocId: id, createdBy: userId } });
         }
       }
-      await tx.orderPayment.create({ data: { orderId: id, shiftId: order.shiftId, paymentMethod, amount, paymentReference } });
-      if (paymentMethod === "CASH") {
+      if (promotion) {
+        await tx.promotionRedemption.create({
+          data: {
+            businessId,
+            promotionId: promotion.promotion.id,
+            orderId: id,
+            discountAmount: promotion.discountAmount,
+          },
+        });
+      }
+      await tx.orderPayment.create({ data: { orderId: id, shiftId: order.shiftId, paymentMethod: completedPaymentMethod, amount, paymentReference } });
+      if (completedPaymentMethod === "CASH") {
         await tx.cashTransaction.create({
           data: {
             businessId,
