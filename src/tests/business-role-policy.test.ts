@@ -10,6 +10,8 @@ describe("business role permission policy", () => {
   it("allows business-scoped operational permissions", () => {
     assert.equal(isAssignableBusinessPermission({ code: "inventory.read", scope: "BUSINESS" }), true);
     assert.equal(isAssignableBusinessPermission({ code: "vendor_returns.create", scope: "BUSINESS" }), true);
+    assert.equal(isAssignableBusinessPermission({ code: "promotions.manage", scope: "BUSINESS" }), true);
+    assert.equal(isAssignableBusinessPermission({ code: "business_data.manage", scope: "BUSINESS" }), true);
   });
 
   it("blocks platform and business administration permissions", () => {
