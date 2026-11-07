@@ -18,6 +18,13 @@ test('F04 documents every sales route and contains only F04 preparation and sale
   for (const [, name] of JSON.stringify(spec).matchAll(/"\$ref":"#\/components\/schemas\/([^"]+)"/g)) assert.ok(spec.components.schemas[name], name);
   assert.deepEqual(spec.security, [{ bearerAuth: [] }]);
   assert.equal(spec.info.title, 'fo4');
+  // Sales returns the ProductLotItem relation, with its parent lot nested inside.
+  const item = spec.components.schemas.OrderItem.properties;
+  assert.ok(item.lotItemId);
+  assert.equal(item.lotItem.nullable, true);
+  assert.ok(item.lotItem.properties.expirationDate);
+  assert.ok(item.lotItem.properties.lot.properties.lotNumber);
+  assert.equal(item.lot, undefined);
 });
 
 test('F03 and F04 Swagger assets/config stay isolated and F04 login auto-authorizes', async () => {
