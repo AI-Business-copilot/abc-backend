@@ -215,11 +215,10 @@ async function writeItems(
     const tracksLot = isLotTracking(variant.template);
     let lotItemId: string | null = null;
 
-    if (tracksLot) {
-      if (!item.lotNumber) {
-        throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập số lô.`);
-      }
-      if (!item.expirationDate) {
+    if (item.lotNumber && item.lotNumber.trim()) {
+      const cleanLotNumber = item.lotNumber.trim();
+
+      if (tracksLot && !item.expirationDate) {
         throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập hạn sử dụng.`);
       }
       if (item.manufacturingDate && item.expirationDate) {
@@ -231,18 +230,24 @@ async function writeItems(
       }
 
       const lotStatusService = new LotStatusService();
-      const calculatedStatus = lotStatusService.calculateStatus(item.expirationDate);
+      const calculatedStatus = item.expirationDate
+        ? lotStatusService.calculateStatus(item.expirationDate)
+        : "HEALTHY";
+
+      const expirationDate = item.expirationDate
+        ? new Date(item.expirationDate)
+        : new Date(Date.UTC(2099, 11, 31));
 
       const lot = await tx.productLot.upsert({
         where: {
           businessId_lotNumber: {
             businessId,
-            lotNumber: item.lotNumber,
+            lotNumber: cleanLotNumber,
           },
         },
         create: {
           businessId,
-          lotNumber: item.lotNumber,
+          lotNumber: cleanLotNumber,
         },
         update: {},
       });
@@ -259,17 +264,19 @@ async function writeItems(
           businessId,
           lotId: lot.id,
           variantId: variant.id,
-          manufacturingDate: item.manufacturingDate,
-          expirationDate: item.expirationDate,
+          manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : null,
+          expirationDate,
           status: calculatedStatus,
         },
         update: {
-          manufacturingDate: item.manufacturingDate ?? undefined,
-          expirationDate: item.expirationDate,
+          manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : undefined,
+          expirationDate,
           status: calculatedStatus,
         },
       });
       lotItemId = lotItem.id;
+    } else if (tracksLot) {
+      throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập số lô.`);
     }
 
     await tx.openingStockItem.create({
@@ -342,27 +349,32 @@ class InventoryService {
         quantity: totals._sum.quantity ?? 0,
         value: Math.round(totalValue * 100) / 100,
       },
-      items: pairItems.map(({ item, onHand }) => ({
-        id: item.id,
-        variantId: item.variantId,
-        sku: item.variant?.sku ?? "SKU",
-        barcode: item.variant?.barcode ?? null,
-        productName: item.variant?.template?.name ?? "Sản phẩm",
-        imageUrl: item.variant?.template?.imageUrl ?? null,
-        unit: item.variant?.template?.unitOfMeasure || "cái",
-        attributeText: item.variant.variantAttributeValues
-          .map((value) => value.attributeValue.value)
-          .join(" · "),
-        lotItemId: item.lotItem?.id ?? null,
-        lotNumber: item.lotItem?.lot?.lotNumber ?? null,
-        manufacturingDate: item.lotItem?.manufacturingDate ?? null,
-        expirationDate: item.lotItem?.expirationDate ?? null,
-        quantity: item.quantity,
-        unitCost: num(item.unitCost),
-        lineTotal: num(item.unitCost) * item.quantity,
-        onHand,
-        stockStatus: sheet.status === "APPLIED" ? "recorded" : "pending",
-      })),
+      items: pairItems.map(({ item, onHand }) => {
+        const hasLotTracking = Boolean(item.variant?.template?.hasLotTracking);
+        const isExp2099 = item.lotItem?.expirationDate && new Date(item.lotItem.expirationDate).getUTCFullYear() >= 2099;
+        return {
+          id: item.id,
+          variantId: item.variantId,
+          sku: item.variant?.sku ?? "SKU",
+          barcode: item.variant?.barcode ?? null,
+          productName: item.variant?.template?.name ?? "Sản phẩm",
+          imageUrl: item.variant?.template?.imageUrl ?? null,
+          unit: item.variant?.template?.unitOfMeasure || "cái",
+          hasLotTracking,
+          attributeText: item.variant.variantAttributeValues
+            .map((value) => value.attributeValue.value)
+            .join(" · "),
+          lotItemId: item.lotItem?.id ?? null,
+          lotNumber: item.lotItem?.lot?.lotNumber ?? null,
+          manufacturingDate: item.lotItem?.manufacturingDate ?? null,
+          expirationDate: hasLotTracking && !isExp2099 ? item.lotItem?.expirationDate ?? null : null,
+          quantity: item.quantity,
+          unitCost: num(item.unitCost),
+          lineTotal: num(item.unitCost) * item.quantity,
+          onHand,
+          stockStatus: sheet.status === "APPLIED" ? "recorded" : "pending",
+        };
+      }),
     };
   }
 
@@ -561,8 +573,11 @@ class InventoryService {
     }
 
     for (const item of sheet.openingStockItems) {
+      const lotItemId = item.lotItemId || null;
       let balance = await tx.inventoryBalance.findFirst({
-        where: { businessId, variantId: item.variantId, lotItemId: item.lotItemId },
+        where: lotItemId
+          ? { businessId, variantId: item.variantId, lotItemId }
+          : { businessId, variantId: item.variantId, lotItemId: null },
       });
 
       if (!balance) {
@@ -570,7 +585,7 @@ class InventoryService {
           data: {
             businessId,
             variantId: item.variantId,
-            lotItemId: item.lotItemId,
+            lotItemId,
             quantityOnHand: 0,
             damagedQuantity: 0,
           },
@@ -591,7 +606,7 @@ class InventoryService {
         data: {
           businessId,
           variantId: item.variantId,
-          lotItemId: item.lotItemId,
+          lotItemId,
           transactionType: StockTransactionType.OPENING_STOCK,
           quantityChanged: item.quantity,
           balanceAfter: total._sum.quantityOnHand ?? updated.quantityOnHand,
