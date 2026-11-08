@@ -42,6 +42,10 @@ Business roles are tenant-scoped. The migration creates a default Staff role for
 
 The custom-RBAC migration is `20261106174000_business_custom_rbac` and must be applied before using these endpoints. Platform and business API authorization remain the security boundary; frontend route and menu checks are for user experience only.
 
+## Business data foundation
+
+See [the channel data contract, API, and migration requirements](docs/business-data-foundation.md).
+
 ## Initial API
 
 - `GET /api/auth/me` — validate the Supabase access token, synchronize the app profile, and return membership/permissions or indicate onboarding is required.
@@ -55,5 +59,6 @@ The custom-RBAC migration is `20261106174000_business_custom_rbac` and must be a
 - `PATCH /api/businesses/members/:membershipId/role` — assign an active business role to a non-owner member.
 - `GET /api/businesses/activity` — paginated business activity for members, invitations, roles, and permissions. Supports `page`, `pageSize`, `search` (actor, action, reason, or target), `action`, `from`/`to` (`YYYY-MM-DD`), and `sort` (`newest` or `oldest`).
 - `GET /api/admin/audit-logs` — paginated platform audit log. Supports `page`, `pageSize`, `search` (actor, business, action, reason, or target), `action`, `from`/`to` (`YYYY-MM-DD`), and `sort` (`newest` or `oldest`).
+- Promotion MVP: apply migration `20261107100000_promotions_mvp` before use. `GET /api/promotions` and `/options`, `POST /api/promotions`, `PATCH /api/promotions/:id`, and `PATCH /api/promotions/:id/status` require `promotions.manage`. POS previews automatic discounts at `POST /api/sales/orders/promotion-preview`; order creation snapshots the selected promotion and payment records its redemption atomically. Only one promotion is applied per order; the highest discount wins, with priority as the tie-breaker.
 
 All protected endpoints require `Authorization: Bearer <supabase-access-token>`. The invitation callback must preserve the `invitation_token` query parameter and send its value to the acceptance endpoint after Supabase has established the session.

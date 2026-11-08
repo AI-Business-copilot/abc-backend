@@ -3,6 +3,27 @@ import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../shared/http/http-error";
 import { allocateStock } from "../sales/sales.service";
 
+export function refundAmountForOrderItem(
+  orderItem: { subtotal: Prisma.Decimal; discountAmount: Prisma.Decimal | null; quantity: number },
+  previouslyReturnedQty: number,
+  returnQty: number,
+) {
+  const netLineCents = new Prisma.Decimal(orderItem.subtotal)
+    .minus(orderItem.discountAmount ?? 0)
+    .mul(100)
+    .toDecimalPlaces(0)
+    .toFixed(0);
+  const netCents = BigInt(netLineCents);
+  const quantity = BigInt(orderItem.quantity);
+  const baseCents = netCents / quantity;
+  const extraCentUnits = netCents % quantity;
+  const start = BigInt(previouslyReturnedQty);
+  const end = start + BigInt(returnQty);
+  const extraReturned = (end < extraCentUnits ? end : extraCentUnits) - (start < extraCentUnits ? start : extraCentUnits);
+  const amountCents = baseCents * BigInt(returnQty) + extraReturned;
+  return new Prisma.Decimal(amountCents.toString()).div(100);
+}
+
 export interface ExchangeItemInput {
   variantId: string;
   quantity: number;
@@ -358,11 +379,12 @@ export class CustomerReturnsService {
           lotItemId: string | null;
           returnQty: number;
           refundUnitPrice: number;
+          refundAmount: Prisma.Decimal;
           itemCondition: "RESTOCKABLE" | "DAMAGED_QUARANTINE";
           returnReason: string;
         }> = [];
 
-        let totalRefundAmount = 0;
+        let totalRefundAmount = new Prisma.Decimal(0);
 
         for (const item of body.items) {
           const returnQty = Math.trunc(Number(item.returnQty));
@@ -377,6 +399,7 @@ export class CustomerReturnsService {
           const variant = variantMap.get(item.variantId)!;
 
           let matchedOrderItem: any = undefined;
+          let previouslyReturnedQty = 0;
           const passedLot = item.lotItemId || item.lotId;
           if (order) {
             matchedOrderItem = item.orderItemId ? orderItemMap.get(item.orderItemId) : undefined;
@@ -400,7 +423,7 @@ export class CustomerReturnsService {
               },
             });
 
-            const previouslyReturnedQty = returnedAgg._sum.returnQty ?? 0;
+            previouslyReturnedQty = returnedAgg._sum.returnQty ?? 0;
             const returnableQty = matchedOrderItem.quantity - previouslyReturnedQty;
 
             if (returnQty > returnableQty) {
@@ -424,14 +447,15 @@ export class CustomerReturnsService {
             resolvedLotItemId = matchedOrderItem.lotItemId;
           }
 
-          const refundUnitPrice =
-            item.refundUnitPrice != null && Number.isFinite(Number(item.refundUnitPrice))
-              ? Number(item.refundUnitPrice)
-              : matchedOrderItem
-                ? Number(matchedOrderItem.unitPrice)
-                : Number(variant.basePrice);
-
-          totalRefundAmount += returnQty * refundUnitPrice;
+          const refundAmount = matchedOrderItem
+            ? refundAmountForOrderItem(matchedOrderItem, previouslyReturnedQty, returnQty)
+            : new Prisma.Decimal(
+                item.refundUnitPrice != null && Number.isFinite(Number(item.refundUnitPrice))
+                  ? item.refundUnitPrice
+                  : variant.basePrice,
+              ).mul(returnQty).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+          const refundUnitPrice = refundAmount.div(returnQty).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
+          totalRefundAmount = totalRefundAmount.plus(refundAmount);
 
           validatedLines.push({
             orderItem: matchedOrderItem,
@@ -440,12 +464,11 @@ export class CustomerReturnsService {
             lotItemId: resolvedLotItemId,
             returnQty,
             refundUnitPrice,
+            refundAmount,
             itemCondition: item.itemCondition,
             returnReason: item.returnReason?.trim() || "Khách trả hàng",
           });
         }
-
-        totalRefundAmount = Math.round(totalRefundAmount * 100) / 100;
 
         // Cash Shift check
         const refundMethod = body.refundMethod || "CASH";
@@ -466,7 +489,7 @@ export class CustomerReturnsService {
           if (!lockedShift.length) throw new HttpError(409, "Open a cash shift owned by the current user first.");
         }
 
-        if (refundMethod === "CASH" && totalRefundAmount > 0) {
+        if (refundMethod === "CASH" && totalRefundAmount.gt(0)) {
           if (!activeShift) {
             throw new HttpError(409, "Open a cash shift owned by the current user first.");
           }
@@ -500,7 +523,7 @@ export class CustomerReturnsService {
             originalOrderId: order ? order.id : null,
             isUnverifiedOrigin: Boolean(body.isUnverifiedOrigin),
             cashierId: userId,
-            totalRefundAmount,
+            totalRefundAmount: totalRefundAmount.toNumber(),
             refundMethod,
             status: "COMPLETED",
           },
@@ -520,6 +543,7 @@ export class CustomerReturnsService {
               lotItemId: line.lotItemId,
               returnQty: line.returnQty,
               refundUnitPrice: line.refundUnitPrice,
+              refundAmount: line.refundAmount,
               itemCondition: line.itemCondition,
               returnReason: line.returnReason,
             },
@@ -686,7 +710,7 @@ export class CustomerReturnsService {
             });
           }
 
-          delta = exchangeOrderTotal.toNumber() - totalRefundAmount;
+          delta = exchangeOrderTotal.toNumber() - totalRefundAmount.toNumber();
 
           if (delta > 0) {
             // Khách trả thêm
@@ -752,7 +776,7 @@ export class CustomerReturnsService {
           }
         } else {
           // Pure return
-          if (refundMethod === "CASH" && totalRefundAmount > 0 && activeShift) {
+          if (refundMethod === "CASH" && totalRefundAmount.gt(0) && activeShift) {
             await tx.cashTransaction.create({
               data: {
                 businessId,

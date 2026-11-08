@@ -13,11 +13,18 @@ test('F04 documents every sales route and contains only F04 preparation and sale
   const source = fs.readFileSync(require.resolve('../src/modules/sales/sales.routes.ts'), 'utf8');
   const actual = [...source.matchAll(/router\.(get|post)\("([^"]+)"/g)].map(([, method, path]) => `${method} /sales${path.replace(/:id/g, '{id}')}`).sort();
   const documented = Object.entries(spec.paths).filter(([path]) => path.startsWith('/sales/')).flatMap(([path, ops]) => Object.keys(ops).map(method => `${method} ${path}`)).sort();
-  assert.equal(actual.length, 9); assert.deepEqual(documented, actual);
+  assert.equal(actual.length, 10); assert.deepEqual(documented, actual);
   assert.ok(Object.keys(spec.paths).every(path => /^\/(sales\/|auth\/|inventory\/|health$)/.test(path)));
   for (const [, name] of JSON.stringify(spec).matchAll(/"\$ref":"#\/components\/schemas\/([^"]+)"/g)) assert.ok(spec.components.schemas[name], name);
   assert.deepEqual(spec.security, [{ bearerAuth: [] }]);
   assert.equal(spec.info.title, 'fo4');
+  // Sales returns the ProductLotItem relation, with its parent lot nested inside.
+  const item = spec.components.schemas.OrderItem.properties;
+  assert.ok(item.lotItemId);
+  assert.equal(item.lotItem.nullable, true);
+  assert.ok(item.lotItem.properties.expirationDate);
+  assert.ok(item.lotItem.properties.lot.properties.lotNumber);
+  assert.equal(item.lot, undefined);
 });
 
 test('F03 and F04 Swagger assets/config stay isolated and F04 login auto-authorizes', async () => {
@@ -48,7 +55,7 @@ test('F03 and F04 Swagger assets/config stay isolated and F04 login auto-authori
     const result = await fetch(`${base}/fo4/openapi.json`); assert.equal(result.headers.get('cache-control'), 'no-store');
     const spec = await result.json();
     assert.equal(spec.paths['/auth/v1/token'].post.parameters.find(p => p.name === 'apikey').schema.default, 'public-test-key');
-    for (const path of ['/api/sales/orders', '/api/sales/customers', '/api/sales/cash-shifts/current']) assert.equal((await fetch(`${base}${path}`)).status, 401);
+    for (const path of ['/api/sales/orders', '/api/sales/orders/promotion-preview', '/api/sales/customers', '/api/sales/cash-shifts/current']) assert.equal((await fetch(`${base}${path}`)).status, 401);
     const payment = await fetch(`${base}/api/sales/orders/11111111-1111-4111-8111-111111111111/payments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); assert.equal(payment.status, 401);
     delete process.env.SUPABASE_URL; delete process.env.SUPABASE_ANON_KEY;
     assert.equal(createFo4Document().paths['/auth/v1/token'], undefined);

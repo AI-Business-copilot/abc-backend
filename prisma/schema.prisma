@@ -24,35 +24,40 @@ model Business {
   auditLogs   PlatformAuditLog[]
   roles       Role[]
 
-  categories          Category[]           @relation("categories_business_id")
-  categoryAttributes  CategoryAttribute[]  @relation("category_attributes_business_id")
-  productTemplates    ProductTemplate[]    @relation("product_templates_business_id")
-  attributes          Attribute[]          @relation("attributes_business_id")
-  attributeValues     AttributeValue[]     @relation("attribute_values_business_id")
-  productVariants     ProductVariant[]     @relation("product_variants_business_id")
-  suppliers           Supplier[]           @relation("suppliers_business_id")
-  supplierProducts    SupplierProduct[]    @relation("supplier_products_business_id")
-  customers           Customer[]           @relation("customers_business_id")
-  productLots         ProductLot[]         @relation("product_lots_business_id")
-  productLotItems     ProductLotItem[]     @relation("product_lot_items_business_id")
-  inventoryBalances   InventoryBalance[]   @relation("inventory_balances_business_id")
-  inventoryLedger     InventoryLedger[]    @relation("inventory_ledger_business_id")
-  openingStockSheets  OpeningStockSheet[]  @relation("opening_stock_sheets_business_id")
-  purchaseOrders      PurchaseOrder[]      @relation("purchase_orders_business_id")
-  purchaseReceipts    PurchaseReceipt[]    @relation("purchase_receipts_business_id")
-  vendorReturns       VendorReturn[]       @relation("vendor_returns_business_id")
-  cashShifts          CashShift[]          @relation("cash_shifts_business_id")
-  cashTransactions    CashTransaction[]    @relation("cash_transactions_business_id")
-  cashShiftHandoffs   CashShiftHandoff[]   @relation("cash_shift_handoffs_business_id")
-  cashShiftHandoffReviews CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_business_id")
-  cashShiftCloseReviews CashShiftCloseReview[] @relation("cash_shift_close_reviews_business_id")
-  orders              Order[]              @relation("orders_business_id")
-  customerReturns     CustomerReturn[]     @relation("customer_returns_business_id")
-  stockAudits         StockAudit[]         @relation("stock_audits_business_id")
-  scrapOrders         ScrapOrder[]         @relation("scrap_orders_business_id")
-  scrapOrderImages    ScrapOrderImage[]    @relation("scrap_order_images_business_id")
-  dailyProductMetrics DailyProductMetric[] @relation("daily_product_metrics_business_id")
-  forecastRuns        ForecastRun[]        @relation("forecast_runs_business_id")
+  categories              Category[]                  @relation("categories_business_id")
+  categoryAttributes      CategoryAttribute[]         @relation("category_attributes_business_id")
+  productTemplates        ProductTemplate[]           @relation("product_templates_business_id")
+  attributes              Attribute[]                 @relation("attributes_business_id")
+  attributeValues         AttributeValue[]            @relation("attribute_values_business_id")
+  productVariants         ProductVariant[]            @relation("product_variants_business_id")
+  suppliers               Supplier[]                  @relation("suppliers_business_id")
+  supplierProducts        SupplierProduct[]           @relation("supplier_products_business_id")
+  customers               Customer[]                  @relation("customers_business_id")
+  productLots             ProductLot[]                @relation("product_lots_business_id")
+  productLotItems         ProductLotItem[]            @relation("product_lot_items_business_id")
+  inventoryBalances       InventoryBalance[]          @relation("inventory_balances_business_id")
+  inventoryLedger         InventoryLedger[]           @relation("inventory_ledger_business_id")
+  openingStockSheets      OpeningStockSheet[]         @relation("opening_stock_sheets_business_id")
+  purchaseOrders          PurchaseOrder[]             @relation("purchase_orders_business_id")
+  purchaseReceipts        PurchaseReceipt[]           @relation("purchase_receipts_business_id")
+  vendorReturns           VendorReturn[]              @relation("vendor_returns_business_id")
+  cashShifts              CashShift[]                 @relation("cash_shifts_business_id")
+  cashTransactions        CashTransaction[]           @relation("cash_transactions_business_id")
+  cashShiftHandoffs       CashShiftHandoff[]          @relation("cash_shift_handoffs_business_id")
+  cashShiftHandoffReviews CashShiftHandoffReview[]    @relation("cash_shift_handoff_reviews_business_id")
+  cashShiftCloseReviews   CashShiftCloseReview[]      @relation("cash_shift_close_reviews_business_id")
+  orders                  Order[]                     @relation("orders_business_id")
+  customerReturns         CustomerReturn[]            @relation("customer_returns_business_id")
+  stockAudits             StockAudit[]                @relation("stock_audits_business_id")
+  scrapOrders             ScrapOrder[]                @relation("scrap_orders_business_id")
+  scrapOrderImages        ScrapOrderImage[]           @relation("scrap_order_images_business_id")
+  dailyProductMetrics     DailyProductMetric[]        @relation("daily_product_metrics_business_id")
+  forecastRuns            ForecastRun[]               @relation("forecast_runs_business_id")
+  promotions              Promotion[]                 @relation("promotions_business_id")
+  promotionTargets        PromotionTarget[]           @relation("promotion_targets_business_id")
+  promotionRedemptions    PromotionRedemption[]       @relation("promotion_redemptions_business_id")
+  onlineReportBatches     OnlineReportImportBatch[]   @relation("online_report_batches_business_id")
+  channelDailyMetrics     ChannelDailyProductMetric[] @relation("channel_daily_metrics_business_id")
 
   @@map("businesses")
 }
@@ -70,35 +75,37 @@ model User {
   sentInvitations BusinessInvitation[] @relation("business_invitations_invited_by")
   auditLogs       PlatformAuditLog[]   @relation("platform_audit_actor")
 
-  inventoryLedger            InventoryLedger[]   @relation("inventory_ledger_created_by")
-  openingStockSheets         OpeningStockSheet[] @relation("opening_stock_sheets_created_by")
-  purchaseOrders             PurchaseOrder[]     @relation("purchase_orders_created_by")
-  purchaseReceipts           PurchaseReceipt[]   @relation("purchase_receipts_created_by")
-  vendorReturns              VendorReturn[]      @relation("vendor_returns_created_by")
-  cashShifts                 CashShift[]         @relation("cash_shifts_user_id")
-  cashTransactions           CashTransaction[]   @relation("cash_transactions_created_by")
-  cashShiftHandoffsRecorded CashShiftHandoff[] @relation("cash_shift_handoffs_recorded_by")
-  cashShiftHandoffsReviewed CashShiftHandoff[] @relation("cash_shift_handoffs_reviewed_by")
-  cashShiftHandoffReviewsSubmitted CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_submitted_by")
-  cashShiftHandoffReviewsReviewed CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_reviewed_by")
-  cashShiftReviewsSubmitted CashShiftCloseReview[] @relation("cash_shift_close_reviews_submitted_by")
-  cashShiftReviewsReviewed CashShiftCloseReview[] @relation("cash_shift_close_reviews_reviewed_by")
-  orders                     Order[]             @relation("orders_cashier_id")
-  customerReturns            CustomerReturn[]    @relation("customer_returns_cashier_id")
-  stockAudits                StockAudit[]        @relation("stock_audits_approved_by")
-  stockAuditsCreated         StockAudit[]        @relation("stock_audits_created_by")
-  stockAuditItemsCreatedBy   StockAuditItem[]    @relation("stock_audit_items_created_by_user_id")
-  stockAuditItemsAssignedTo  StockAuditItem[]    @relation("stock_audit_items_assigned_to_user_id")
-  stockAuditItemsSubmittedBy StockAuditItem[]    @relation("stock_audit_items_submitted_by_user_id")
-  stockAuditItemsApprovedBy  StockAuditItem[]    @relation("stock_audit_items_approved_by_user_id")
-  stockAuditItemsRejectedBy  StockAuditItem[]    @relation("stock_audit_items_rejected_by_user_id")
-  scrapOrders                ScrapOrder[]        @relation("scrap_orders_created_by")
-  scrapOrdersApproved        ScrapOrder[]        @relation("scrap_orders_approved_by")
-  scrapOrdersRejected        ScrapOrder[]        @relation("scrap_orders_rejected_by")
-  scrapImagesUploaded        ScrapOrderImage[]   @relation("scrap_order_images_uploaded_by")
-  scrapImagesDeleted         ScrapOrderImage[]   @relation("scrap_order_images_deleted_by")
-  lotItemsQuarantined        ProductLotItem[]    @relation("product_lot_items_quarantined_by")
-  forecastRuns               ForecastRun[]       @relation("forecast_runs_executed_by")
+  inventoryLedger                  InventoryLedger[]         @relation("inventory_ledger_created_by")
+  openingStockSheets               OpeningStockSheet[]       @relation("opening_stock_sheets_created_by")
+  purchaseOrders                   PurchaseOrder[]           @relation("purchase_orders_created_by")
+  purchaseReceipts                 PurchaseReceipt[]         @relation("purchase_receipts_created_by")
+  vendorReturns                    VendorReturn[]            @relation("vendor_returns_created_by")
+  cashShifts                       CashShift[]               @relation("cash_shifts_user_id")
+  cashTransactions                 CashTransaction[]         @relation("cash_transactions_created_by")
+  cashShiftHandoffsRecorded        CashShiftHandoff[]        @relation("cash_shift_handoffs_recorded_by")
+  cashShiftHandoffsReviewed        CashShiftHandoff[]        @relation("cash_shift_handoffs_reviewed_by")
+  cashShiftHandoffReviewsSubmitted CashShiftHandoffReview[]  @relation("cash_shift_handoff_reviews_submitted_by")
+  cashShiftHandoffReviewsReviewed  CashShiftHandoffReview[]  @relation("cash_shift_handoff_reviews_reviewed_by")
+  cashShiftReviewsSubmitted        CashShiftCloseReview[]    @relation("cash_shift_close_reviews_submitted_by")
+  cashShiftReviewsReviewed         CashShiftCloseReview[]    @relation("cash_shift_close_reviews_reviewed_by")
+  orders                           Order[]                   @relation("orders_cashier_id")
+  customerReturns                  CustomerReturn[]          @relation("customer_returns_cashier_id")
+  stockAudits                      StockAudit[]              @relation("stock_audits_approved_by")
+  stockAuditsCreated               StockAudit[]              @relation("stock_audits_created_by")
+  stockAuditItemsCreatedBy         StockAuditItem[]          @relation("stock_audit_items_created_by_user_id")
+  stockAuditItemsAssignedTo        StockAuditItem[]          @relation("stock_audit_items_assigned_to_user_id")
+  stockAuditItemsSubmittedBy       StockAuditItem[]          @relation("stock_audit_items_submitted_by_user_id")
+  stockAuditItemsApprovedBy        StockAuditItem[]          @relation("stock_audit_items_approved_by_user_id")
+  stockAuditItemsRejectedBy        StockAuditItem[]          @relation("stock_audit_items_rejected_by_user_id")
+  scrapOrders                      ScrapOrder[]              @relation("scrap_orders_created_by")
+  scrapOrdersApproved              ScrapOrder[]              @relation("scrap_orders_approved_by")
+  scrapOrdersRejected              ScrapOrder[]              @relation("scrap_orders_rejected_by")
+  scrapImagesUploaded              ScrapOrderImage[]         @relation("scrap_order_images_uploaded_by")
+  scrapImagesDeleted               ScrapOrderImage[]         @relation("scrap_order_images_deleted_by")
+  lotItemsQuarantined              ProductLotItem[]          @relation("product_lot_items_quarantined_by")
+  forecastRuns                     ForecastRun[]             @relation("forecast_runs_executed_by")
+  promotionsCreated                Promotion[]               @relation("promotions_created_by")
+  onlineReportImports              OnlineReportImportBatch[] @relation("online_report_batches_imported_by")
 
   @@map("users")
 }
@@ -114,7 +121,7 @@ model Role {
   isArchived  Boolean  @default(false) @map("is_archived")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business      Business? @relation(fields: [businessId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  business      Business?            @relation(fields: [businessId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   permissions   RolePermission[]
   memberships   BusinessMembership[]
   platformUsers PlatformUserRole[]
@@ -237,9 +244,11 @@ model Category {
   children           Category[]          @relation("categories_parent_id")
   categoryAttributes CategoryAttribute[] @relation("category_attributes_category_id")
   productTemplates   ProductTemplate[]   @relation("product_templates_category_id")
+  promotionTargets   PromotionTarget[]   @relation("promotion_targets_category_id")
 
   @@unique([businessId, name], map: "uq_category_tenant_name")
   @@unique([businessId, code], map: "uq_category_tenant_code")
+  @@unique([businessId, id], map: "uq_category_tenant_id")
   @@map("categories")
 }
 
@@ -272,11 +281,13 @@ model ProductTemplate {
   createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  business        Business         @relation("product_templates_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  category        Category?        @relation("product_templates_category_id", fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  productVariants ProductVariant[] @relation("product_variants_template_id")
+  business         Business          @relation("product_templates_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  category         Category?         @relation("product_templates_category_id", fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  productVariants  ProductVariant[]  @relation("product_variants_template_id")
+  promotionTargets PromotionTarget[] @relation("promotion_targets_product_template_id")
 
   @@unique([businessId, name], map: "uq_template_tenant_name")
+  @@unique([businessId, id], map: "uq_template_tenant_id")
   @@map("product_templates")
 }
 
@@ -335,22 +346,23 @@ model ProductVariant {
   createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  business               Business                @relation("product_variants_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  template               ProductTemplate         @relation("product_variants_template_id", fields: [templateId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variantAttributeValues VariantAttributeValue[] @relation("variant_attribute_values_variant_id")
-  productLotItems        ProductLotItem[]        @relation("product_lot_items_variant_id")
-  inventoryBalances      InventoryBalance[]      @relation("inventory_balances_variant_id")
-  inventoryLedger        InventoryLedger[]       @relation("inventory_ledger_variant_id")
-  openingStockItems      OpeningStockItem[]      @relation("opening_stock_items_variant_id")
-  purchaseOrderItems     PurchaseOrderItem[]     @relation("purchase_order_items_variant_id")
-  purchaseReceiptItems   PurchaseReceiptItem[]   @relation("purchase_receipt_items_variant_id")
-  vendorReturnItems      VendorReturnItem[]      @relation("vendor_return_items_variant_id")
-  orderItems             OrderItem[]             @relation("order_items_variant_id")
-  customerReturnItems    CustomerReturnItem[]    @relation("customer_return_items_variant_id")
-  stockAuditItems        StockAuditItem[]        @relation("stock_audit_items_variant_id")
-  scrapOrders            ScrapOrder[]            @relation("scrap_orders_variant_id")
-  dailyProductMetrics    DailyProductMetric[]    @relation("daily_product_metrics_variant_id")
-  forecastResults        ForecastResult[]        @relation("forecast_results_variant_id")
+  business               Business                    @relation("product_variants_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  template               ProductTemplate             @relation("product_variants_template_id", fields: [templateId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variantAttributeValues VariantAttributeValue[]     @relation("variant_attribute_values_variant_id")
+  productLotItems        ProductLotItem[]            @relation("product_lot_items_variant_id")
+  inventoryBalances      InventoryBalance[]          @relation("inventory_balances_variant_id")
+  inventoryLedger        InventoryLedger[]           @relation("inventory_ledger_variant_id")
+  openingStockItems      OpeningStockItem[]          @relation("opening_stock_items_variant_id")
+  purchaseOrderItems     PurchaseOrderItem[]         @relation("purchase_order_items_variant_id")
+  purchaseReceiptItems   PurchaseReceiptItem[]       @relation("purchase_receipt_items_variant_id")
+  vendorReturnItems      VendorReturnItem[]          @relation("vendor_return_items_variant_id")
+  orderItems             OrderItem[]                 @relation("order_items_variant_id")
+  customerReturnItems    CustomerReturnItem[]        @relation("customer_return_items_variant_id")
+  stockAuditItems        StockAuditItem[]            @relation("stock_audit_items_variant_id")
+  scrapOrders            ScrapOrder[]                @relation("scrap_orders_variant_id")
+  dailyProductMetrics    DailyProductMetric[]        @relation("daily_product_metrics_variant_id")
+  channelDailyMetrics    ChannelDailyProductMetric[] @relation("channel_daily_metrics_variant_id")
+  forecastResults        ForecastResult[]            @relation("forecast_results_variant_id")
 
   supplierProducts SupplierProduct[] @relation("supplier_products_variant_id")
 
@@ -720,29 +732,29 @@ model VendorReturnItem {
 }
 
 model CashShift {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId     String    @map("business_id") @db.Uuid
-  userId         String    @map("user_id") @db.Uuid
-  openedAt       DateTime? @default(now()) @map("opened_at") @db.Timestamptz(6)
-  closedAt       DateTime? @map("closed_at") @db.Timestamptz(6)
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId           String    @map("business_id") @db.Uuid
+  userId               String    @map("user_id") @db.Uuid
+  openedAt             DateTime? @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt             DateTime? @map("closed_at") @db.Timestamptz(6)
   /// SQL CHECK (opening_cash >= 0); can ap dung bang SQL rieng.
-  openingCash    Decimal   @default(0) @map("opening_cash") @db.Decimal(12, 2)
-  expectedCash   Decimal?  @map("expected_cash") @db.Decimal(12, 2)
-  actualCash     Decimal?  @map("actual_cash") @db.Decimal(12, 2)
-  differenceCash Decimal?  @map("difference_cash") @db.Decimal(12, 2)
+  openingCash          Decimal   @default(0) @map("opening_cash") @db.Decimal(12, 2)
+  expectedCash         Decimal?  @map("expected_cash") @db.Decimal(12, 2)
+  actualCash           Decimal?  @map("actual_cash") @db.Decimal(12, 2)
+  differenceCash       Decimal?  @map("difference_cash") @db.Decimal(12, 2)
   reconciliationStatus String    @default("INCOMPLETE_DATA") @map("reconciliation_status") @db.VarChar(30)
-  shiftNotes     String?   @map("shift_notes") @db.Text
+  shiftNotes           String?   @map("shift_notes") @db.Text
   /// SQL CHECK (status IN ('OPEN', 'CLOSED')); can ap dung bang SQL rieng.
-  status         String    @default("OPEN") @db.VarChar(20)
+  status               String    @default("OPEN") @db.VarChar(20)
 
-  business         Business          @relation("cash_shifts_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  user             User              @relation("cash_shifts_user_id", fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  cashTransactions CashTransaction[] @relation("cash_transactions_shift_id")
-  orders           Order[]           @relation("orders_shift_id")
-  orderPayments    OrderPayment[]    @relation("order_payments_shift_id")
-  customerReturns  CustomerReturn[]  @relation("customer_returns_shift_id")
-  outgoingHandoff  CashShiftHandoff? @relation("cash_shift_handoffs_previous_shift_id")
-  incomingHandoff  CashShiftHandoff? @relation("cash_shift_handoffs_next_shift_id")
+  business         Business               @relation("cash_shifts_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  user             User                   @relation("cash_shifts_user_id", fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  cashTransactions CashTransaction[]      @relation("cash_transactions_shift_id")
+  orders           Order[]                @relation("orders_shift_id")
+  orderPayments    OrderPayment[]         @relation("order_payments_shift_id")
+  customerReturns  CustomerReturn[]       @relation("customer_returns_shift_id")
+  outgoingHandoff  CashShiftHandoff?      @relation("cash_shift_handoffs_previous_shift_id")
+  incomingHandoff  CashShiftHandoff?      @relation("cash_shift_handoffs_next_shift_id")
   closeReviews     CashShiftCloseReview[] @relation("cash_shift_close_reviews_shift_id")
 
   @@unique([businessId], where: raw("(status = 'OPEN')"), map: "uq_cash_shifts_one_open_per_business")
@@ -773,49 +785,49 @@ model CashTransaction {
 }
 
 model CashShiftHandoff {
-  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId       String   @map("business_id") @db.Uuid
-  previousShiftId  String   @unique(map: "uq_cash_shift_handoffs_previous_shift") @map("previous_shift_id") @db.Uuid
-  nextShiftId      String   @unique(map: "uq_cash_shift_handoffs_next_shift") @map("next_shift_id") @db.Uuid
-  handedOverCash   Decimal  @map("handed_over_cash") @db.Decimal(12, 2)
-  receivedCash     Decimal  @map("received_cash") @db.Decimal(12, 2)
-  differenceCash   Decimal  @map("difference_cash") @db.Decimal(12, 2)
-  recordedBy       String   @map("recorded_by") @db.Uuid
-  notes            String?  @db.Text
-  status           String   @default("APPROVED") @db.VarChar(30)
-  explanation      String?  @db.Text
-  reviewedBy       String?  @map("reviewed_by") @db.Uuid
-  reviewedAt       DateTime? @map("reviewed_at") @db.Timestamptz(6)
-  reviewerNote     String?  @map("reviewer_note") @db.Text
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId      String    @map("business_id") @db.Uuid
+  previousShiftId String    @unique(map: "uq_cash_shift_handoffs_previous_shift") @map("previous_shift_id") @db.Uuid
+  nextShiftId     String    @unique(map: "uq_cash_shift_handoffs_next_shift") @map("next_shift_id") @db.Uuid
+  handedOverCash  Decimal   @map("handed_over_cash") @db.Decimal(12, 2)
+  receivedCash    Decimal   @map("received_cash") @db.Decimal(12, 2)
+  differenceCash  Decimal   @map("difference_cash") @db.Decimal(12, 2)
+  recordedBy      String    @map("recorded_by") @db.Uuid
+  notes           String?   @db.Text
+  status          String    @default("APPROVED") @db.VarChar(30)
+  explanation     String?   @db.Text
+  reviewedBy      String?   @map("reviewed_by") @db.Uuid
+  reviewedAt      DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewerNote    String?   @map("reviewer_note") @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business        Business  @relation("cash_shift_handoffs_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  previousShift   CashShift @relation("cash_shift_handoffs_previous_shift_id", fields: [previousShiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  nextShift       CashShift @relation("cash_shift_handoffs_next_shift_id", fields: [nextShiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  recordedByUser  User      @relation("cash_shift_handoffs_recorded_by", fields: [recordedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  reviewedByUser  User?     @relation("cash_shift_handoffs_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  reviewRecords   CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_handoff_id")
+  business       Business                 @relation("cash_shift_handoffs_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  previousShift  CashShift                @relation("cash_shift_handoffs_previous_shift_id", fields: [previousShiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  nextShift      CashShift                @relation("cash_shift_handoffs_next_shift_id", fields: [nextShiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  recordedByUser User                     @relation("cash_shift_handoffs_recorded_by", fields: [recordedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewedByUser User?                    @relation("cash_shift_handoffs_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewRecords  CashShiftHandoffReview[] @relation("cash_shift_handoff_reviews_handoff_id")
 
   @@map("cash_shift_handoffs")
 }
 
 model CashShiftHandoffReview {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId    String    @map("business_id") @db.Uuid
-  handoffId     String    @map("handoff_id") @db.Uuid
-  revision      Int
-  explanation   String    @db.Text
-  status        String    @default("PENDING_REVIEW") @db.VarChar(30)
-  submittedBy   String    @map("submitted_by") @db.Uuid
-  submittedAt   DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
-  reviewedBy    String?   @map("reviewed_by") @db.Uuid
-  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
-  reviewerNote  String?   @map("reviewer_note") @db.Text
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId   String    @map("business_id") @db.Uuid
+  handoffId    String    @map("handoff_id") @db.Uuid
+  revision     Int
+  explanation  String    @db.Text
+  status       String    @default("PENDING_REVIEW") @db.VarChar(30)
+  submittedBy  String    @map("submitted_by") @db.Uuid
+  submittedAt  DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  reviewedBy   String?   @map("reviewed_by") @db.Uuid
+  reviewedAt   DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewerNote String?   @map("reviewer_note") @db.Text
 
-  business        Business        @relation("cash_shift_handoff_reviews_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business        Business         @relation("cash_shift_handoff_reviews_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   handoff         CashShiftHandoff @relation("cash_shift_handoff_reviews_handoff_id", fields: [handoffId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  submittedByUser User            @relation("cash_shift_handoff_reviews_submitted_by", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  reviewedByUser  User?           @relation("cash_shift_handoff_reviews_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  submittedByUser User             @relation("cash_shift_handoff_reviews_submitted_by", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewedByUser  User?            @relation("cash_shift_handoff_reviews_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@unique([handoffId, revision], map: "uq_cash_shift_handoff_reviews_revision")
   @@index([businessId, status, submittedAt(sort: Desc)], map: "idx_cash_shift_handoff_reviews_business_status")
@@ -823,26 +835,26 @@ model CashShiftHandoffReview {
 }
 
 model CashShiftCloseReview {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId    String    @map("business_id") @db.Uuid
-  shiftId       String    @map("shift_id") @db.Uuid
-  revision      Int
-  expectedCash  Decimal   @map("expected_cash") @db.Decimal(12, 2)
-  actualCash    Decimal   @map("actual_cash") @db.Decimal(12, 2)
-  differenceCash Decimal  @map("difference_cash") @db.Decimal(12, 2)
-  isMatched     Boolean   @map("is_matched")
-  explanation   String?   @db.Text
-  status        String    @default("PENDING_REVIEW") @db.VarChar(30)
-  submittedBy   String    @map("submitted_by") @db.Uuid
-  submittedAt   DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
-  reviewedBy    String?   @map("reviewed_by") @db.Uuid
-  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
-  reviewerNote  String?   @map("reviewer_note") @db.Text
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId     String    @map("business_id") @db.Uuid
+  shiftId        String    @map("shift_id") @db.Uuid
+  revision       Int
+  expectedCash   Decimal   @map("expected_cash") @db.Decimal(12, 2)
+  actualCash     Decimal   @map("actual_cash") @db.Decimal(12, 2)
+  differenceCash Decimal   @map("difference_cash") @db.Decimal(12, 2)
+  isMatched      Boolean   @map("is_matched")
+  explanation    String?   @db.Text
+  status         String    @default("PENDING_REVIEW") @db.VarChar(30)
+  submittedBy    String    @map("submitted_by") @db.Uuid
+  submittedAt    DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  reviewedBy     String?   @map("reviewed_by") @db.Uuid
+  reviewedAt     DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewerNote   String?   @map("reviewer_note") @db.Text
 
-  business       Business  @relation("cash_shift_close_reviews_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  shift          CashShift @relation("cash_shift_close_reviews_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  submittedByUser User     @relation("cash_shift_close_reviews_submitted_by", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  reviewedByUser  User?    @relation("cash_shift_close_reviews_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business        Business  @relation("cash_shift_close_reviews_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  shift           CashShift @relation("cash_shift_close_reviews_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  submittedByUser User      @relation("cash_shift_close_reviews_submitted_by", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reviewedByUser  User?     @relation("cash_shift_close_reviews_reviewed_by", fields: [reviewedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@unique([shiftId, revision], map: "uq_cash_shift_close_reviews_shift_revision")
   @@index([businessId, status, submittedAt(sort: Desc)], map: "idx_cash_shift_close_reviews_business_status")
@@ -868,18 +880,24 @@ model Order {
   /// SQL CHECK (status IN ('DRAFT', 'COMPLETED', 'CANCELLED')); can ap dung bang SQL rieng.
   status               String    @default("COMPLETED") @db.VarChar(30)
   exchangeFromReturnId String?   @map("exchange_from_return_id") @db.Uuid
+  promotionId          String?   @map("promotion_id") @db.Uuid
+  promotionSnapshot    Json?     @map("promotion_snapshot") @db.JsonB
   createdAt            DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business           Business         @relation("orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  shift              CashShift        @relation("orders_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  customer           Customer?        @relation("orders_customer_id", fields: [customerId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  cashier            User             @relation("orders_cashier_id", fields: [cashierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  exchangeFromReturn CustomerReturn?  @relation("orders_exchange_from_return_id", fields: [exchangeFromReturnId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_order_exchange_return")
-  orderItems         OrderItem[]      @relation("order_items_order_id")
-  orderPayments      OrderPayment[]   @relation("order_payments_order_id")
-  customerReturns    CustomerReturn[] @relation("customer_returns_original_order_id")
+  business            Business             @relation("orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  shift               CashShift            @relation("orders_shift_id", fields: [shiftId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  customer            Customer?            @relation("orders_customer_id", fields: [customerId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  cashier             User                 @relation("orders_cashier_id", fields: [cashierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  exchangeFromReturn  CustomerReturn?      @relation("orders_exchange_from_return_id", fields: [exchangeFromReturnId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_order_exchange_return")
+  orderItems          OrderItem[]          @relation("order_items_order_id")
+  orderPayments       OrderPayment[]       @relation("order_payments_order_id")
+  customerReturns     CustomerReturn[]     @relation("customer_returns_original_order_id")
+  promotion           Promotion?           @relation("orders_promotion_id", fields: [businessId, promotionId], references: [businessId, id], onDelete: Restrict, onUpdate: NoAction)
+  promotionRedemption PromotionRedemption? @relation("promotion_redemptions_order_id")
 
   @@unique([businessId, orderCode], map: "uq_order_tenant_code")
+  @@unique([businessId, id], map: "uq_order_tenant_id")
+  @@index([businessId, status, createdAt], map: "idx_orders_business_status_created")
   @@map("orders")
 }
 
@@ -948,6 +966,7 @@ model CustomerReturn {
   orders              Order[]              @relation("orders_exchange_from_return_id")
 
   @@unique([businessId, returnCode], map: "uq_return_tenant_code")
+  @@index([businessId, status, createdAt], map: "idx_returns_business_status_created")
   @@map("customer_returns")
 }
 
@@ -961,6 +980,8 @@ model CustomerReturnItem {
   returnQty       Int     @map("return_qty")
   /// SQL CHECK (refund_unit_price >= 0); can ap dung bang SQL rieng.
   refundUnitPrice Decimal @map("refund_unit_price") @db.Decimal(12, 2)
+  /// Exact line refund; retained separately because a per-unit price cannot represent every cent split.
+  refundAmount    Decimal @map("refund_amount") @db.Decimal(12, 2)
   /// SQL CHECK (item_condition IN ('RESTOCKABLE', 'DAMAGED_QUARANTINE')); can ap dung bang SQL rieng.
   itemCondition   String  @map("item_condition") @db.VarChar(30)
   returnReason    String  @map("return_reason") @db.VarChar(255)
@@ -1104,6 +1125,70 @@ model ScrapOrderImage {
   @@map("scrap_order_images")
 }
 
+model Promotion {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId     String   @map("business_id") @db.Uuid
+  name           String   @db.VarChar(150)
+  description    String?  @db.Text
+  discountType   String   @map("discount_type") @db.VarChar(20)
+  discountValue  Decimal  @map("discount_value") @db.Decimal(12, 2)
+  scope          String   @db.VarChar(20)
+  startsAt       DateTime @map("starts_at") @db.Timestamptz(6)
+  endsAt         DateTime @map("ends_at") @db.Timestamptz(6)
+  minOrderAmount Decimal? @map("min_order_amount") @db.Decimal(12, 2)
+  usageLimit     Int?     @map("usage_limit")
+  priority       Int      @default(0)
+  status         String   @default("ACTIVE") @db.VarChar(20)
+  createdBy      String   @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  business    Business              @relation("promotions_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  creator     User                  @relation("promotions_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  targets     PromotionTarget[]     @relation("promotion_targets_promotion_id")
+  redemptions PromotionRedemption[] @relation("promotion_redemptions_promotion_id")
+  orders      Order[]               @relation("orders_promotion_id")
+
+  @@unique([businessId, id], map: "uq_promotions_business_id")
+  @@index([businessId, status, startsAt, endsAt], map: "idx_promotions_business_status_dates")
+  @@map("promotions")
+}
+
+model PromotionTarget {
+  id                String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId        String  @map("business_id") @db.Uuid
+  promotionId       String  @map("promotion_id") @db.Uuid
+  targetType        String  @map("target_type") @db.VarChar(20)
+  categoryId        String? @map("category_id") @db.Uuid
+  productTemplateId String? @map("product_template_id") @db.Uuid
+
+  business        Business         @relation("promotion_targets_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  promotion       Promotion        @relation("promotion_targets_promotion_id", fields: [businessId, promotionId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
+  category        Category?        @relation("promotion_targets_category_id", fields: [businessId, categoryId], references: [businessId, id], onDelete: Restrict, onUpdate: NoAction)
+  productTemplate ProductTemplate? @relation("promotion_targets_product_template_id", fields: [businessId, productTemplateId], references: [businessId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([businessId, promotionId], map: "idx_promotion_targets_business_promotion")
+  @@map("promotion_targets")
+}
+
+model PromotionRedemption {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId     String   @map("business_id") @db.Uuid
+  promotionId    String   @map("promotion_id") @db.Uuid
+  orderId        String   @unique(map: "uq_promotion_redemptions_order") @map("order_id") @db.Uuid
+  discountAmount Decimal  @map("discount_amount") @db.Decimal(12, 2)
+  redeemedAt     DateTime @default(now()) @map("redeemed_at") @db.Timestamptz(6)
+
+  business  Business  @relation("promotion_redemptions_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  promotion Promotion @relation("promotion_redemptions_promotion_id", fields: [businessId, promotionId], references: [businessId, id], onDelete: Restrict, onUpdate: NoAction)
+  order     Order     @relation("promotion_redemptions_order_id", fields: [businessId, orderId], references: [businessId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([promotionId, orderId], map: "uq_promotion_redemptions_promotion_order")
+  @@unique([businessId, orderId], map: "uq_promotion_redemptions_business_order")
+  @@index([businessId, promotionId, redeemedAt], map: "idx_promotion_redemptions_business_date")
+  @@map("promotion_redemptions")
+}
+
 model DailyProductMetric {
   businessId   String   @map("business_id") @db.Uuid
   variantId    String   @map("variant_id") @db.Uuid
@@ -1120,6 +1205,79 @@ model DailyProductMetric {
 
   @@id([businessId, variantId, metricDate])
   @@map("daily_product_metrics")
+}
+
+model OnlineReportImportBatch {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId       String    @map("business_id") @db.Uuid
+  importedBy       String    @map("imported_by") @db.Uuid
+  platform         String    @db.VarChar(20)
+  fileHash         String    @map("file_hash") @db.Char(64)
+  reportFrom       DateTime? @map("report_from") @db.Date
+  reportTo         DateTime? @map("report_to") @db.Date
+  sourceRowCount   Int       @map("source_row_count")
+  importedRowCount Int       @map("imported_row_count")
+  summary          Json?     @db.JsonB
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  business       Business             @relation("online_report_batches_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  importedByUser User                 @relation("online_report_batches_imported_by", fields: [importedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  records        OnlineReportRecord[] @relation("online_report_records_batch_id")
+
+  @@unique([businessId, id], map: "uq_online_report_batches_business_id")
+  @@unique([businessId, platform, fileHash], map: "uq_online_report_batches_file")
+  @@index([businessId, createdAt], map: "idx_online_report_batches_business_created")
+  @@map("online_report_import_batches")
+}
+
+model OnlineReportRecord {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId        String    @map("business_id") @db.Uuid
+  batchId           String    @map("batch_id") @db.Uuid
+  platform          String    @db.VarChar(20)
+  recordType        String    @map("record_type") @db.VarChar(32)
+  sourceKey         String    @map("source_key") @db.Char(64)
+  sourceSheet       String    @map("source_sheet") @db.VarChar(80)
+  sourceRow         Int       @map("source_row")
+  externalOrderId   String?   @map("external_order_id") @db.VarChar(100)
+  externalProductId String?   @map("external_product_id") @db.VarChar(100)
+  productName       String?   @map("product_name") @db.Text
+  transactionDate   DateTime? @map("transaction_date") @db.Date
+  settlementDate    DateTime? @map("settlement_date") @db.Date
+  financialData     Json?     @map("financial_data") @db.JsonB
+  unmappedFinancialData Json? @map("unmapped_financial_data") @db.JsonB
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  batch OnlineReportImportBatch @relation("online_report_records_batch_id", fields: [businessId, batchId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([businessId, platform, sourceKey], map: "uq_online_report_records_source")
+  @@index([businessId, platform, transactionDate], map: "idx_online_report_records_business_date")
+  @@index([businessId, batchId], map: "idx_online_report_records_batch")
+  @@map("online_report_records")
+}
+
+model ChannelDailyProductMetric {
+  businessId     String   @map("business_id") @db.Uuid
+  variantId      String   @map("variant_id") @db.Uuid
+  channel        String   @default("POS") @db.VarChar(20)
+  metricDate     DateTime @map("metric_date") @db.Date
+  unitsSold      Int      @default(0) @map("units_sold")
+  unitsReturned  Int      @default(0) @map("units_returned")
+  orderCount     Int      @default(0) @map("order_count")
+  grossSales     Decimal  @default(0) @map("gross_sales") @db.Decimal(14, 2)
+  discountAmount Decimal  @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  refundAmount   Decimal  @default(0) @map("refund_amount") @db.Decimal(14, 2)
+  returnedCogs   Decimal  @default(0) @map("returned_cogs") @db.Decimal(14, 2)
+  netRevenue     Decimal  @default(0) @map("net_revenue") @db.Decimal(14, 2)
+  netCogs        Decimal  @default(0) @map("net_cogs") @db.Decimal(14, 2)
+  generatedAt    DateTime @default(now()) @map("generated_at") @db.Timestamptz(6)
+
+  business Business       @relation("channel_daily_metrics_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant  ProductVariant @relation("channel_daily_metrics_variant_id", fields: [businessId, variantId], references: [businessId, id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@id([businessId, channel, variantId, metricDate])
+  @@index([businessId, channel, metricDate], map: "idx_channel_daily_metrics_business_date")
+  @@map("channel_daily_product_metrics")
 }
 
 model ForecastRun {
