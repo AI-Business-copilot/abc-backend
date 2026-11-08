@@ -1245,6 +1245,7 @@ model OnlineReportRecord {
   transactionDate   DateTime? @map("transaction_date") @db.Date
   settlementDate    DateTime? @map("settlement_date") @db.Date
   financialData     Json?     @map("financial_data") @db.JsonB
+  unmappedFinancialData Json? @map("unmapped_financial_data") @db.JsonB
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   batch OnlineReportImportBatch @relation("online_report_records_batch_id", fields: [businessId, batchId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
