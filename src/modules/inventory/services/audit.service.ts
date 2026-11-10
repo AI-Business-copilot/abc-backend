@@ -1386,6 +1386,23 @@ class AuditService {
         throw new HttpError(400, "Đợt kiểm kê chưa có dòng kiểm kê nào để áp dụng.");
       }
 
+      // A pending scrap order is judged against the stock this apply is about to rewrite, so it has to
+      // be resolved first. Otherwise the order can never be approved afterwards.
+      const countedLotItemIds = audit.stockAuditItems
+        .map((item) => item.lotItemId)
+        .filter((id): id is string => Boolean(id));
+      if (countedLotItemIds.length > 0) {
+        const pendingScrap = await tx.scrapOrder.count({
+          where: { businessId, lotItemId: { in: countedLotItemIds }, status: "PENDING" },
+        });
+        if (pendingScrap > 0) {
+          throw new HttpError(
+            409,
+            "Có phiếu hủy đang chờ duyệt trên lô hàng được kiểm kê. Hãy duyệt hoặc hủy phiếu đó trước khi áp dụng.",
+          );
+        }
+      }
+
       // Get all affected variants for unlocking
       const affectedVariantIds = audit.stockAuditItems.map((item) => item.variantId);
 
@@ -1448,19 +1465,27 @@ class AuditService {
 
           if (hasCorrection || audit.auditType === "RE_AUDIT") {
             const expirationDate = correctedExpiration ?? item.lotItem.expirationDate;
-            const calculatedStatus = lotStatusService.calculateStatus(expirationDate);
+            const recalculatedStatus = lotStatusService.calculateStatus(expirationDate);
+            const wasQuarantined = item.lotItem.status === "QUARANTINED";
+            const wasScrapped = item.lotItem.status === "SCRAPPED";
+            // A re-audit releases a quarantine only when the lot is sellable again. Expiry alone never
+            // releases a quarantine, and a scrap decision is never undone.
+            const releasesQuarantine =
+              audit.auditType === "RE_AUDIT" &&
+              wasQuarantined &&
+              (recalculatedStatus === "HEALTHY" || recalculatedStatus === "WARNING");
+            const keepsStatus = wasScrapped || (wasQuarantined && !releasesQuarantine);
 
             await tx.productLotItem.update({
               where: { id: item.lotItem.id },
               data: {
                 ...(correctedExpiration ? { expirationDate: correctedExpiration } : {}),
                 ...(correctedManufacturing ? { manufacturingDate: correctedManufacturing } : {}),
-                // Recalculate the status from the (possibly corrected) expiry, but never undo a manual
-                // quarantine or scrap decision
-                ...(audit.auditType !== "RE_AUDIT" &&
-                (item.lotItem.status === "QUARANTINED" || item.lotItem.status === "SCRAPPED")
-                  ? {}
-                  : { status: calculatedStatus }),
+                ...(keepsStatus ? {} : { status: recalculatedStatus }),
+                // Releasing a quarantine must not leave a HEALTHY row still carrying a quarantine quantity.
+                ...(releasesQuarantine
+                  ? { quarantineQty: null, quarantinedAt: null, quarantinedBy: null, quarantineNote: null }
+                  : {}),
                 ...(audit.auditType === "RE_AUDIT" ? { isLockedForAudit: false } : {}),
               },
             });

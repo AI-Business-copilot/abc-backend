@@ -100,6 +100,7 @@ model User {
   scrapOrders                      ScrapOrder[]              @relation("scrap_orders_created_by")
   scrapOrdersApproved              ScrapOrder[]              @relation("scrap_orders_approved_by")
   scrapOrdersRejected              ScrapOrder[]              @relation("scrap_orders_rejected_by")
+  scrapOrdersCancelled             ScrapOrder[]              @relation("scrap_orders_cancelled_by")
   scrapImagesUploaded              ScrapOrderImage[]         @relation("scrap_order_images_uploaded_by")
   scrapImagesDeleted               ScrapOrderImage[]         @relation("scrap_order_images_deleted_by")
   lotItemsQuarantined              ProductLotItem[]          @relation("product_lot_items_quarantined_by")
@@ -1088,6 +1089,10 @@ model ScrapOrder {
   /// SQL CHECK (rejection_reason_code IN ('WRONG_QUANTITY', 'PHOTO_UNCLEAR', 'NOT_REMOVED_FROM_SHELF', 'OTHER')).
   rejectionReasonCode String?   @map("rejection_reason_code") @db.VarChar(40)
   rejectionNote       String?   @map("rejection_note") @db.VarChar(500)
+  /// Set when the Owner closes a PENDING order without approving or rejecting it. The lot stays quarantined.
+  cancelledBy         String?   @map("cancelled_by") @db.Uuid
+  cancelledAt         DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelledNote       String?   @map("cancelled_note") @db.VarChar(500)
 
   business       Business          @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   variant        ProductVariant    @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
@@ -1095,6 +1100,7 @@ model ScrapOrder {
   createdByUser  User              @relation("scrap_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   approvedByUser User?             @relation("scrap_orders_approved_by", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   rejectedByUser User?             @relation("scrap_orders_rejected_by", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  cancelledByUser User?            @relation("scrap_orders_cancelled_by", fields: [cancelledBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   images         ScrapOrderImage[] @relation("scrap_order_images_scrap_order_id")
 
   @@unique([businessId, scrapCode], map: "uq_scrap_tenant_code")

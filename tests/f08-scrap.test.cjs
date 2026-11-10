@@ -39,7 +39,7 @@ const resetState = () => {
       status: "QUARANTINED",
       quarantineQty: 3,
       expirationDate: new Date("2027-01-01T00:00:00Z"),
-      variant: { id: VARIANT, costPrice: new Prisma.Decimal("10") },
+      variant: { id: VARIANT, costPrice: new Prisma.Decimal("10"), isLockedForAudit: false },
     },
     order: {
       id: ORDER,
@@ -75,6 +75,7 @@ const resetState = () => {
     statusGroups: [],
     sourceGroups: [],
     lossAggregate: { _sum: { totalLossValue: null } },
+    variantLock: { isLockedForAudit: false },
   };
 };
 
@@ -108,6 +109,12 @@ const db = {
     aggregate: async (args) => {
       calls.push(["orderAggregate", args]);
       return state.lossAggregate;
+    },
+  },
+  productVariant: {
+    findFirst: async (args) => {
+      calls.push(["variantFindFirst", args]);
+      return state.variantLock;
     },
   },
   productLotItem: {
@@ -235,16 +242,16 @@ test("only a staff member can open a scrap order for a quarantined lot", async (
     400,
   );
 
-  state.lotItem = null;
-  await rejects(
-    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, scrapReason: "Hỏng" }, [{ buffer: jpeg }]),
-    404,
-  );
-
   state.lotItem = { ...state.lotItem, status: "UNUSABLE" };
   await rejects(
     () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, scrapReason: "Hỏng" }, [{ buffer: jpeg }]),
     409,
+  );
+
+  state.lotItem = null;
+  await rejects(
+    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, scrapReason: "Hỏng" }, [{ buffer: jpeg }]),
+    404,
   );
 });
 
@@ -413,6 +420,7 @@ test("scrap statistics count only approved orders as a loss", async () => {
     { status: "PENDING", _count: { _all: 2 } },
     { status: "COMPLETED", _count: { _all: 3 } },
     { status: "REJECTED", _count: { _all: 4 } },
+    { status: "CANCELLED", _count: { _all: 1 } },
   ];
   state.sourceGroups = [
     { scrapSource: "DAMAGED_STOCK", _count: { _all: 5 } },
@@ -425,7 +433,49 @@ test("scrap statistics count only approved orders as a loss", async () => {
   assert.equal(stats.pendingCount, 2);
   assert.equal(stats.completedCount, 3);
   assert.equal(stats.rejectedCount, 4);
+  assert.equal(stats.cancelledCount, 1);
   assert.equal(stats.totalLossValue, 125.5);
   assert.deepEqual(stats.bySource, { DAMAGED_STOCK: 5, SELLABLE_STOCK: 4 });
   assert.equal(call("orderAggregate")[1].where.status, "COMPLETED");
+});
+
+test("only the owner can cancel, and only a pending order", async () => {
+  await rejects(() => service.cancelScrapOrder(BUSINESS, staffActor, ORDER, {}), 403);
+  await rejects(() => service.cancelScrapOrder(BUSINESS, ownerActor, "not-a-uuid", {}), 404);
+  await rejects(() => service.cancelScrapOrder(BUSINESS, ownerActor, ORDER, { note: 5 }), 400);
+  await rejects(() => service.cancelScrapOrder(BUSINESS, ownerActor, ORDER, { note: "x".repeat(501) }), 400);
+
+  state.locked = { id: ORDER, status: "COMPLETED", created_by: STAFF };
+  await rejects(() => service.cancelScrapOrder(BUSINESS, ownerActor, ORDER, {}), 409);
+
+  state.locked = { id: ORDER, status: "PENDING", created_by: STAFF };
+  await service.cancelScrapOrder(BUSINESS, ownerActor, ORDER, {});
+  assert.equal(call("orderUpdate")[1].data.status, "CANCELLED");
+});
+
+test("cancelling records who closed the order and leaves stock, the ledger and the lot alone", async () => {
+  await service.cancelScrapOrder(BUSINESS, ownerActor, ORDER, { note: "  Nhân viên đã nghỉ việc  " });
+
+  const data = call("orderUpdate")[1].data;
+  assert.equal(data.status, "CANCELLED");
+  assert.equal(data.cancelledBy, OWNER);
+  assert.ok(data.cancelledAt instanceof Date);
+  assert.equal(data.cancelledNote, "Nhân viên đã nghỉ việc");
+  assert.equal(calls.some(([key]) => key === "balanceUpdateMany"), false, "cancel does not move stock");
+  assert.equal(calls.some(([key]) => key === "ledgerCreate"), false, "cancel writes no ledger row");
+  assert.equal(calls.some(([key]) => key === "lotItemUpdate"), false, "the lot item stays quarantined");
+});
+
+test("a SKU locked for a stock audit cannot be quarantined, scrapped or have a scrap approved", async () => {
+  state.variantLock = { isLockedForAudit: true };
+
+  await rejects(() => service.approveScrapOrder(BUSINESS, ownerActor, ORDER, { reviewedImageIds: [IMAGE_1] }), 409);
+  assert.equal(calls.some(([key]) => key === "balanceUpdateMany"), false);
+
+  state.lotItem = { ...state.lotItem, variant: { ...state.lotItem.variant, isLockedForAudit: true } };
+  await rejects(
+    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, scrapReason: "Hỏng" }, [{ buffer: jpeg }]),
+    409,
+  );
+  assert.equal(uploads.length, 0, "no photo is uploaded for a locked SKU");
 });

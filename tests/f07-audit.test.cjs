@@ -88,6 +88,7 @@ const resetState = () => {
     staffMemberships: [{ userId: STAFF }],
     upsertedLot: { id: "lot-1" },
     createdLotItem: { id: "new-lot-item" },
+    pendingScrap: 0,
   };
 };
 
@@ -160,6 +161,12 @@ const db = {
     },
     updateMany: async (args) => {
       calls.push(["variantUpdateMany", args]);
+    },
+  },
+  scrapOrder: {
+    count: async (args) => {
+      calls.push(["scrapCount", args]);
+      return state.pendingScrap;
     },
   },
   productLotItem: {
@@ -720,7 +727,15 @@ test("applying corrections unlocks a re-audit lot and preserves manual quarantin
   const update = call("lotItemUpdate")[1];
   assert.equal(update.data.expirationDate.toISOString().slice(0, 10), "2099-02-01");
   assert.equal(update.data.isLockedForAudit, false);
-  assert.equal(update.data.status, "HEALTHY", "a re-audit recalculates the stored status");
+  assert.equal(
+    update.data.status,
+    "HEALTHY",
+    "a re-audit releases a quarantine once the lot is sellable again",
+  );
+  assert.equal(update.data.quarantineQty, null, "a released quarantine leaves no quantity behind");
+  assert.equal(update.data.quarantinedAt, null);
+  assert.equal(update.data.quarantinedBy, null);
+  assert.equal(update.data.quarantineNote, null);
 
   calls.length = 0;
   state.audit.auditType = "ADHOC";
@@ -728,6 +743,84 @@ test("applying corrections unlocks a re-audit lot and preserves manual quarantin
   const manual = call("lotItemUpdate")[1];
   assert.equal("status" in manual.data, false, "a manual quarantine or scrap decision is never overwritten");
   assert.equal(manual.data.expirationDate.toISOString().slice(0, 10), "2099-02-01");
+});
+
+test("a re-audit keeps an expired lot quarantined and never revives a scrapped one", async () => {
+  const expiredItem = (status) => ({
+    id: ITEM,
+    variantId: VARIANT,
+    lotItemId: LOT_ITEM,
+    lotNumber: "LOT-1",
+    newLotExpirationDate: null,
+    snapshotQty: 2,
+    countedQty: 2,
+    variant: { costPrice: 5 },
+    lotItem: {
+      id: LOT_ITEM,
+      lotId: "lot-1",
+      expirationDate: new Date("2020-01-01"),
+      manufacturingDate: null,
+      status,
+    },
+  });
+
+  state.audit = {
+    id: AUDIT,
+    auditCode: "AUDIT_2026_0001",
+    status: "IN_PROGRESS",
+    auditType: "RE_AUDIT",
+    stockAuditItems: [expiredItem("QUARANTINED")],
+  };
+
+  await auditService.applyAudit(BUSINESS, "auth", AUDIT);
+
+  const quarantined = call("lotItemUpdate")[1];
+  assert.equal("status" in quarantined.data, false, "expiry alone never releases a quarantine");
+  assert.equal("quarantineQty" in quarantined.data, false, "the quarantine fields stay as they were");
+  assert.equal(quarantined.data.isLockedForAudit, false, "the re-audit still unlocks the lot");
+
+  calls.length = 0;
+  state.audit.stockAuditItems = [
+    { ...expiredItem("SCRAPPED"), lotItem: { ...expiredItem("SCRAPPED").lotItem, expirationDate: new Date("2099-01-01") } },
+  ];
+  await auditService.applyAudit(BUSINESS, "auth", AUDIT);
+
+  const scrapped = call("lotItemUpdate")[1];
+  assert.equal("status" in scrapped.data, false, "a scrap decision is never undone");
+});
+
+test("an apply is refused while a counted lot item has a pending scrap order", async () => {
+  state.audit = {
+    id: AUDIT,
+    auditCode: "AUDIT_2026_0001",
+    status: "IN_PROGRESS",
+    auditType: "ADHOC",
+    stockAuditItems: [
+      {
+        id: ITEM,
+        variantId: VARIANT,
+        lotItemId: LOT_ITEM,
+        lotNumber: "LOT-1",
+        newLotExpirationDate: null,
+        snapshotQty: 2,
+        countedQty: 2,
+        variant: { costPrice: 5 },
+        lotItem: {
+          id: LOT_ITEM,
+          lotId: "lot-1",
+          expirationDate: new Date("2099-01-01"),
+          manufacturingDate: null,
+          status: "QUARANTINED",
+        },
+      },
+    ],
+  };
+  state.pendingScrap = 1;
+
+  await rejects(() => auditService.applyAudit(BUSINESS, "auth", AUDIT), 409);
+  assert.equal(call("scrapCount")[1].where.lotItemId.in[0], LOT_ITEM);
+  assert.equal(wrote("balanceUpdate"), false);
+  assert.equal(wrote("lotItemUpdate"), false);
 });
 
 test("item listing clamps pagination and can be limited to the caller", async () => {

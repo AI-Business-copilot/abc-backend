@@ -38,6 +38,7 @@ const resetState = () => {
     sellableRows: [],
     quarantineItem: null,
     pendingScrapOrders: 0,
+    variantLock: { isLockedForAudit: false },
     balanceAgg: { _sum: { quantityOnHand: 4, damagedQuantity: 2 } },
     updatedLotItem: { id: "item-1", status: "QUARANTINED" },
     queryRows: [],
@@ -74,6 +75,12 @@ const db = {
     count: async (args) => {
       calls.push(["scrapCount", args]);
       return state.pendingScrapOrders;
+    },
+  },
+  productVariant: {
+    findFirst: async (args) => {
+      calls.push(["variantFindFirst", args]);
+      return state.variantLock;
     },
   },
   $queryRaw: async () => {
@@ -276,6 +283,10 @@ test("quarantine needs a whole positive quantity within the available stock", as
   await rejects(() => lotService.quarantineLot(BUSINESS, "item-1", USER, { quantity: 1 }), 409);
 
   state.pendingScrapOrders = 0;
+  state.variantLock = { isLockedForAudit: true };
+  await rejects(() => lotService.quarantineLot(BUSINESS, "item-1", USER, { quantity: 1 }), 409);
+
+  state.variantLock = { isLockedForAudit: false };
   await rejects(() => lotService.quarantineLot(BUSINESS, "item-1", USER, { quantity: 7 }), 409);
 
   state.updatedLotItem = { id: "item-1", status: "QUARANTINED", quarantineQty: 3 };

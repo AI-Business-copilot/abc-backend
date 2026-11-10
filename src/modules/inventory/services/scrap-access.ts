@@ -29,6 +29,26 @@ export function assertUuid(value: unknown, label: string, status = 404): string 
 
 export type LockedScrapOrder = { id: string; status: string; created_by: string };
 
+type VariantLockReader = Pick<Prisma.TransactionClient, "productVariant">;
+
+/**
+ * A SKU that is being counted must not have its stock or its sale-ability changed underneath the
+ * count. Sales refuse a locked SKU for the same reason.
+ */
+export async function assertVariantNotLockedForAudit(
+  db: VariantLockReader,
+  businessId: string,
+  variantId: string,
+): Promise<void> {
+  const variant = await db.productVariant.findFirst({
+    where: { id: variantId, businessId },
+    select: { isLockedForAudit: true },
+  });
+  if (variant?.isLockedForAudit) {
+    throw new HttpError(409, "This SKU is locked for a stock audit. Finish the count before moving its stock.");
+  }
+}
+
 /**
  * Locks the scrap order row until the transaction ends. Uploads, deletes, approve and reject all
  * take this lock first, so an approval can never run while photos are being added or removed.

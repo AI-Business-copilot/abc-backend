@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { HttpError } from "../../../shared/http/http-error";
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { LotStatusService } from "./lot-status.service";
+import { assertVariantNotLockedForAudit } from "./scrap-access";
 
 type LotStatusName = "HEALTHY" | "WARNING" | "UNUSABLE" | "QUARANTINED" | "SCRAPPED";
 
@@ -383,6 +384,8 @@ export class LotService {
       if (item.status === 'SCRAPPED') {
         throw new HttpError(409, 'A scrapped lot item cannot be quarantined.');
       }
+
+      await assertVariantNotLockedForAudit(tx, businessId, item.variantId);
 
       const pending = await tx.scrapOrder.count({
         where: { businessId, lotItemId, status: 'PENDING' },

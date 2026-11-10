@@ -66,6 +66,7 @@ router.patch("/scrap-orders/:id", requirePermission("inventory.scrap.create"), c
 router.delete("/scrap-orders/:id", requirePermission("inventory.scrap.create"), controller.deleteScrapOrder.bind(controller));
 router.patch("/scrap-orders/:id/approve", requirePermission("inventory.scrap.approve"), controller.approveScrapOrder.bind(controller));
 router.patch("/scrap-orders/:id/reject", requirePermission("inventory.scrap.approve"), controller.rejectScrapOrder.bind(controller));
+router.patch("/scrap-orders/:id/cancel", requirePermission("inventory.scrap.approve"), controller.cancelScrapOrder.bind(controller));
 router.get("/scrap-statistics", requirePermission("inventory.lot.read"), controller.getScrapStatistics.bind(controller));
 
 // F08: scrap order evidence images. View only; images are created with the scrap order and cannot be changed afterward.
