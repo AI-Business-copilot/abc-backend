@@ -1,4 +1,4 @@
-﻿import { prisma } from "../../../shared/infrastructure/database/prisma.client";
+import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import {
   BadRequestException,
   NotFoundException,
@@ -6,6 +6,7 @@ import {
 import { Prisma } from "@prisma/client";
 
 type TemplateInput = {
+  code?: unknown;
   name?: unknown;
   categoryId?: unknown;
   unitOfMeasure?: unknown;
@@ -16,6 +17,75 @@ type TemplateInput = {
 };
 
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+
+async function uploadBase64Image(dataUri: string, businessId: string): Promise<string> {
+  const supabaseUrl = process.env.SUPABASE_URL || "https://vhivkicmqwjiypvbssbv.supabase.co";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const rawBucket = process.env.SUPABASE_BUCKET || "SEP";
+  const bucket = rawBucket.replace(/^"|"$/g, "");
+
+  if (!serviceKey) return dataUri;
+
+  const matches = dataUri.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+  if (!matches) return dataUri;
+
+  const mime = matches[1];
+  const rawBase64 = matches[2];
+  const buffer = Buffer.from(rawBase64, "base64");
+  const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "png";
+  const filePath = `products/${businessId}/${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+  try {
+    const uploadRes = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${filePath}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serviceKey}`,
+        apiKey: serviceKey,
+        "Content-Type": mime,
+      },
+      body: buffer,
+    });
+    if (uploadRes.ok) {
+      return `${supabaseUrl}/storage/v1/object/public/${bucket}/${filePath}`;
+    }
+  } catch {
+    // fallback to original string if upload fails
+  }
+  return dataUri;
+}
+
+export async function processAndUploadImages(rawImageUrl: unknown, businessId: string): Promise<string | null> {
+  if (!rawImageUrl || typeof rawImageUrl !== "string") return null;
+  const trimmed = rawImageUrl.trim();
+  if (!trimmed) return null;
+
+  // Nếu là mảng JSON chứa nhiều ảnh
+  if (trimmed.startsWith("[")) {
+    try {
+      const arr = JSON.parse(trimmed);
+      if (Array.isArray(arr)) {
+        const uploadedArr = await Promise.all(
+          arr.map(async (item) => {
+            if (typeof item === "string" && item.startsWith("data:image/")) {
+              return uploadBase64Image(item, businessId);
+            }
+            return item;
+          })
+        );
+        return JSON.stringify(uploadedArr);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Nếu là 1 ảnh data:image/ duy nhất
+  if (trimmed.startsWith("data:image/")) {
+    return uploadBase64Image(trimmed, businessId);
+  }
+
+  return trimmed;
+}
 
 async function nextTemplateCode(businessId: string) {
   const year = new Date().getFullYear();
@@ -47,17 +117,27 @@ export class ProductTemplatesService {
     const duplicate = await prisma.productTemplate.findFirst({ where: { businessId, name } });
     if (duplicate) throw new BadRequestException("Tên mẫu sản phẩm đã tồn tại");
 
+    let code = text(data.code).toUpperCase();
+    if (code) {
+      const dupCode = await prisma.productTemplate.findFirst({ where: { businessId, code } });
+      if (dupCode) throw new BadRequestException(`Mã sản phẩm "${code}" đã tồn tại trong cửa hàng`);
+    } else {
+      code = await nextTemplateCode(businessId);
+    }
+
     const categoryId = await this.resolveCategory(businessId, data.categoryId);
+    const uploadedImageUrl = await processAndUploadImages(data.imageUrl, businessId);
+
     const template = await prisma.productTemplate.create({
       data: {
         businessId,
-        code: await nextTemplateCode(businessId),
+        code,
         name,
         categoryId,
         unitOfMeasure: text(data.unitOfMeasure) || "Cái",
         hasLotTracking: Boolean(data.hasLotTracking),
         description: text(data.description) || null,
-        imageUrl: text(data.imageUrl) || null,
+        imageUrl: uploadedImageUrl,
         isActive: data.isActive === undefined ? true : Boolean(data.isActive),
       },
     });
@@ -72,6 +152,15 @@ export class ProductTemplatesService {
     if (!template) throw new NotFoundException("Không tìm thấy mẫu sản phẩm");
 
     const patch: Prisma.ProductTemplateUncheckedUpdateInput = {};
+    if (data.code !== undefined) {
+      const code = text(data.code).toUpperCase();
+      if (!code) throw new BadRequestException("Mã mẫu sản phẩm không được để trống");
+      const dupCode = await prisma.productTemplate.findFirst({
+        where: { businessId, code, id: { not: templateId } },
+      });
+      if (dupCode) throw new BadRequestException(`Mã sản phẩm "${code}" đã tồn tại trong cửa hàng`);
+      patch.code = code;
+    }
     if (data.name !== undefined) {
       const name = text(data.name);
       if (!name) throw new BadRequestException("Tên mẫu sản phẩm là bắt buộc");
@@ -94,7 +183,7 @@ export class ProductTemplatesService {
       patch.description = text(data.description) || null;
     }
     if (data.imageUrl !== undefined) {
-      patch.imageUrl = text(data.imageUrl) || null;
+      patch.imageUrl = await processAndUploadImages(data.imageUrl, businessId);
     }
     if (data.isActive !== undefined) {
       const isActive = Boolean(data.isActive);
@@ -140,5 +229,64 @@ export class ProductTemplatesService {
     });
     if (!template) throw new NotFoundException("Không tìm thấy mẫu sản phẩm");
     return template;
+  }
+
+  async delete(businessId: string, templateId: string) {
+    const template = await prisma.productTemplate.findFirst({
+      where: { id: templateId, businessId },
+      include: {
+        productVariants: {
+          select: {
+            id: true,
+            _count: {
+              select: {
+                inventoryLedger: true,
+                orderItems: true,
+                purchaseOrderItems: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!template) throw new NotFoundException("Không tìm thấy mẫu sản phẩm để xóa");
+
+    // Kiểm tra xem đã có giao dịch kho hoặc đơn hàng chưa
+    const hasTransactions = template.productVariants.some(
+      (v) =>
+        v._count.inventoryLedger > 0 ||
+        v._count.orderItems > 0 ||
+        v._count.purchaseOrderItems > 0
+    );
+
+    if (hasTransactions) {
+      // Đã có lịch sử giao dịch: chuyển trạng thái thành ngừng kinh doanh để bảo toàn số liệu kế toán
+      await prisma.productTemplate.update({
+        where: { id: templateId },
+        data: { isActive: false, updatedAt: new Date() },
+      });
+      await prisma.productVariant.updateMany({
+        where: { templateId },
+        data: { isActive: false, updatedAt: new Date() },
+      });
+      return {
+        message: "Sản phẩm đã có lịch sử giao dịch kho/đơn hàng. Hệ thống đã chuyển sang trạng thái 'Ngừng bán'.",
+        softDeleted: true,
+      };
+    }
+
+    // Chưa có giao dịch: xóa sạch các bảng liên quan an toàn
+    const variantIds = template.productVariants.map((v) => v.id);
+    await prisma.$transaction(async (tx) => {
+      if (variantIds.length > 0) {
+        await tx.variantAttributeValue.deleteMany({ where: { variantId: { in: variantIds } } });
+        await tx.inventoryBalance.deleteMany({ where: { variantId: { in: variantIds } } });
+        await tx.productLotItem.deleteMany({ where: { variantId: { in: variantIds } } });
+        await tx.productVariant.deleteMany({ where: { id: { in: variantIds } } });
+      }
+      await tx.productTemplate.delete({ where: { id: templateId } });
+    });
+
+    return { message: "Đã xóa hoàn toàn mẫu sản phẩm và các biến thể liên quan.", softDeleted: false };
   }
 }

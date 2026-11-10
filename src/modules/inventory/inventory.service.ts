@@ -74,7 +74,7 @@ function isLotTracking(template: { hasLotTracking: boolean | null } | null | und
 
 async function resolveUser(authUserId: string) {
   const user = await prisma.user.findUnique({ where: { authUserId } });
-  if (!user || !user.isActive) {
+  if (!user || user.status !== "ACTIVE") {
     throw new HttpError(403, "Tài khoản chưa được đồng bộ với cửa hàng.");
   }
   return user;
@@ -215,29 +215,39 @@ async function writeItems(
     const tracksLot = isLotTracking(variant.template);
     let lotItemId: string | null = null;
 
-    if (tracksLot) {
-      if (!item.lotNumber) {
-        throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập số lô.`);
-      }
-      if (!item.expirationDate) {
+    if (item.lotNumber && item.lotNumber.trim()) {
+      const cleanLotNumber = item.lotNumber.trim();
+
+      if (tracksLot && !item.expirationDate) {
         throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập hạn sử dụng.`);
       }
-      // Calculate lot status based on expiration date
-      const lotStatusService = new LotStatusService();
-      const calculatedStatus = lotStatusService.calculateStatus(item.expirationDate);
+      if (item.manufacturingDate && item.expirationDate) {
+        const mfg = new Date(item.manufacturingDate);
+        const exp = new Date(item.expirationDate);
+        if (exp < mfg) {
+          throw new HttpError(400, `Hạn sử dụng (${item.expirationDate}) phải lớn hơn hoặc bằng ngày sản xuất (${item.manufacturingDate}).`);
+        }
+      }
 
-      // The lot number identifies the batch, so a second variant using the same number joins that batch
-      // instead of creating a rival lot.
+      const lotStatusService = new LotStatusService();
+      const calculatedStatus = item.expirationDate
+        ? lotStatusService.calculateStatus(item.expirationDate)
+        : "HEALTHY";
+
+      const expirationDate = item.expirationDate
+        ? new Date(item.expirationDate)
+        : new Date(Date.UTC(2099, 11, 31));
+
       const lot = await tx.productLot.upsert({
         where: {
           businessId_lotNumber: {
             businessId,
-            lotNumber: item.lotNumber,
+            lotNumber: cleanLotNumber,
           },
         },
         create: {
           businessId,
-          lotNumber: item.lotNumber,
+          lotNumber: cleanLotNumber,
         },
         update: {},
       });
@@ -254,17 +264,19 @@ async function writeItems(
           businessId,
           lotId: lot.id,
           variantId: variant.id,
-          manufacturingDate: item.manufacturingDate,
-          expirationDate: item.expirationDate,
+          manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : null,
+          expirationDate,
           status: calculatedStatus,
         },
         update: {
-          manufacturingDate: item.manufacturingDate ?? undefined,
-          expirationDate: item.expirationDate,
+          manufacturingDate: item.manufacturingDate ? new Date(item.manufacturingDate) : undefined,
+          expirationDate,
           status: calculatedStatus,
         },
       });
       lotItemId = lotItem.id;
+    } else if (tracksLot) {
+      throw new HttpError(400, `SKU ${variant.sku} quản lý lô nên cần nhập số lô.`);
     }
 
     await tx.openingStockItem.create({
@@ -291,7 +303,6 @@ async function cleanupOrphanLotItems(tx: Prisma.TransactionClient, lotItemIds: s
     const deleted = await tx.productLotItem.delete({ where: { id: lotItemId } }).catch(() => null);
     if (!deleted) continue;
 
-    // The batch header only exists to group items, so it goes once its last item is gone.
     const remaining = await tx.productLotItem.count({ where: { lotId: deleted.lotId } });
     if (remaining === 0) {
       await tx.productLot.delete({ where: { id: deleted.lotId } }).catch(() => undefined);
@@ -338,27 +349,32 @@ class InventoryService {
         quantity: totals._sum.quantity ?? 0,
         value: Math.round(totalValue * 100) / 100,
       },
-      items: pairItems.map(({ item, onHand }) => ({
-        id: item.id,
-        variantId: item.variantId,
-        sku: item.variant.sku,
-        barcode: item.variant.barcode,
-        productName: item.variant.template.name,
-        imageUrl: item.variant.template.imageUrl,
-        unit: item.variant.template.unitOfMeasure || "cái",
-        attributeText: item.variant.variantAttributeValues
-          .map((value) => value.attributeValue.value)
-          .join(" · "),
-        lotItemId: item.lotItem?.id ?? null,
-        lotNumber: item.lotItem?.lot?.lotNumber ?? null,
-        manufacturingDate: item.lotItem?.manufacturingDate ?? null,
-        expirationDate: item.lotItem?.expirationDate ?? null,
-        quantity: item.quantity,
-        unitCost: num(item.unitCost),
-        lineTotal: num(item.unitCost) * item.quantity,
-        onHand,
-        stockStatus: sheet.status === "APPLIED" ? "recorded" : "pending",
-      })),
+      items: pairItems.map(({ item, onHand }) => {
+        const hasLotTracking = Boolean(item.variant?.template?.hasLotTracking);
+        const isExp2099 = item.lotItem?.expirationDate && new Date(item.lotItem.expirationDate).getUTCFullYear() >= 2099;
+        return {
+          id: item.id,
+          variantId: item.variantId,
+          sku: item.variant?.sku ?? "SKU",
+          barcode: item.variant?.barcode ?? null,
+          productName: item.variant?.template?.name ?? "Sản phẩm",
+          imageUrl: item.variant?.template?.imageUrl ?? null,
+          unit: item.variant?.template?.unitOfMeasure || "cái",
+          hasLotTracking,
+          attributeText: item.variant.variantAttributeValues
+            .map((value) => value.attributeValue.value)
+            .join(" · "),
+          lotItemId: item.lotItem?.id ?? null,
+          lotNumber: item.lotItem?.lot?.lotNumber ?? null,
+          manufacturingDate: item.lotItem?.manufacturingDate ?? null,
+          expirationDate: hasLotTracking && !isExp2099 ? item.lotItem?.expirationDate ?? null : null,
+          quantity: item.quantity,
+          unitCost: num(item.unitCost),
+          lineTotal: num(item.unitCost) * item.quantity,
+          onHand,
+          stockStatus: sheet.status === "APPLIED" ? "recorded" : "pending",
+        };
+      }),
     };
   }
 
@@ -557,8 +573,11 @@ class InventoryService {
     }
 
     for (const item of sheet.openingStockItems) {
+      const lotItemId = item.lotItemId || null;
       let balance = await tx.inventoryBalance.findFirst({
-        where: { businessId, variantId: item.variantId, lotItemId: item.lotItemId },
+        where: lotItemId
+          ? { businessId, variantId: item.variantId, lotItemId }
+          : { businessId, variantId: item.variantId, lotItemId: null },
       });
 
       if (!balance) {
@@ -566,7 +585,7 @@ class InventoryService {
           data: {
             businessId,
             variantId: item.variantId,
-            lotItemId: item.lotItemId,
+            lotItemId,
             quantityOnHand: 0,
             damagedQuantity: 0,
           },
@@ -587,7 +606,7 @@ class InventoryService {
         data: {
           businessId,
           variantId: item.variantId,
-          lotItemId: item.lotItemId,
+          lotItemId,
           transactionType: StockTransactionType.OPENING_STOCK,
           quantityChanged: item.quantity,
           balanceAfter: total._sum.quantityOnHand ?? updated.quantityOnHand,
@@ -647,8 +666,6 @@ class InventoryService {
 
     const where: Prisma.ProductVariantWhereInput = {
       businessId,
-      isActive: true,
-      ...(categoryIds.length > 0 ? { template: { categoryId: { in: categoryIds } } } : {}),
       ...(search
         ? {
             OR: [
@@ -657,7 +674,8 @@ class InventoryService {
               { template: { name: { contains: search, mode: "insensitive" } } },
             ],
           }
-        : {}),
+        : { isActive: true }),
+      ...(categoryIds.length > 0 ? { template: { categoryId: { in: categoryIds } } } : {}),
     };
 
     const [rows, total, categories] = await Promise.all([
@@ -703,12 +721,12 @@ class InventoryService {
         id: row.id,
         sku: row.sku,
         barcode: row.barcode,
-        productName: row.template.name,
-        imageUrl: row.template.imageUrl,
-        unit: row.template.unitOfMeasure || "cái",
-        hasLotTracking: Boolean(row.template.hasLotTracking),
-        categoryId: row.template.category?.id ?? null,
-        categoryName: row.template.category?.name ?? null,
+        productName: row.template?.name ?? (row.sku || "Sản phẩm"),
+        imageUrl: row.template?.imageUrl ?? null,
+        unit: row.template?.unitOfMeasure || "cái",
+        hasLotTracking: Boolean(row.template?.hasLotTracking),
+        categoryId: row.template?.category?.id ?? null,
+        categoryName: row.template?.category?.name ?? null,
         costPrice: num(row.costPrice),
         basePrice: num(row.basePrice),
         onHand: row.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
@@ -729,16 +747,22 @@ class InventoryService {
       },
       orderBy: { expirationDate: "asc" },
     });
-    return {
-      items: lotItems.map((item) => ({
+    const mapped = lotItems.map((item) => {
+      const onHand = item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0);
+      return {
         id: item.id,
         lotId: item.lot.id,
         lotNumber: item.lot.lotNumber,
         manufacturingDate: item.manufacturingDate,
         expirationDate: item.expirationDate,
         status: item.status,
-        onHand: item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
-      })),
+        quantityOnHand: onHand,
+        onHand,
+      };
+    });
+    return {
+      lots: mapped,
+      items: mapped,
     };
   }
 
@@ -865,7 +889,9 @@ class InventoryService {
           id: row.id,
           createdAt: row.created_at,
           reference,
+          sheetCode: row.sheet_code || reference,
           type: row.transaction_type,
+          transactionType: row.transaction_type,
           typeLabel: LEDGER_LABELS[row.transaction_type] ?? row.transaction_type,
           quantityChanged: row.quantity_changed,
           balanceAfter: row.balance_after,

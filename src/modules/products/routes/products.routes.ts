@@ -1,4 +1,4 @@
-﻿// src/modules/products/routes/products.routes.ts
+// src/modules/products/routes/products.routes.ts
 import { Router } from "express";
 
 import { requireBusinessScope } from "../../../shared/auth/business-scope.middleware";
@@ -25,6 +25,7 @@ router.get("/templates", requirePermission("products.read"), templatesCtrl.list.
 router.post("/templates", requirePermission("products.manage"), templatesCtrl.create.bind(templatesCtrl));
 router.get("/templates/:id", requirePermission("products.read"), templatesCtrl.getById.bind(templatesCtrl));
 router.patch("/templates/:id", requirePermission("products.manage"), templatesCtrl.update.bind(templatesCtrl));
+router.delete("/templates/:id", requirePermission("products.manage"), templatesCtrl.delete.bind(templatesCtrl));
 
 router.get("/attributes", requirePermission("products.read"), attrsCtrl.list.bind(attrsCtrl));
 router.post("/attributes", requirePermission("products.manage"), attrsCtrl.create.bind(attrsCtrl));

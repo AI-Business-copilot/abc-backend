@@ -72,7 +72,7 @@ type AuditItemsQuery = {
 
 async function resolveUser(authUserId: string) {
   const user = await prisma.user.findUnique({ where: { authUserId } });
-  if (!user || !user.isActive) {
+  if (!user || user.status !== "ACTIVE") {
     throw new HttpError(403, "Tài khoản chưa được đồng bộ với cửa hàng.");
   }
   return user;
@@ -284,7 +284,7 @@ async function assertAssigneesAreStaff(db: DbClient, businessId: string, userIds
       businessId,
       userId: { in: unique },
       status: "ACTIVE",
-      role: { code: "STAFF" },
+      role: { code: { not: "OWNER" } },
     },
     select: { userId: true },
   });

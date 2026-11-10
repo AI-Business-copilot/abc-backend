@@ -1,9 +1,11 @@
 openapi: 3.0.3
 info:
-  title: ABC Retail - F07 Stock Audit & F08 Lot Management API
+  title: ABC Retail - Returns, Audit & Lot Management API (F05 - F08)
   version: 1.0.0
   description: |
     API documentation for:
+    - **F05**: Customer Returns & Counter Exchange (Khách trả & Đổi hàng tại quầy)
+    - **F06**: Vendor Returns (Trả hàng Nhà cung cấp)
     - **F07**: Stock Audit (Kiểm kê tồn kho)
     - **F08**: Lot Tracking & Scrap Management (Theo dõi lô hàng & hủy hàng)
     
@@ -235,7 +237,317 @@ components:
         totalPages:
           type: integer
 
+    # F05 & F06 SCHEMAS
+    CustomerReturnItemInput:
+      type: object
+      required: [variantId, returnQty, itemCondition]
+      properties:
+        orderItemId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        lotId:
+          type: string
+          format: uuid
+        returnQty:
+          type: integer
+          minimum: 1
+          example: 1
+        returnUnitPrice:
+          type: string
+          example: "50000.00"
+        itemCondition:
+          type: string
+          enum: [RESTOCKABLE, DAMAGED_QUARANTINE]
+          example: RESTOCKABLE
+        reason:
+          type: string
+          example: "Lỗi đường may"
+    
+    ExchangeItemInput:
+      type: object
+      required: [variantId, quantity]
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+          example: 1
+    
+    CustomerReturnInput:
+      type: object
+      required: [refundMethod, items]
+      properties:
+        originalOrderId:
+          type: string
+          format: uuid
+        originalOrderCode:
+          type: string
+          example: "ORD-179368"
+        isUnverifiedOrigin:
+          type: boolean
+          default: false
+        returnReason:
+          type: string
+          example: "Khách đổi size"
+        refundMethod:
+          type: string
+          enum: [CASH, BANK_TRANSFER, CUSTOMER_CREDIT, EXCHANGE_OFFSET]
+          example: CASH
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CustomerReturnItemInput'
+        exchangeItems:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExchangeItemInput'
+    
+    CustomerReturn:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        businessId:
+          type: string
+          format: uuid
+        returnCode:
+          type: string
+          example: "RET-179368001"
+        originalOrderId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [COMPLETED, CANCELLED]
+        refundMethod:
+          type: string
+        totalRefundAmount:
+          type: string
+          example: "150000.00"
+        exchangeOrderId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    VendorReturnItemInput:
+      type: object
+      required: [variantId, returnQty, returnUnitPrice]
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        lotId:
+          type: string
+          format: uuid
+        returnQty:
+          type: integer
+          minimum: 1
+          example: 2
+        returnUnitPrice:
+          type: string
+          example: "45000.00"
+        conditionSource:
+          type: string
+          enum: [SELLABLE, DAMAGED_STOCK]
+          default: SELLABLE
+        reason:
+          type: string
+          example: "Hàng cận date"
+
+    VendorReturnInput:
+      type: object
+      required: [supplierId, items]
+      properties:
+        supplierId:
+          type: string
+          format: uuid
+        receiptId:
+          type: string
+          format: uuid
+        returnReason:
+          type: string
+          example: "Xuất trả NCC do lỗi kỹ thuật"
+        paymentRefundMethod:
+          type: string
+          enum: [DEBT_DEDUCTION, CASH, BANK_TRANSFER]
+          default: DEBT_DEDUCTION
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/VendorReturnItemInput'
+
+    VendorReturn:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        businessId:
+          type: string
+          format: uuid
+        returnCode:
+          type: string
+          example: "VRET-179368001"
+        supplierId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [COMPLETED, CANCELLED]
+        totalReturnValue:
+          type: string
+          example: "90000.00"
+        paymentRefundMethod:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
 paths:
+  # F05 ENDPOINTS
+  /customer-returns/lookup/{orderCode}:
+    get:
+      tags: [F05 Customer Returns]
+      summary: Lookup order for return by order code
+      parameters:
+        - name: orderCode
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Returnable order details and quantities
+
+  /customer-returns:
+    get:
+      tags: [F05 Customer Returns]
+      summary: List customer returns
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [COMPLETED, CANCELLED]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Customer returns list
+    post:
+      tags: [F05 Customer Returns]
+      summary: Create customer return & counter exchange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerReturnInput'
+      responses:
+        '201':
+          description: Customer return completed successfully
+
+  /customer-returns/{id}:
+    get:
+      tags: [F05 Customer Returns]
+      summary: Get customer return details by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Customer return details
+
+  # F06 ENDPOINTS
+  /vendor-returns/suppliers:
+    get:
+      tags: [F06 Vendor Returns]
+      summary: Get suppliers with current debt
+      responses:
+        '200':
+          description: Suppliers list with current debt balance
+
+  /vendor-returns:
+    get:
+      tags: [F06 Vendor Returns]
+      summary: List vendor returns
+      parameters:
+        - name: supplierId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [COMPLETED, CANCELLED]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Vendor returns list
+    post:
+      tags: [F06 Vendor Returns]
+      summary: Create vendor return (Owner only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VendorReturnInput'
+      responses:
+        '201':
+          description: Vendor return created and supplier debt deducted
+
+  /vendor-returns/{id}:
+    get:
+      tags: [F06 Vendor Returns]
+      summary: Get vendor return details by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Vendor return details
   # F07 ENDPOINTS
   /inventory/audits:
     post:

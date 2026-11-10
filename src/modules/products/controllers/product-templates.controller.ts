@@ -1,4 +1,4 @@
-﻿import { Request, Response } from "express";
+import { Request, Response } from "express";
 import { ProductTemplatesService } from "../services/product-templates.service";
 
 const service = new ProductTemplatesService();
@@ -43,6 +43,16 @@ export class ProductTemplatesController {
     try {
       const businessId = String(res.locals.businessId || "");
       const result = await service.getById(businessId, String(req.params.id));
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async delete(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await service.delete(businessId, String(req.params.id));
       return res.json(result);
     } catch (err: any) {
       return fail(res, err);
