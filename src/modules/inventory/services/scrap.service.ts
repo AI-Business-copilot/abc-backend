@@ -175,8 +175,17 @@ export class ScrapService {
     }
 
     // Cheap check before touching Storage. The loop below checks again in case of a race.
-    if ((await prisma.scrapOrder.count({ where: { businessId, lotItemId, status: "PENDING" } })) > 0) {
-      throw new HttpError(409, "This lot item already has a scrap order waiting for review.");
+    const existingOrder = await prisma.scrapOrder.findFirst({
+      where: { businessId, lotItemId },
+      orderBy: { createdAt: "desc" },
+      select: { scrapCode: true, status: true },
+    });
+    if (existingOrder) {
+      throw new HttpError(
+        409,
+        `This lot item already has a scrap order (${existingOrder.scrapCode}, ${existingOrder.status}). ` +
+          `A lot can only have one scrap order; settle the existing order before creating another.`,
+      );
     }
 
     // The photos are stored with the order and never change afterward, so they are written in the same step.
@@ -194,9 +203,17 @@ export class ScrapService {
       }
 
       for (let attempt = 0; attempt < 3; attempt++) {
-        const pending = await prisma.scrapOrder.count({ where: { businessId, lotItemId, status: "PENDING" } });
-        if (pending > 0) {
-          throw new HttpError(409, "This lot item already has a scrap order waiting for review.");
+        const existing = await prisma.scrapOrder.findFirst({
+          where: { businessId, lotItemId },
+          orderBy: { createdAt: "desc" },
+          select: { scrapCode: true, status: true },
+        });
+        if (existing) {
+          throw new HttpError(
+            409,
+            `This lot item already has a scrap order (${existing.scrapCode}, ${existing.status}). ` +
+              `A lot can only have one scrap order; settle the existing order before creating another.`,
+          );
         }
 
         try {

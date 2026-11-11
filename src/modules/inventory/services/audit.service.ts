@@ -322,25 +322,27 @@ function assertLotMatchesAuditType(auditType: string, lotItemId: string | null, 
 }
 
 /**
- * A lot with a pending scrap order must not enter an audit: adding the row locks the variant,
- * which blocks the scrap approval, while the pending scrap order blocks the audit application.
- * Reject the row up front with the scrap code so the owner knows which order to settle first.
+ * A lot that already has a scrap order must not enter an audit, whatever the order status is.
+ * Adding the row locks the variant, which blocks the scrap approval, and the audit application
+ * would rewrite the stock the order was judged against. Report the scrap code so the owner knows
+ * exactly which order is in the way.
  */
-async function findLotsWithPendingScrap(
+async function findLotsWithScrapOrder(
   db: DbClient,
   businessId: string,
   lotItemIds: string[],
-): Promise<Map<string, string>> {
-  const blocked = new Map<string, string>();
+): Promise<Map<string, { scrapCode: string; status: string }>> {
+  const blocked = new Map<string, { scrapCode: string; status: string }>();
   if (lotItemIds.length === 0) return blocked;
 
-  const pending = await db.scrapOrder.findMany({
-    where: { businessId, lotItemId: { in: lotItemIds }, status: "PENDING" },
-    select: { lotItemId: true, scrapCode: true },
+  const orders = await db.scrapOrder.findMany({
+    where: { businessId, lotItemId: { in: lotItemIds } },
+    select: { lotItemId: true, scrapCode: true, status: true },
+    orderBy: { createdAt: "desc" },
   });
-  for (const order of pending) {
+  for (const order of orders) {
     if (order.lotItemId && !blocked.has(order.lotItemId)) {
-      blocked.set(order.lotItemId, order.scrapCode);
+      blocked.set(order.lotItemId, { scrapCode: order.scrapCode, status: order.status });
     }
   }
   return blocked;
@@ -405,25 +407,23 @@ async function normalizeAndValidateRows(
       }
     }
 
-    // A lot with a pending scrap order cannot be audited: locking the row blocks the scrap
-    // approval, and the pending scrap order blocks the audit application. Report the exact
-    // scrap code so the owner can settle that order before adding the lot.
-    const blocked = await findLotsWithPendingScrap(db, businessId, lotItemIds);
+    // A lot that already has a scrap order cannot be audited, whatever the order status is:
+    // locking the row blocks the scrap approval, and the audit application would rewrite the
+    // stock the order was judged against. Report the exact scrap code and status.
+    const blocked = await findLotsWithScrapOrder(db, businessId, lotItemIds);
     if (blocked.size > 0) {
       const lotNumberById = new Map(lotItems.map((l) => [l.id, l.lot.lotNumber]));
       const details = rows
         .map((row, index) => ({ row, index }))
         .filter(({ row }) => row.lotItemId && blocked.has(row.lotItemId))
-        .map(
-          ({ row, index }) =>
-            `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} có phiếu hủy ${
-              blocked.get(row.lotItemId!)
-            } đang chờ duyệt.`,
-        )
+        .map(({ row, index }) => {
+          const order = blocked.get(row.lotItemId!)!;
+          return `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} có phiếu hủy ${order.scrapCode} (${order.status}).`;
+        })
         .join(" ");
       throw new HttpError(
         409,
-        `${details} Vui lòng duyệt hoặc hủy phiếu hủy đó trước khi đưa lô vào đợt kiểm kê.`,
+        `${details} Lô đã có phiếu hủy thì không thể đưa vào đợt kiểm kê.`,
       );
     }
   }
@@ -1433,19 +1433,22 @@ class AuditService {
         throw new HttpError(400, "Đợt kiểm kê chưa có dòng kiểm kê nào để áp dụng.");
       }
 
-      // A pending scrap order is judged against the stock this apply is about to rewrite, so it has to
-      // be resolved first. Otherwise the order can never be approved afterwards.
+      // A scrap order is judged against the stock this apply is about to rewrite, so the lot has to
+      // be free of any scrap order first, whatever the order status is.
       const countedLotItemIds = audit.stockAuditItems
         .map((item) => item.lotItemId)
         .filter((id): id is string => Boolean(id));
       if (countedLotItemIds.length > 0) {
-        const pendingScrap = await tx.scrapOrder.count({
-          where: { businessId, lotItemId: { in: countedLotItemIds }, status: "PENDING" },
+        const scrapOrder = await tx.scrapOrder.findFirst({
+          where: { businessId, lotItemId: { in: countedLotItemIds } },
+          orderBy: { createdAt: "desc" },
+          select: { scrapCode: true, status: true },
         });
-        if (pendingScrap > 0) {
+        if (scrapOrder) {
           throw new HttpError(
             409,
-            "Có phiếu hủy đang chờ duyệt trên lô hàng được kiểm kê. Hãy duyệt hoặc hủy phiếu đó trước khi áp dụng.",
+            `Lô hàng được kiểm kê đã có phiếu hủy ${scrapOrder.scrapCode} (${scrapOrder.status}). ` +
+              "Hãy xử lý phiếu hủy đó trước khi áp dụng.",
           );
         }
       }
