@@ -322,6 +322,31 @@ function assertLotMatchesAuditType(auditType: string, lotItemId: string | null, 
 }
 
 /**
+ * A lot with a pending scrap order must not enter an audit: adding the row locks the variant,
+ * which blocks the scrap approval, while the pending scrap order blocks the audit application.
+ * Reject the row up front with the scrap code so the owner knows which order to settle first.
+ */
+async function findLotsWithPendingScrap(
+  db: DbClient,
+  businessId: string,
+  lotItemIds: string[],
+): Promise<Map<string, string>> {
+  const blocked = new Map<string, string>();
+  if (lotItemIds.length === 0) return blocked;
+
+  const pending = await db.scrapOrder.findMany({
+    where: { businessId, lotItemId: { in: lotItemIds }, status: "PENDING" },
+    select: { lotItemId: true, scrapCode: true },
+  });
+  for (const order of pending) {
+    if (order.lotItemId && !blocked.has(order.lotItemId)) {
+      blocked.set(order.lotItemId, order.scrapCode);
+    }
+  }
+  return blocked;
+}
+
+/**
  * Validate owner-created rows and return them normalized.
  * Checks assignees, variants and lot items, and rejects duplicate (variant, lot item) rows.
  */
@@ -371,13 +396,35 @@ async function normalizeAndValidateRows(
   if (lotItemIds.length > 0) {
     const lotItems = await db.productLotItem.findMany({
       where: { id: { in: lotItemIds }, businessId },
-      select: { id: true, variantId: true },
+      select: { id: true, variantId: true, lot: { select: { lotNumber: true } } },
     });
     const itemVariant = new Map(lotItems.map((l) => [l.id, l.variantId]));
     for (const row of rows) {
       if (row.lotItemId && itemVariant.get(row.lotItemId) !== row.variantId) {
         throw new HttpError(400, "Lô không tồn tại hoặc không thuộc SKU đã chọn.");
       }
+    }
+
+    // A lot with a pending scrap order cannot be audited: locking the row blocks the scrap
+    // approval, and the pending scrap order blocks the audit application. Report the exact
+    // scrap code so the owner can settle that order before adding the lot.
+    const blocked = await findLotsWithPendingScrap(db, businessId, lotItemIds);
+    if (blocked.size > 0) {
+      const lotNumberById = new Map(lotItems.map((l) => [l.id, l.lot.lotNumber]));
+      const details = rows
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => row.lotItemId && blocked.has(row.lotItemId))
+        .map(
+          ({ row, index }) =>
+            `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} có phiếu hủy ${
+              blocked.get(row.lotItemId!)
+            } đang chờ duyệt.`,
+        )
+        .join(" ");
+      throw new HttpError(
+        409,
+        `${details} Vui lòng duyệt hoặc hủy phiếu hủy đó trước khi đưa lô vào đợt kiểm kê.`,
+      );
     }
   }
 

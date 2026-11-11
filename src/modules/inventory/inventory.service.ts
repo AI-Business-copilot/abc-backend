@@ -744,11 +744,17 @@ class InventoryService {
       include: {
         lot: { select: { id: true, lotNumber: true } },
         inventoryBalances: { select: { quantityOnHand: true } },
+        scrapOrders: {
+          where: { status: "PENDING" },
+          select: { id: true, scrapCode: true },
+          orderBy: { createdAt: "asc" },
+        },
       },
       orderBy: { expirationDate: "asc" },
     });
     const mapped = lotItems.map((item) => {
       const onHand = item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0);
+      const pendingScrapCode = item.scrapOrders[0]?.scrapCode ?? null;
       return {
         id: item.id,
         lotId: item.lot.id,
@@ -758,6 +764,10 @@ class InventoryService {
         status: item.status,
         quantityOnHand: onHand,
         onHand,
+        // A lot under a pending scrap order cannot be put into an audit: the audit lock would
+        // block the scrap approval and the pending order would block the audit application.
+        hasPendingScrap: pendingScrapCode !== null,
+        pendingScrapCode,
       };
     });
     return {
