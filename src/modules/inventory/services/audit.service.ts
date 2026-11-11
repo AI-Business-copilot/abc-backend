@@ -322,12 +322,18 @@ function assertLotMatchesAuditType(auditType: string, lotItemId: string | null, 
 }
 
 /**
- * A lot that already has a scrap order must not enter an audit, whatever the order status is.
- * Adding the row locks the variant, which blocks the scrap approval, and the audit application
- * would rewrite the stock the order was judged against. Report the scrap code so the owner knows
- * exactly which order is in the way.
+ * Scrap orders that still keep a lot out of an audit: one waiting for the Owner, and one the
+ * Owner rejected. Both mean the lot's fate is still open. An approved (COMPLETED) or closed
+ * (CANCELLED) order is settled, so its lot can be counted again.
  */
-async function findLotsWithScrapOrder(
+const AUDIT_BLOCKING_SCRAP_STATUSES = ["PENDING", "REJECTED"] as const;
+
+/**
+ * A lot whose scrap decision is still open must not enter an audit: adding the row locks the
+ * variant, which blocks the scrap approval, and the audit application would rewrite the stock
+ * the order was judged against. Report the scrap code so the owner knows which order is in the way.
+ */
+async function findLotsWithOpenScrapOrder(
   db: DbClient,
   businessId: string,
   lotItemIds: string[],
@@ -336,7 +342,11 @@ async function findLotsWithScrapOrder(
   if (lotItemIds.length === 0) return blocked;
 
   const orders = await db.scrapOrder.findMany({
-    where: { businessId, lotItemId: { in: lotItemIds } },
+    where: {
+      businessId,
+      lotItemId: { in: lotItemIds },
+      status: { in: [...AUDIT_BLOCKING_SCRAP_STATUSES] },
+    },
     select: { lotItemId: true, scrapCode: true, status: true },
     orderBy: { createdAt: "desc" },
   });
@@ -398,21 +408,38 @@ async function normalizeAndValidateRows(
   if (lotItemIds.length > 0) {
     const lotItems = await db.productLotItem.findMany({
       where: { id: { in: lotItemIds }, businessId },
-      select: { id: true, variantId: true, lot: { select: { lotNumber: true } } },
+      select: { id: true, variantId: true, status: true, lot: { select: { lotNumber: true } } },
     });
     const itemVariant = new Map(lotItems.map((l) => [l.id, l.variantId]));
+    const lotNumberById = new Map(lotItems.map((l) => [l.id, l.lot.lotNumber]));
     for (const row of rows) {
       if (row.lotItemId && itemVariant.get(row.lotItemId) !== row.variantId) {
         throw new HttpError(400, "Lô không tồn tại hoặc không thuộc SKU đã chọn.");
       }
     }
 
-    // A lot that already has a scrap order cannot be audited, whatever the order status is:
-    // locking the row blocks the scrap approval, and the audit application would rewrite the
-    // stock the order was judged against. Report the exact scrap code and status.
-    const blocked = await findLotsWithScrapOrder(db, businessId, lotItemIds);
+    // A lot that was already scrapped has no stock left to count, so it never enters an audit.
+    const scrapped = rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => {
+        if (!row.lotItemId) return false;
+        const item = lotItems.find((l) => l.id === row.lotItemId);
+        return item?.status === "SCRAPPED";
+      })
+      .map(
+        ({ row, index }) =>
+          `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} đã bị hủy hàng.`,
+      )
+      .join(" ");
+    if (scrapped) {
+      throw new HttpError(409, `${scrapped} Lô đã bị hủy hàng thì không thể kiểm kê.`);
+    }
+
+    // A lot whose scrap decision is still open cannot be audited: locking the row blocks the
+    // scrap approval, and the audit application would rewrite the stock the order was judged
+    // against. Report the exact scrap code and status.
+    const blocked = await findLotsWithOpenScrapOrder(db, businessId, lotItemIds);
     if (blocked.size > 0) {
-      const lotNumberById = new Map(lotItems.map((l) => [l.id, l.lot.lotNumber]));
       const details = rows
         .map((row, index) => ({ row, index }))
         .filter(({ row }) => row.lotItemId && blocked.has(row.lotItemId))
@@ -423,7 +450,7 @@ async function normalizeAndValidateRows(
         .join(" ");
       throw new HttpError(
         409,
-        `${details} Lô đã có phiếu hủy thì không thể đưa vào đợt kiểm kê.`,
+        `${details} Lô đang có phiếu hủy chưa xong xuất thì không thể đưa vào đợt kiểm kê.`,
       );
     }
   }
@@ -1433,21 +1460,26 @@ class AuditService {
         throw new HttpError(400, "Đợt kiểm kê chưa có dòng kiểm kê nào để áp dụng.");
       }
 
-      // A scrap order is judged against the stock this apply is about to rewrite, so the lot has to
-      // be free of any scrap order first, whatever the order status is.
+      // A scrap order that is still open is judged against the stock this apply is about to
+      // rewrite, so the lot has to be free of one first. Approved and closed orders are settled
+      // and do not block the audit.
       const countedLotItemIds = audit.stockAuditItems
         .map((item) => item.lotItemId)
         .filter((id): id is string => Boolean(id));
       if (countedLotItemIds.length > 0) {
         const scrapOrder = await tx.scrapOrder.findFirst({
-          where: { businessId, lotItemId: { in: countedLotItemIds } },
+          where: {
+            businessId,
+            lotItemId: { in: countedLotItemIds },
+            status: { in: [...AUDIT_BLOCKING_SCRAP_STATUSES] },
+          },
           orderBy: { createdAt: "desc" },
           select: { scrapCode: true, status: true },
         });
         if (scrapOrder) {
           throw new HttpError(
             409,
-            `Lô hàng được kiểm kê đã có phiếu hủy ${scrapOrder.scrapCode} (${scrapOrder.status}). ` +
+            `Lô hàng được kiểm kê đang có phiếu hủy ${scrapOrder.scrapCode} (${scrapOrder.status}). ` +
               "Hãy xử lý phiếu hủy đó trước khi áp dụng.",
           );
         }
