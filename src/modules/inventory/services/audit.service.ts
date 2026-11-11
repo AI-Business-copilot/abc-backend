@@ -3,6 +3,7 @@ import { Prisma, StockTransactionType } from "@prisma/client";
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../../shared/http/http-error";
 import { LotStatusService } from "./lot-status.service";
+import { scrapStatusLabel } from "./scrap-access";
 
 const num = (value: unknown) => Number(value ?? 0);
 
@@ -445,7 +446,7 @@ async function normalizeAndValidateRows(
         .filter(({ row }) => row.lotItemId && blocked.has(row.lotItemId))
         .map(({ row, index }) => {
           const order = blocked.get(row.lotItemId!)!;
-          return `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} có phiếu hủy ${order.scrapCode} (${order.status}).`;
+          return `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} có phiếu hủy ${order.scrapCode} (${scrapStatusLabel(order.status)}).`;
         })
         .join(" ");
       throw new HttpError(
@@ -1479,7 +1480,7 @@ class AuditService {
         if (scrapOrder) {
           throw new HttpError(
             409,
-            `Lô hàng được kiểm kê đang có phiếu hủy ${scrapOrder.scrapCode} (${scrapOrder.status}). ` +
+            `Lô hàng được kiểm kê đang có phiếu hủy ${scrapOrder.scrapCode} (${scrapStatusLabel(scrapOrder.status)}). ` +
               "Hãy xử lý phiếu hủy đó trước khi áp dụng.",
           );
         }

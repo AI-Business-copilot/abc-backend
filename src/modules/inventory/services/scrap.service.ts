@@ -13,6 +13,8 @@ import {
   assertUuid,
   assertVariantNotLockedForAudit,
   lockScrapOrder,
+  lotStatusLabel,
+  scrapStatusLabel,
   type ScrapActor,
 } from "./scrap-access";
 
@@ -183,7 +185,7 @@ export class ScrapService {
     if (existingOrder) {
       throw new HttpError(
         409,
-        `This lot item already has a scrap order (${existingOrder.scrapCode}, ${existingOrder.status}). ` +
+        `This lot item already has a scrap order (${existingOrder.scrapCode}, ${scrapStatusLabel(existingOrder.status)}). ` +
           `A lot can only have one scrap order; settle the existing order before creating another.`,
       );
     }
@@ -211,7 +213,7 @@ export class ScrapService {
         if (existing) {
           throw new HttpError(
             409,
-            `This lot item already has a scrap order (${existing.scrapCode}, ${existing.status}). ` +
+            `This lot item already has a scrap order (${existing.scrapCode}, ${scrapStatusLabel(existing.status)}). ` +
               `A lot can only have one scrap order; settle the existing order before creating another.`,
           );
         }
@@ -338,7 +340,7 @@ export class ScrapService {
         throw new HttpError(403, "Only the staff member who created this scrap order can change it.");
       }
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be changed.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể được sửa.`);
       }
 
       if (newQty !== undefined) {
@@ -380,7 +382,7 @@ export class ScrapService {
         throw new HttpError(403, "Only the staff member who created this scrap order can delete it.");
       }
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be deleted.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể bị xoá.`);
       }
 
       // Includes soft-deleted photos: once the order is gone nothing refers to their files.
@@ -417,7 +419,7 @@ export class ScrapService {
     const result = await prisma.$transaction(async (tx) => {
       const locked = await lockScrapOrder(tx, businessId, scrapOrderId);
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be approved.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể được duyệt.`);
       }
 
       const images = await tx.scrapOrderImage.findMany({
@@ -439,7 +441,10 @@ export class ScrapService {
       }
       const lotItem = await tx.productLotItem.findFirstOrThrow({ where: { id: order.lotItemId, businessId } });
       if (lotItem.status !== "QUARANTINED") {
-        throw new HttpError(409, `The lot item is ${lotItem.status}, not QUARANTINED, so it cannot be scrapped.`);
+        throw new HttpError(
+          409,
+          `Lô hàng đang ${lotStatusLabel(lotItem.status)}, không phải đang cách ly, nên không thể hủy hàng.`,
+        );
       }
       await assertVariantNotLockedForAudit(tx, businessId, order.variantId);
 
@@ -560,7 +565,7 @@ export class ScrapService {
     return prisma.$transaction(async (tx) => {
       const locked = await lockScrapOrder(tx, businessId, scrapOrderId);
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be rejected.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể bị từ chối.`);
       }
       const rejected = await tx.scrapOrder.update({
         where: { id: scrapOrderId },
@@ -602,7 +607,7 @@ export class ScrapService {
     return prisma.$transaction(async (tx) => {
       const locked = await lockScrapOrder(tx, businessId, scrapOrderId);
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be cancelled.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể bị huỷ.`);
       }
       const cancelled = await tx.scrapOrder.update({
         where: { id: scrapOrderId },

@@ -31,6 +31,40 @@ export type LockedScrapOrder = { id: string; status: string; created_by: string 
 
 type VariantLockReader = Pick<Prisma.TransactionClient, "productVariant">;
 
+/** Vietnamese label for a scrap order status, so the raw code never reaches the user. */
+export function scrapStatusLabel(status: string): string {
+  switch (status) {
+    case "PENDING":
+      return "chờ duyệt";
+    case "COMPLETED":
+      return "đã duyệt";
+    case "REJECTED":
+      return "bị từ chối";
+    case "CANCELLED":
+      return "đã hủy bỏ";
+    default:
+      return status;
+  }
+}
+
+/** Vietnamese label for a lot item status, so the raw code never reaches the user. */
+export function lotStatusLabel(status: string): string {
+  switch (status) {
+    case "HEALTHY":
+      return "bình thường";
+    case "WARNING":
+      return "sắp hết hạn";
+    case "UNUSABLE":
+      return "không dùng được";
+    case "QUARANTINED":
+      return "đang cách ly";
+    case "SCRAPPED":
+      return "đã hủy hàng";
+    default:
+      return status;
+  }
+}
+
 /**
  * A SKU that is being counted must not have its stock or its sale-ability changed underneath the
  * count. Sales refuse a locked SKU for the same reason.
