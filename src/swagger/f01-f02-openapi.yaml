@@ -1,0 +1,1087 @@
+openapi: 3.0.3
+info:
+  title: ABC Retail - Quản trị Danh mục Sản phẩm & Kho tồn FEFO API (F01 & F02)
+  version: 1.0.0
+  description: |
+    Tài liệu OpenAPI / Swagger đặc tả chi tiết 2 phân hệ cốt lõi:
+    - **F01 (Product Catalog & Attribute / Variant Wizard)**: Quản lý Cây danh mục, Thuộc tính ngành hàng, Trình tạo sản phẩm 4 bước (Product Wizard), Sinh tổ hợp biến thể SKU, và Mã vạch Barcode.
+    - **F02 (Opening Stock & Inventory Balance / Ledger & FEFO Lot)**: Quản lý Phiếu nạp tồn kho đầu kỳ (Opening Stock Sheet), Chốt áp dụng tồn kho (Apply Stock), Cân bằng tồn tức thời (Inventory Balance), Sổ thẻ kho (Inventory Ledger) và Quản lý Lô Date FEFO.
+
+    ### Yêu cầu xác thực & ngữ cảnh đa doanh nghiệp:
+    - **Bearer JWT**: Token xác thực đăng nhập qua Supabase Auth (`Authorization: Bearer <token>`).
+    - **X-Business-Id**: UUID cửa hàng / doanh nghiệp hiện tại (`X-Business-Id: <uuid>`).
+    - **Quyền hạn (Permissions)**:
+      - `products.read`, `products.manage` cho phân hệ F01.
+      - `inventory.read`, `inventory.receive` cho phân hệ F02.
+
+servers:
+  - url: http://localhost:5000/api
+    description: Máy chủ phát triển Localhost
+  - url: https://api.abc-retail.vn/api
+    description: Máy chủ môi trường Production
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Mã JWT Bearer cấp sau khi đăng nhập thành công
+
+  parameters:
+    businessIdHeader:
+      name: X-Business-Id
+      in: header
+      required: true
+      description: Định danh UUID của doanh nghiệp (Multi-tenant context)
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Thao tác thành công"
+
+    PaginationMeta:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 10
+        total:
+          type: integer
+          example: 45
+        totalPages:
+          type: integer
+          example: 5
+
+    CategoryItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Áo sơ mi nam"
+        code:
+          type: string
+          example: "CAT-ASM"
+        level:
+          type: integer
+          example: 2
+        parentId:
+          type: string
+          nullable: true
+          format: uuid
+        industryType:
+          type: string
+          enum: [FASHION, BEAUTY, GENERAL]
+          example: "FASHION"
+        description:
+          type: string
+          nullable: true
+        attributes:
+          type: array
+          items:
+            type: string
+          example: ["Màu sắc", "Kích cỡ"]
+
+    AttributeValueItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        value:
+          type: string
+          example: "Xanh Navy"
+        code:
+          type: string
+          example: "NAVY"
+        displayOrder:
+          type: integer
+          example: 1
+
+    AttributeItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Màu sắc"
+        code:
+          type: string
+          example: "COLOR"
+        industryType:
+          type: string
+          example: "FASHION"
+        isRequired:
+          type: boolean
+          example: true
+        values:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttributeValueItem'
+
+    ProductTemplateItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Áo Polo Nam Classic Fit"
+        code:
+          type: string
+          example: "POLO-01"
+        barcode:
+          type: string
+          nullable: true
+          example: "8938500123456"
+        brand:
+          type: string
+          nullable: true
+          example: "ABC Retail"
+        unit:
+          type: string
+          example: "Cái"
+        trackingType:
+          type: string
+          enum: [LOT, NONE]
+          example: "NONE"
+        categoryId:
+          type: string
+          format: uuid
+        categoryName:
+          type: string
+          example: "Thời trang nam"
+        image:
+          type: string
+          nullable: true
+        variantsCount:
+          type: integer
+          example: 6
+
+    ProductVariantItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        templateId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+          example: "POLO-01-NAVY-L"
+        barcode:
+          type: string
+          example: "8938500123457"
+        title:
+          type: string
+          example: "Xanh Navy / L"
+        basePrice:
+          type: number
+          example: 250000
+        costPrice:
+          type: number
+          example: 140000
+        image:
+          type: string
+          nullable: true
+        attributeValues:
+          type: array
+          items:
+            type: object
+            properties:
+              attributeName:
+                type: string
+                example: "Màu sắc"
+              value:
+                type: string
+                example: "Xanh Navy"
+
+    OpeningStockItemDto:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+          example: "SRM-B5-100ML"
+        productName:
+          type: string
+          example: "Sữa Rửa Mặt B5 Phục Hồi Da"
+        variantTitle:
+          type: string
+          example: "100ml"
+        barcode:
+          type: string
+          example: "8936001234567"
+        unit:
+          type: string
+          example: "Chai"
+        quantity:
+          type: integer
+          example: 50
+        costPrice:
+          type: number
+          example: 120000
+        totalCost:
+          type: number
+          example: 6000000
+        appliesLot:
+          type: boolean
+          example: true
+        lotNumber:
+          type: string
+          nullable: true
+          example: "LOT-2026-B5"
+        manufacturingDate:
+          type: string
+          nullable: true
+          example: "2026-01-15"
+        expiryDate:
+          type: string
+          nullable: true
+          example: "2028-01-15"
+
+    OpeningStockSheetDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          example: "#OSTK-2026-001"
+        status:
+          type: string
+          enum: [DRAFT, APPLIED, CANCELLED]
+          example: "DRAFT"
+        note:
+          type: string
+          nullable: true
+        totalQuantity:
+          type: integer
+          example: 150
+        totalValue:
+          type: number
+          example: 18000000
+        createdByName:
+          type: string
+          example: "Chủ Cửa Hàng"
+        createdAt:
+          type: string
+          format: date-time
+        appliedAt:
+          type: string
+          nullable: true
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpeningStockItemDto'
+
+    InventoryBalanceItem:
+      type: object
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+          example: "POLO-01-NAVY-L"
+        productName:
+          type: string
+          example: "Áo Polo Nam Classic Fit"
+        onHand:
+          type: integer
+          example: 45
+        reserved:
+          type: integer
+          example: 5
+        available:
+          type: integer
+          example: 40
+
+    InventoryLedgerItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        sku:
+          type: string
+          example: "SRM-B5-100ML"
+        productName:
+          type: string
+          example: "Sữa Rửa Mặt B5 Phục Hồi Da"
+        type:
+          type: string
+          enum: [OPENING_BALANCE, INBOUND, OUTBOUND, AUDIT_ADJUSTMENT, RETURN_RESTOCK, SCRAP]
+          example: "OPENING_BALANCE"
+        quantityChange:
+          type: integer
+          example: 50
+        balanceAfter:
+          type: integer
+          example: 50
+        referenceType:
+          type: string
+          example: "OPENING_STOCK_SHEET"
+        referenceId:
+          type: string
+          nullable: true
+
+paths:
+  # =========================================================================
+  # F01: CATEGORIES (QUẢN LÝ DANH MỤC)
+  # =========================================================================
+  /categories:
+    get:
+      tags:
+        - "[F01] Danh mục sản phẩm"
+      summary: Lấy danh sách cây danh mục phân cấp
+      description: Trả về danh sách danh mục (cấp 1, cấp 2) kèm thông tin phân loại ngành hàng và thuộc tính gắn liền.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      responses:
+        200:
+          description: Danh sách danh mục
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CategoryItem'
+    post:
+      tags:
+        - "[F01] Danh mục sản phẩm"
+      summary: Tạo mới danh mục
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, level]
+              properties:
+                name:
+                  type: string
+                  example: "Thời trang nam"
+                level:
+                  type: integer
+                  enum: [1, 2]
+                  example: 1
+                parentId:
+                  type: string
+                  nullable: true
+                industryType:
+                  type: string
+                  enum: [FASHION, BEAUTY, GENERAL]
+                  example: "FASHION"
+                description:
+                  type: string
+      responses:
+        201:
+          description: Tạo danh mục thành công
+
+  /categories/{id}:
+    patch:
+      tags:
+        - "[F01] Danh mục sản phẩm"
+      summary: Cập nhật thông tin danh mục
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                industryType:
+                  type: string
+      responses:
+        200:
+          description: Cập nhật danh mục thành công
+    delete:
+      tags:
+        - "[F01] Danh mục sản phẩm"
+      summary: Xóa danh mục
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        200:
+          description: Xóa danh mục thành công
+
+  # =========================================================================
+  # F01: ATTRIBUTES & VALUES (QUẢN LÝ THUỘC TÍNH NGÀNH)
+  # =========================================================================
+  /products/attributes:
+    get:
+      tags:
+        - "[F01] Thuộc tính sản phẩm"
+      summary: Lấy danh sách thuộc tính và các giá trị của ngành
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: industryType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [FASHION, BEAUTY, GENERAL]
+      responses:
+        200:
+          description: Danh sách thuộc tính
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AttributeItem'
+    post:
+      tags:
+        - "[F01] Thuộc tính sản phẩm"
+      summary: Tạo mới loại thuộc tính
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, industryType]
+              properties:
+                name:
+                  type: string
+                  example: "Kích cỡ"
+                code:
+                  type: string
+                  example: "SIZE"
+                industryType:
+                  type: string
+                  example: "FASHION"
+      responses:
+        201:
+          description: Tạo thuộc tính thành công
+
+  /products/attributes/values:
+    post:
+      tags:
+        - "[F01] Thuộc tính sản phẩm"
+      summary: Thêm giá trị cho thuộc tính
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [attributeId, value]
+              properties:
+                attributeId:
+                  type: string
+                  format: uuid
+                value:
+                  type: string
+                  example: "Size XL"
+                code:
+                  type: string
+                  example: "XL"
+      responses:
+        201:
+          description: Thêm giá trị thành công
+
+  # =========================================================================
+  # F01: PRODUCT TEMPLATES & WIZARD (TẠO SẢN PHẨM & BIẾN THỂ)
+  # =========================================================================
+  /products/templates:
+    get:
+      tags:
+        - "[F01] Sản phẩm & Biến thể"
+      summary: Danh sách sản phẩm mẫu (Product Templates)
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        200:
+          description: Danh sách sản phẩm mẫu
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductTemplateItem'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+    post:
+      tags:
+        - "[F01] Sản phẩm & Biến thể"
+      summary: Tạo sản phẩm mẫu (Bước 1 Wizard)
+      description: Khởi tạo thông tin chung của sản phẩm cha trước khi chọn thuộc tính và tạo biến thể.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, categoryId, unit, trackingType]
+              properties:
+                name:
+                  type: string
+                  example: "Áo Polo Nam Classic Fit"
+                code:
+                  type: string
+                  example: "POLO-01"
+                barcode:
+                  type: string
+                  example: "8938500123456"
+                categoryId:
+                  type: string
+                  format: uuid
+                brand:
+                  type: string
+                  example: "ABC Retail"
+                unit:
+                  type: string
+                  example: "Cái"
+                trackingType:
+                  type: string
+                  enum: [LOT, NONE]
+                  example: "NONE"
+                description:
+                  type: string
+                image:
+                  type: string
+      responses:
+        201:
+          description: Tạo sản phẩm mẫu thành công
+
+  /products/templates/{id}:
+    get:
+      tags:
+        - "[F01] Sản phẩm & Biến thể"
+      summary: Lấy chi tiết sản phẩm mẫu kèm các SKU biến thể
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        200:
+          description: Chi tiết sản phẩm mẫu
+
+  /products/templates/{id}/variants/generate:
+    post:
+      tags:
+        - "[F01] Sản phẩm & Biến thể"
+      summary: Tự động sinh tổ hợp SKU biến thể (Bước 3 Wizard)
+      description: Thực hiện phép nhân Descartes (Cartesian product) các giá trị thuộc tính đã chọn để sinh ra danh sách SKU con.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [attributeValueIds]
+              properties:
+                attributeValueIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  example: ["id-color-red", "id-color-blue", "id-size-m", "id-size-l"]
+                defaultBasePrice:
+                  type: number
+                  example: 250000
+                defaultCostPrice:
+                  type: number
+                  example: 140000
+      responses:
+        200:
+          description: Danh sách biến thể SKU đã sinh ra
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  variants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductVariantItem'
+
+  /products/templates/{id}/variants/bulk:
+    patch:
+      tags:
+        - "[F01] Sản phẩm & Biến thể"
+      summary: Cập nhật hàng loạt thông tin SKU (Bước 4 Wizard)
+      description: Thiết lập giá bán, giá vốn, mã vạch barcode riêng và ảnh góc chụp cho từng biến thể.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [variants]
+              properties:
+                variants:
+                  type: array
+                  items:
+                    type: object
+                    required: [id, sku, basePrice, costPrice]
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      sku:
+                        type: string
+                      barcode:
+                        type: string
+                      basePrice:
+                        type: number
+                      costPrice:
+                        type: number
+                      image:
+                        type: string
+      responses:
+        200:
+          description: Cập nhật thành công danh sách biến thể
+
+  /products/list:
+    get:
+      tags:
+        - "[F01] Danh sách sản phẩm"
+      summary: Danh sách sản phẩm tổng hợp phân trang
+      description: Phục vụ màn hình tra cứu danh mục sản phẩm, hiển thị số biến thể, khoảng giá, tồn kho tức thời.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: categoryId
+          in: query
+          schema:
+            type: string
+      responses:
+        200:
+          description: Bảng danh mục sản phẩm
+
+  # =========================================================================
+  # F02: OPENING STOCK SHEETS (PHIẾU NẠP TỒN ĐẦU KỲ)
+  # =========================================================================
+  /inventory/opening-sheets:
+    get:
+      tags:
+        - "[F02] Phiếu nạp tồn đầu kỳ"
+      summary: Lấy danh sách phiếu nạp tồn đầu kỳ
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [DRAFT, APPLIED, CANCELLED]
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        200:
+          description: Danh sách phiếu nạp tồn
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OpeningStockSheetDetail'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+    post:
+      tags:
+        - "[F02] Phiếu nạp tồn đầu kỳ"
+      summary: Tạo mới phiếu nạp tồn đầu kỳ (Lưu DRAFT)
+      description: Tạo phiếu nạp tồn kho với các dòng SKU, số lượng, giá vốn ban đầu và thông tin Lô HSD (FEFO).
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                note:
+                  type: string
+                  example: "Nạp tồn ban đầu khai trương cửa hàng"
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [variantId, quantity, costPrice]
+                    properties:
+                      variantId:
+                        type: string
+                        format: uuid
+                      quantity:
+                        type: integer
+                        example: 20
+                      costPrice:
+                        type: number
+                        example: 120000
+                      lotNumber:
+                        type: string
+                        example: "LOT-2026-01"
+                      manufacturingDate:
+                        type: string
+                        example: "2026-01-01"
+                      expiryDate:
+                        type: string
+                        example: "2027-01-01"
+      responses:
+        201:
+          description: Tạo phiếu nạp tồn thành công
+
+  /inventory/opening-sheets/next-code:
+    get:
+      tags:
+        - "[F02] Phiếu nạp tồn đầu kỳ"
+      summary: Sinh tự động mã phiếu tiếp theo
+      description: Trả về chuỗi mã phiếu định dạng chuẩn tự tăng, ví dụ `#OSTK-2026-006`.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      responses:
+        200:
+          description: Mã phiếu tiếp theo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    example: "#OSTK-2026-006"
+
+  /inventory/opening-sheets/{id}:
+    get:
+      tags:
+        - "[F02] Phiếu nạp tồn đầu kỳ"
+      summary: Chi tiết phiếu nạp tồn đầu kỳ
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        200:
+          description: Chi tiết phiếu nạp tồn
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpeningStockSheetDetail'
+    patch:
+      tags:
+        - "[F02] Phiếu nạp tồn đầu kỳ"
+      summary: Cập nhật phiếu nạp tồn nháp (DRAFT)
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+                items:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        200:
+          description: Cập nhật phiếu thành công
+    delete:
+      tags:
+        - "[F02] Phiếu nạp tồn đầu kỳ"
+      summary: Xóa / Hủy phiếu nạp tồn nháp
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        200:
+          description: Xóa phiếu thành công
+
+  /inventory/opening-sheets/{id}/apply:
+    post:
+      tags:
+        - "[F02] Phiếu nạp tồn đầu kỳ"
+      summary: Chốt & Áp dụng nạp tồn vào kho chính thức (Apply Stock)
+      description: |
+        Thực hiện một **Database Transaction** an toàn:
+        1. Kiểm tra phiếu phải đang ở trạng thái `DRAFT`.
+        2. Tạo / Cập nhật Lô hàng `ProductLot` và `ProductLotItem` (nếu sản phẩm có quản lý lô hạn).
+        3. Tăng tồn kho tức thời `InventoryBalance` (`onHand`, `available`).
+        4. Ghi vết biến động vào sổ thẻ kho `InventoryLedger` (`type = OPENING_BALANCE`).
+        5. Đổi trạng thái phiếu sang `APPLIED` và gắn dấu thời gian `appliedAt`.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        200:
+          description: Áp dụng phiếu nạp tồn thành công, kho hàng đã ghi nhận số dư mới
+
+  # =========================================================================
+  # F02: INVENTORY BALANCES & LEDGER (TỒN KHO & THẺ KHO)
+  # =========================================================================
+  /inventory/variants:
+    get:
+      tags:
+        - "[F02] Tồn kho & Thẻ kho"
+      summary: Danh sách tồn kho tức thời theo SKU
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        200:
+          description: Danh sách số dư tồn kho
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/InventoryBalanceItem'
+
+  /inventory/variants/{variantId}/lots:
+    get:
+      tags:
+        - "[F02] Tồn kho & Thẻ kho"
+      summary: Lấy danh sách lô hàng của một biến thể SKU cụ thể
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: variantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        200:
+          description: Danh sách lô date của SKU
+
+  /inventory/ledger:
+    get:
+      tags:
+        - "[F02] Tồn kho & Thẻ kho"
+      summary: Lấy dữ liệu sổ thẻ kho ghi vết lịch sử biến động
+      description: Trả về nhật ký xuất/nhập/tồn kho có thể lọc theo loại giao dịch, mã SKU và khoảng ngày.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: variantId
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [OPENING_BALANCE, INBOUND, OUTBOUND, AUDIT_ADJUSTMENT, RETURN_RESTOCK, SCRAP]
+      responses:
+        200:
+          description: Lịch sử sổ thẻ kho
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InventoryLedgerItem'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+
+  # =========================================================================
+  # TIỆN ÍCH CHUNG: UPLOAD MEDIA
+  # =========================================================================
+  /upload:
+    post:
+      tags:
+        - "[Chung] Tải lên tệp ảnh"
+      summary: Tải lên hình ảnh sản phẩm hoặc chứng từ lên Supabase Storage
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                folder:
+                  type: string
+                  default: "products"
+      responses:
+        200:
+          description: Trả về URL ảnh công khai
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    example: "https://your-project.supabase.co/storage/v1/object/public/products/img_01.png"

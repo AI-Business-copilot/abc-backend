@@ -159,12 +159,15 @@ function formatAuditItem(item: AuditItemRow) {
   return {
     id: item.id,
     variantId: item.variantId,
-    sku: item.variant.sku,
-    productName: item.variant.template.name,
-    imageUrl: item.variant.template.imageUrl,
-    attributeText: item.variant.variantAttributeValues
-      .map((v) => v.attributeValue.value)
-      .join(" · "),
+    sku: item.variant?.sku ?? "",
+    productName: item.variant?.template?.name ?? item.variant?.sku ?? "Sản phẩm không xác định",
+    imageUrl: item.variant?.template?.imageUrl ?? null,
+    attributeText: item.variant?.variantAttributeValues
+      ? item.variant.variantAttributeValues
+          .map((v) => v.attributeValue?.value)
+          .filter((v): v is string => Boolean(v))
+          .join(" · ")
+      : "",
     lotId: item.lotItem?.lot.id ?? null,
     lotItemId: item.lotItem?.id ?? item.lotItemId ?? null,
     // Existing lot item: the number comes from the batch. New lot: number typed by the employee.

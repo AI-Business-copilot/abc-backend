@@ -130,9 +130,8 @@ async function validateTargets(
   if (found.length !== targetIds.length) throw new HttpError(400, "Every promotion target must belong to this business.");
 }
 
-function targetRows(input: PromotionInput, businessId: string) {
+function targetRows(input: PromotionInput) {
   return input.targetIds.map(id => ({
-    businessId,
     targetType: input.scope,
     ...(input.scope === "CATEGORY" ? { categoryId: id } : { productTemplateId: id }),
   }));
@@ -221,7 +220,7 @@ export class PromotionsService {
           businessId,
           createdBy,
           ...promotionData(input),
-          targets: { create: targetRows(input, businessId) },
+          targets: { create: targetRows(input) },
         },
         include: promotionInclude,
       });
@@ -239,7 +238,7 @@ export class PromotionsService {
         where: { id: current.id },
         data: {
           ...promotionData(input),
-          targets: { create: targetRows(input, businessId) },
+          targets: { create: targetRows(input) },
         },
         include: promotionInclude,
       });
