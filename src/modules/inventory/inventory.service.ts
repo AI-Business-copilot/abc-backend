@@ -744,11 +744,20 @@ class InventoryService {
       include: {
         lot: { select: { id: true, lotNumber: true } },
         inventoryBalances: { select: { quantityOnHand: true } },
+        // Only orders that keep the lot out of an audit: one waiting for the Owner, and one the
+        // Owner rejected. An approved or closed order is settled, so its lot can be counted.
+        scrapOrders: {
+          where: { status: { in: ["PENDING", "REJECTED"] } },
+          select: { id: true, scrapCode: true, status: true },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
       },
       orderBy: { expirationDate: "asc" },
     });
     const mapped = lotItems.map((item) => {
       const onHand = item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0);
+      const scrapOrder = item.scrapOrders[0] ?? null;
       return {
         id: item.id,
         lotId: item.lot.id,
@@ -758,6 +767,13 @@ class InventoryService {
         status: item.status,
         quantityOnHand: onHand,
         onHand,
+        // A lot whose scrap decision is still open cannot be put into an audit: the audit lock
+        // would block the scrap approval and the audit application would rewrite the stock the
+        // order was judged against.
+        hasOpenScrapOrder: scrapOrder !== null,
+        scrapOrder,
+        // A lot that was already scrapped has no stock left, so it never enters an audit.
+        isScrapped: item.status === "SCRAPPED",
       };
     });
     return {

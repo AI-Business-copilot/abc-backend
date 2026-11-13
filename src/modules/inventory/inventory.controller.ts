@@ -510,6 +510,21 @@ export class InventoryController {
     }
   }
 
+  async cancelScrapOrder(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await scrapService.cancelScrapOrder(
+        businessId,
+        actorOf(res),
+        String(req.params.id),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
   async getScrapStatistics(_req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");

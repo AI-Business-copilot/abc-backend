@@ -8,7 +8,7 @@
 ## Authentication
 All endpoints require:
 - Supabase authentication (`requireSupabaseIdentity`)
-- Business scope (`requireBusinessScope`)
+- Business scope (`requireBusinessScope`)d
 - Appropriate permission
 
 ---

@@ -3,6 +3,7 @@ import { Prisma, StockTransactionType } from "@prisma/client";
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../../shared/http/http-error";
 import { LotStatusService } from "./lot-status.service";
+import { scrapStatusLabel } from "./scrap-access";
 
 const num = (value: unknown) => Number(value ?? 0);
 
@@ -322,6 +323,43 @@ function assertLotMatchesAuditType(auditType: string, lotItemId: string | null, 
 }
 
 /**
+ * Scrap orders that still keep a lot out of an audit: one waiting for the Owner, and one the
+ * Owner rejected. Both mean the lot's fate is still open. An approved (COMPLETED) or closed
+ * (CANCELLED) order is settled, so its lot can be counted again.
+ */
+const AUDIT_BLOCKING_SCRAP_STATUSES = ["PENDING", "REJECTED"] as const;
+
+/**
+ * A lot whose scrap decision is still open must not enter an audit: adding the row locks the
+ * variant, which blocks the scrap approval, and the audit application would rewrite the stock
+ * the order was judged against. Report the scrap code so the owner knows which order is in the way.
+ */
+async function findLotsWithOpenScrapOrder(
+  db: DbClient,
+  businessId: string,
+  lotItemIds: string[],
+): Promise<Map<string, { scrapCode: string; status: string }>> {
+  const blocked = new Map<string, { scrapCode: string; status: string }>();
+  if (lotItemIds.length === 0) return blocked;
+
+  const orders = await db.scrapOrder.findMany({
+    where: {
+      businessId,
+      lotItemId: { in: lotItemIds },
+      status: { in: [...AUDIT_BLOCKING_SCRAP_STATUSES] },
+    },
+    select: { lotItemId: true, scrapCode: true, status: true },
+    orderBy: { createdAt: "desc" },
+  });
+  for (const order of orders) {
+    if (order.lotItemId && !blocked.has(order.lotItemId)) {
+      blocked.set(order.lotItemId, { scrapCode: order.scrapCode, status: order.status });
+    }
+  }
+  return blocked;
+}
+
+/**
  * Validate owner-created rows and return them normalized.
  * Checks assignees, variants and lot items, and rejects duplicate (variant, lot item) rows.
  */
@@ -371,13 +409,50 @@ async function normalizeAndValidateRows(
   if (lotItemIds.length > 0) {
     const lotItems = await db.productLotItem.findMany({
       where: { id: { in: lotItemIds }, businessId },
-      select: { id: true, variantId: true },
+      select: { id: true, variantId: true, status: true, lot: { select: { lotNumber: true } } },
     });
     const itemVariant = new Map(lotItems.map((l) => [l.id, l.variantId]));
+    const lotNumberById = new Map(lotItems.map((l) => [l.id, l.lot.lotNumber]));
     for (const row of rows) {
       if (row.lotItemId && itemVariant.get(row.lotItemId) !== row.variantId) {
         throw new HttpError(400, "Lô không tồn tại hoặc không thuộc SKU đã chọn.");
       }
+    }
+
+    // A lot that was already scrapped has no stock left to count, so it never enters an audit.
+    const scrapped = rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => {
+        if (!row.lotItemId) return false;
+        const item = lotItems.find((l) => l.id === row.lotItemId);
+        return item?.status === "SCRAPPED";
+      })
+      .map(
+        ({ row, index }) =>
+          `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} đã bị hủy hàng.`,
+      )
+      .join(" ");
+    if (scrapped) {
+      throw new HttpError(409, `${scrapped} Lô đã bị hủy hàng thì không thể kiểm kê.`);
+    }
+
+    // A lot whose scrap decision is still open cannot be audited: locking the row blocks the
+    // scrap approval, and the audit application would rewrite the stock the order was judged
+    // against. Report the exact scrap code and status.
+    const blocked = await findLotsWithOpenScrapOrder(db, businessId, lotItemIds);
+    if (blocked.size > 0) {
+      const details = rows
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => row.lotItemId && blocked.has(row.lotItemId))
+        .map(({ row, index }) => {
+          const order = blocked.get(row.lotItemId!)!;
+          return `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} có phiếu hủy ${order.scrapCode} (${scrapStatusLabel(order.status)}).`;
+        })
+        .join(" ");
+      throw new HttpError(
+        409,
+        `${details} Lô đang có phiếu hủy chưa xong xuất thì không thể đưa vào đợt kiểm kê.`,
+      );
     }
   }
 
@@ -1386,6 +1461,31 @@ class AuditService {
         throw new HttpError(400, "Đợt kiểm kê chưa có dòng kiểm kê nào để áp dụng.");
       }
 
+      // A scrap order that is still open is judged against the stock this apply is about to
+      // rewrite, so the lot has to be free of one first. Approved and closed orders are settled
+      // and do not block the audit.
+      const countedLotItemIds = audit.stockAuditItems
+        .map((item) => item.lotItemId)
+        .filter((id): id is string => Boolean(id));
+      if (countedLotItemIds.length > 0) {
+        const scrapOrder = await tx.scrapOrder.findFirst({
+          where: {
+            businessId,
+            lotItemId: { in: countedLotItemIds },
+            status: { in: [...AUDIT_BLOCKING_SCRAP_STATUSES] },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { scrapCode: true, status: true },
+        });
+        if (scrapOrder) {
+          throw new HttpError(
+            409,
+            `Lô hàng được kiểm kê đang có phiếu hủy ${scrapOrder.scrapCode} (${scrapStatusLabel(scrapOrder.status)}). ` +
+              "Hãy xử lý phiếu hủy đó trước khi áp dụng.",
+          );
+        }
+      }
+
       // Get all affected variants for unlocking
       const affectedVariantIds = audit.stockAuditItems.map((item) => item.variantId);
 
@@ -1448,19 +1548,27 @@ class AuditService {
 
           if (hasCorrection || audit.auditType === "RE_AUDIT") {
             const expirationDate = correctedExpiration ?? item.lotItem.expirationDate;
-            const calculatedStatus = lotStatusService.calculateStatus(expirationDate);
+            const recalculatedStatus = lotStatusService.calculateStatus(expirationDate);
+            const wasQuarantined = item.lotItem.status === "QUARANTINED";
+            const wasScrapped = item.lotItem.status === "SCRAPPED";
+            // A re-audit releases a quarantine only when the lot is sellable again. Expiry alone never
+            // releases a quarantine, and a scrap decision is never undone.
+            const releasesQuarantine =
+              audit.auditType === "RE_AUDIT" &&
+              wasQuarantined &&
+              (recalculatedStatus === "HEALTHY" || recalculatedStatus === "WARNING");
+            const keepsStatus = wasScrapped || (wasQuarantined && !releasesQuarantine);
 
             await tx.productLotItem.update({
               where: { id: item.lotItem.id },
               data: {
                 ...(correctedExpiration ? { expirationDate: correctedExpiration } : {}),
                 ...(correctedManufacturing ? { manufacturingDate: correctedManufacturing } : {}),
-                // Recalculate the status from the (possibly corrected) expiry, but never undo a manual
-                // quarantine or scrap decision
-                ...(audit.auditType !== "RE_AUDIT" &&
-                (item.lotItem.status === "QUARANTINED" || item.lotItem.status === "SCRAPPED")
-                  ? {}
-                  : { status: calculatedStatus }),
+                ...(keepsStatus ? {} : { status: recalculatedStatus }),
+                // Releasing a quarantine must not leave a HEALTHY row still carrying a quarantine quantity.
+                ...(releasesQuarantine
+                  ? { quarantineQty: null, quarantinedAt: null, quarantinedBy: null, quarantineNote: null }
+                  : {}),
                 ...(audit.auditType === "RE_AUDIT" ? { isLockedForAudit: false } : {}),
               },
             });

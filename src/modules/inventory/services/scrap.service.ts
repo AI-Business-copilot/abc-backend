@@ -11,7 +11,10 @@ import {
   assertOwner,
   assertStaff,
   assertUuid,
+  assertVariantNotLockedForAudit,
   lockScrapOrder,
+  lotStatusLabel,
+  scrapStatusLabel,
   type ScrapActor,
 } from "./scrap-access";
 
@@ -40,6 +43,7 @@ const orderInclude = {
   createdByUser: userSelect,
   approvedByUser: userSelect,
   rejectedByUser: userSelect,
+  cancelledByUser: userSelect,
 } satisfies Prisma.ScrapOrderInclude;
 
 const lotStatusService = new LotStatusService();
@@ -126,10 +130,13 @@ export class ScrapService {
 
     const lotItem = await prisma.productLotItem.findFirst({
       where: { id: lotItemId, businessId },
-      include: { variant: true },
+      include: { variant: { select: { costPrice: true, isLockedForAudit: true } } },
     });
     if (!lotItem) {
       throw new HttpError(404, "Lot item not found");
+    }
+    if (lotItem.variant.isLockedForAudit) {
+      throw new HttpError(409, "This SKU is locked for a stock audit. Finish the count before scrapping its stock.");
     }
     if (data.variantId !== undefined && data.variantId !== lotItem.variantId) {
       throw new HttpError(400, "variantId does not match this lot item.");
@@ -170,8 +177,17 @@ export class ScrapService {
     }
 
     // Cheap check before touching Storage. The loop below checks again in case of a race.
-    if ((await prisma.scrapOrder.count({ where: { businessId, lotItemId, status: "PENDING" } })) > 0) {
-      throw new HttpError(409, "This lot item already has a scrap order waiting for review.");
+    const existingOrder = await prisma.scrapOrder.findFirst({
+      where: { businessId, lotItemId },
+      orderBy: { createdAt: "desc" },
+      select: { scrapCode: true, status: true },
+    });
+    if (existingOrder) {
+      throw new HttpError(
+        409,
+        `This lot item already has a scrap order (${existingOrder.scrapCode}, ${scrapStatusLabel(existingOrder.status)}). ` +
+          `A lot can only have one scrap order; settle the existing order before creating another.`,
+      );
     }
 
     // The photos are stored with the order and never change afterward, so they are written in the same step.
@@ -189,9 +205,17 @@ export class ScrapService {
       }
 
       for (let attempt = 0; attempt < 3; attempt++) {
-        const pending = await prisma.scrapOrder.count({ where: { businessId, lotItemId, status: "PENDING" } });
-        if (pending > 0) {
-          throw new HttpError(409, "This lot item already has a scrap order waiting for review.");
+        const existing = await prisma.scrapOrder.findFirst({
+          where: { businessId, lotItemId },
+          orderBy: { createdAt: "desc" },
+          select: { scrapCode: true, status: true },
+        });
+        if (existing) {
+          throw new HttpError(
+            409,
+            `This lot item already has a scrap order (${existing.scrapCode}, ${scrapStatusLabel(existing.status)}). ` +
+              `A lot can only have one scrap order; settle the existing order before creating another.`,
+          );
         }
 
         try {
@@ -316,7 +340,7 @@ export class ScrapService {
         throw new HttpError(403, "Only the staff member who created this scrap order can change it.");
       }
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be changed.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể được sửa.`);
       }
 
       if (newQty !== undefined) {
@@ -358,7 +382,7 @@ export class ScrapService {
         throw new HttpError(403, "Only the staff member who created this scrap order can delete it.");
       }
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be deleted.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể bị xoá.`);
       }
 
       // Includes soft-deleted photos: once the order is gone nothing refers to their files.
@@ -395,7 +419,7 @@ export class ScrapService {
     const result = await prisma.$transaction(async (tx) => {
       const locked = await lockScrapOrder(tx, businessId, scrapOrderId);
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be approved.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể được duyệt.`);
       }
 
       const images = await tx.scrapOrderImage.findMany({
@@ -417,8 +441,12 @@ export class ScrapService {
       }
       const lotItem = await tx.productLotItem.findFirstOrThrow({ where: { id: order.lotItemId, businessId } });
       if (lotItem.status !== "QUARANTINED") {
-        throw new HttpError(409, `The lot item is ${lotItem.status}, not QUARANTINED, so it cannot be scrapped.`);
+        throw new HttpError(
+          409,
+          `Lô hàng đang ${lotStatusLabel(lotItem.status)}, không phải đang cách ly, nên không thể hủy hàng.`,
+        );
       }
+      await assertVariantNotLockedForAudit(tx, businessId, order.variantId);
 
       const source = order.scrapSource as ScrapSource;
       const { balance } = await this.availableFor(tx, businessId, order.variantId, order.lotItemId, source);
@@ -537,7 +565,7 @@ export class ScrapService {
     return prisma.$transaction(async (tx) => {
       const locked = await lockScrapOrder(tx, businessId, scrapOrderId);
       if (locked.status !== "PENDING") {
-        throw new HttpError(409, `A ${locked.status} scrap order cannot be rejected.`);
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể bị từ chối.`);
       }
       const rejected = await tx.scrapOrder.update({
         where: { id: scrapOrderId },
@@ -551,6 +579,47 @@ export class ScrapService {
         include: orderInclude,
       });
       return formatScrapOrder(rejected);
+    });
+  }
+
+  /**
+   * Owner only. Closes a PENDING order without approving or rejecting it: no stock, ledger or lot
+   * change, so the lot item stays QUARANTINED and the photos stay as they were. Used when the
+   * order can no longer be judged, for example when the staff member who raised it has left.
+   */
+  async cancelScrapOrder(
+    businessId: string,
+    actor: ScrapActor,
+    scrapOrderId: string,
+    body: { note?: unknown },
+  ) {
+    assertOwner(actor);
+    assertUuid(scrapOrderId, "Scrap order");
+
+    if (body.note !== undefined && body.note !== null && typeof body.note !== "string") {
+      throw new HttpError(400, "note must be text.");
+    }
+    const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : null;
+    if (note && note.length > 500) {
+      throw new HttpError(400, "note must be 500 characters or fewer.");
+    }
+
+    return prisma.$transaction(async (tx) => {
+      const locked = await lockScrapOrder(tx, businessId, scrapOrderId);
+      if (locked.status !== "PENDING") {
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể bị huỷ.`);
+      }
+      const cancelled = await tx.scrapOrder.update({
+        where: { id: scrapOrderId },
+        data: {
+          status: "CANCELLED",
+          cancelledBy: actor.userId,
+          cancelledAt: new Date(),
+          cancelledNote: note,
+        },
+        include: orderInclude,
+      });
+      return formatScrapOrder(cancelled);
     });
   }
 
@@ -571,6 +640,7 @@ export class ScrapService {
       pendingCount: statusCount("PENDING"),
       completedCount: statusCount("COMPLETED"),
       rejectedCount: statusCount("REJECTED"),
+      cancelledCount: statusCount("CANCELLED"),
       // Only approved scrap counts as a loss.
       totalLossValue: Number(loss._sum.totalLossValue ?? 0),
       bySource: {

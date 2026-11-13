@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { HttpError } from "../../../shared/http/http-error";
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { LotStatusService } from "./lot-status.service";
+import { assertVariantNotLockedForAudit } from "./scrap-access";
 
 type LotStatusName = "HEALTHY" | "WARNING" | "UNUSABLE" | "QUARANTINED" | "SCRAPPED";
 
@@ -28,6 +29,7 @@ interface LotItemRow {
   lot: { id: string; lotNumber: string };
   variant: LotItemVariant;
   inventoryBalances: Array<{ quantityOnHand: number; damagedQuantity: number }>;
+  scrapOrders: Array<{ id: string; scrapCode: string; status: string }>;
 }
 
 /** One variant inside a batch, with the status calculated for today. */
@@ -47,6 +49,11 @@ export interface LotItemWithStatus {
   variant: LotItemVariant;
   onHand: number;
   damaged: number;
+  /**
+   * The scrap order already raised for this lot item, in any status. A lot can only have one
+   * scrap order, so the Owner and the staff both need to see which order is already there.
+   */
+  scrapOrder: { id: string; scrapCode: string; status: string } | null;
 }
 
 /** A batch header together with every variant it contains. */
@@ -101,6 +108,7 @@ export class LotService {
       variant: item.variant,
       onHand: item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
       damaged: item.inventoryBalances.reduce((sum, balance) => sum + balance.damagedQuantity, 0),
+      scrapOrder: item.scrapOrders[0] ?? null,
     };
   }
 
@@ -116,6 +124,12 @@ export class LotService {
       lot: { select: { id: true, lotNumber: true } },
       variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
       inventoryBalances: { select: { quantityOnHand: true, damagedQuantity: true } },
+      // The newest scrap order of the lot, in any status: a lot can only have one.
+      scrapOrders: {
+        select: { id: true, scrapCode: true, status: true },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
     } satisfies Prisma.ProductLotItemSelect;
   }
 
@@ -383,6 +397,8 @@ export class LotService {
       if (item.status === 'SCRAPPED') {
         throw new HttpError(409, 'A scrapped lot item cannot be quarantined.');
       }
+
+      await assertVariantNotLockedForAudit(tx, businessId, item.variantId);
 
       const pending = await tx.scrapOrder.count({
         where: { businessId, lotItemId, status: 'PENDING' },
