@@ -51,7 +51,9 @@ model Business {
   stockAudits             StockAudit[]                @relation("stock_audits_business_id")
   scrapOrders             ScrapOrder[]                @relation("scrap_orders_business_id")
   scrapOrderImages        ScrapOrderImage[]           @relation("scrap_order_images_business_id")
-  dailyProductMetrics     DailyProductMetric[]        @relation("daily_product_metrics_business_id")
+  aiInsightSettings       AiInsightSettings?          @relation("ai_insight_settings_business_id")
+  aiInsightRuns           AiInsightRun[]              @relation("ai_insight_runs_business_id")
+  aiInsights              AiInsight[]                 @relation("ai_insights_business_id")
   forecastRuns            ForecastRun[]               @relation("forecast_runs_business_id")
   promotions              Promotion[]                 @relation("promotions_business_id")
   promotionTargets        PromotionTarget[]           @relation("promotion_targets_business_id")
@@ -361,8 +363,8 @@ model ProductVariant {
   customerReturnItems    CustomerReturnItem[]        @relation("customer_return_items_variant_id")
   stockAuditItems        StockAuditItem[]            @relation("stock_audit_items_variant_id")
   scrapOrders            ScrapOrder[]                @relation("scrap_orders_variant_id")
-  dailyProductMetrics    DailyProductMetric[]        @relation("daily_product_metrics_variant_id")
   channelDailyMetrics    ChannelDailyProductMetric[] @relation("channel_daily_metrics_variant_id")
+  aiInsights             AiInsight[]                 @relation("ai_insights_variant_id")
   forecastResults        ForecastResult[]            @relation("forecast_results_variant_id")
 
   supplierProducts SupplierProduct[] @relation("supplier_products_variant_id")
@@ -506,6 +508,7 @@ model ProductLotItem {
   customerReturnItems  CustomerReturnItem[]  @relation("customer_return_items_lot_item_id")
   stockAuditItems      StockAuditItem[]      @relation("stock_audit_items_lot_item_id")
   scrapOrders          ScrapOrder[]          @relation("scrap_orders_lot_item_id")
+  aiInsights           AiInsight[]           @relation("ai_insights_lot_item_id")
 
   @@unique([businessId, lotId, variantId], map: "uq_product_lot_item")
   @@index([businessId, status], map: "idx_product_lot_items_business_status")
@@ -1195,22 +1198,78 @@ model PromotionRedemption {
   @@map("promotion_redemptions")
 }
 
-model DailyProductMetric {
-  businessId   String   @map("business_id") @db.Uuid
-  variantId    String   @map("variant_id") @db.Uuid
-  metricDate   DateTime @map("metric_date") @db.Date
-  /// SQL CHECK (units_sold >= 0); can ap dung bang SQL rieng.
-  unitsSold    Int      @default(0) @map("units_sold")
-  netRevenue   Decimal  @default(0) @map("net_revenue") @db.Decimal(12, 2)
-  netCogs      Decimal  @default(0) @map("net_cogs") @db.Decimal(12, 2)
-  closingStock Int      @map("closing_stock")
-  isStockout   Boolean  @default(false) @map("is_stockout")
+/// Per-business overrides of the inventory insight thresholds; missing keys fall back to code defaults.
+model AiInsightSettings {
+  businessId String   @id @map("business_id") @db.Uuid
+  settings   Json     @db.JsonB
+  updatedBy  String?  @map("updated_by") @db.Uuid
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  business Business       @relation("daily_product_metrics_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant  ProductVariant @relation("daily_product_metrics_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business Business @relation("ai_insight_settings_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
-  @@id([businessId, variantId, metricDate])
-  @@map("daily_product_metrics")
+  @@map("ai_insight_settings")
+}
+
+model AiInsightRun {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId  String    @map("business_id") @db.Uuid
+  /// MANUAL | SCHEDULED
+  triggerType String    @map("trigger_type") @db.VarChar(20)
+  /// RUNNING | SUCCEEDED | FAILED
+  status      String    @db.VarChar(20)
+  /// Last complete sales day included in the analysis (Asia/Ho_Chi_Minh).
+  dataAsOf    DateTime  @map("data_as_of") @db.Date
+  triggeredBy String?   @map("triggered_by") @db.Uuid
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt  DateTime? @map("finished_at") @db.Timestamptz(6)
+  summary     Json?     @db.JsonB
+  warnings    Json?     @db.JsonB
+  error       String?   @db.Text
+
+  business Business    @relation("ai_insight_runs_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  insights AiInsight[] @relation("ai_insights_run_id")
+
+  @@index([businessId, startedAt(sort: Desc)], map: "idx_ai_insight_runs_business_started")
+  @@map("ai_insight_runs")
+}
+
+model AiInsight {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId      String    @map("business_id") @db.Uuid
+  /// Last run that detected this insight.
+  runId           String    @map("run_id") @db.Uuid
+  /// LOW_STOCK | SLOW_MOVING | DECLINING_SALES | OVERSTOCK | EXPIRATION_RISK
+  type            String    @db.VarChar(30)
+  /// type:variantId:lotItemId - one live insight per fingerprint.
+  fingerprint     String    @db.VarChar(160)
+  variantId       String    @map("variant_id") @db.Uuid
+  lotItemId       String?   @map("lot_item_id") @db.Uuid
+  /// CRITICAL | HIGH | MEDIUM | LOW
+  severity        String    @db.VarChar(10)
+  reasonCode      String    @map("reason_code") @db.VarChar(60)
+  suggestedAction String    @map("suggested_action") @db.VarChar(40)
+  /// Inputs used by the rule, so every insight can be explained and audited.
+  metrics         Json      @db.JsonB
+  valueAtRisk     Decimal?  @map("value_at_risk") @db.Decimal(14, 2)
+  priorityScore   Int       @map("priority_score")
+  /// OPEN | ACKNOWLEDGED | DISMISSED | RESOLVED
+  status          String    @default("OPEN") @db.VarChar(20)
+  snoozeUntil     DateTime? @map("snooze_until") @db.Date
+  handledBy       String?   @map("handled_by") @db.Uuid
+  handledAt       DateTime? @map("handled_at") @db.Timestamptz(6)
+  firstDetectedAt DateTime  @default(now()) @map("first_detected_at") @db.Timestamptz(6)
+  lastDetectedAt  DateTime  @default(now()) @map("last_detected_at") @db.Timestamptz(6)
+  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
+
+  business Business        @relation("ai_insights_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  run      AiInsightRun    @relation("ai_insights_run_id", fields: [runId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variant  ProductVariant  @relation("ai_insights_variant_id", fields: [businessId, variantId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
+  lotItem  ProductLotItem? @relation("ai_insights_lot_item_id", fields: [lotItemId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([businessId, fingerprint], map: "uq_ai_insights_fingerprint")
+  @@index([businessId, status, severity], map: "idx_ai_insights_business_status")
+  @@index([businessId, type, status], map: "idx_ai_insights_business_type")
+  @@map("ai_insights")
 }
 
 model OnlineReportImportBatch {
