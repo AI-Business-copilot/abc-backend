@@ -7,6 +7,7 @@ import categoriesRoutes from "../modules/categories/categories.routes";
 import cashShiftsRoutes from "../modules/cash-shifts/cash-shifts.routes";
 import customerReturnsRoutes from "../modules/customer-returns/customer-returns.routes";
 import businessDataRoutes from "../modules/business-data/business-data.routes";
+import shopeeReportRoutes from "../modules/online-reports/shopee/shopee.routes";
 import inventoryRoutes from "../modules/inventory/inventory.routes";
 import productsRoutes from "../modules/products/routes/products.routes";
 import purchasesRoutes from "../modules/purchases/purchases.routes";
@@ -21,6 +22,8 @@ router.use("/auth", authRoutes);
 router.use("/admin", adminRoutes);
 router.use("/businesses", businessRoutes);
 router.use("/business-data", businessDataRoutes);
+// Optional supplementary feature; remove this line (and src/modules/online-reports) to disable it.
+router.use("/online-reports/shopee", shopeeReportRoutes);
 router.use("/categories", categoriesRoutes);
 router.use("/cash-shifts", cashShiftsRoutes);
 router.use("/customer-returns", customerReturnsRoutes);
