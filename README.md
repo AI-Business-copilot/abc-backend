@@ -48,6 +48,10 @@ See [the POS business-data contract, API, and migration requirements](docs/busin
 
 The core scope is offline/POS store management. Importing Shopee revenue reports is a separate, supplementary, optional feature (financial view only; no order or inventory sync) and can be removed independently; see [docs/online-reports-shopee.md](docs/online-reports-shopee.md).
 
+## Inventory insights (rule-based)
+
+Daily rule-based inventory alerts built on the POS data (low stock, slow-moving, declining sales, overstock, expiration risk, inventory capital); see [docs/ai-insights.md](docs/ai-insights.md).
+
 ## Initial API
 
 - `GET /api/auth/me` — validate the Supabase access token, synchronize the app profile, and return membership/permissions or indicate onboarding is required.

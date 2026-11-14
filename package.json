@@ -11,7 +11,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "seed:ai-demo": "ts-node --transpile-only scripts/seed-ai-insights-demo.ts"
   },
   "keywords": [],
   "author": "",

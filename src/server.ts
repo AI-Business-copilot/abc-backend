@@ -3,6 +3,7 @@ import cron from "node-cron";
 import dotenv from "dotenv";
 import { prisma } from "./shared/infrastructure/database/prisma.client";
 import { updateLotStatusesCron } from "./cron/update-lot-statuses.cron";
+import { aiInsightsCron } from "./cron/ai-insights.cron";
 
 dotenv.config();
 
@@ -30,6 +31,9 @@ function startLotStatusJob() {
 
   // 06:00 every day, Vietnam time. updateLotStatusesCron catches its own errors.
   cron.schedule("0 6 * * *", () => void updateLotStatusesCron(), { timezone: "Asia/Ho_Chi_Minh" });
+
+  // 02:00 every day, Vietnam time: refresh inventory insights once the previous sales day is complete.
+  cron.schedule("0 2 * * *", () => void aiInsightsCron(), { timezone: "Asia/Ho_Chi_Minh" });
 
   // Dev only: every 10 seconds for testing
   // cron.schedule("*/10 * * * * *", () => void updateLotStatusesCron(), { timezone: "Asia/Ho_Chi_Minh" });
