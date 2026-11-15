@@ -8,7 +8,8 @@ export function detectLowStock(snapshot: Snapshot, _settings: InsightSettings): 
   for (const v of snapshot.variants) {
     const reorderPoint = v.avgDaily30 * v.leadTimeDays + v.safetyStockQty;
     if (!(v.avgDaily30 > 0 || v.safetyStockQty > 0)) continue;
-    if (v.stockAvailable > reorderPoint) continue;
+    const incomingQty = (v.incoming ?? []).reduce((sum, po) => sum + po.qty, 0);
+    if (v.stockAvailable + incomingQty > reorderPoint) continue;
 
     let severity: Finding["severity"] = "MEDIUM";
     let reasonCode = "BELOW_REORDER_POINT";
@@ -31,6 +32,7 @@ export function detectLowStock(snapshot: Snapshot, _settings: InsightSettings): 
       metrics: {
         formula: "reorderPoint = avgDaily30 x leadTimeDays + safetyStockQty",
         stockAvailable: v.stockAvailable,
+        onOrderQty: incomingQty,
         avgDaily30: round(v.avgDaily30, 3),
         leadTimeDays: v.leadTimeDays,
         safetyStockQty: v.safetyStockQty,

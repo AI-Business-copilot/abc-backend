@@ -60,6 +60,9 @@ router.patch("/receipts/:id/payment", requirePermission("inventory.receive"), as
 router.patch("/orders/:id", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
   res.json(await purchasesLifecycleService.updateOrder(String(res.locals.businessId), req.identity!.id, String(req.params.id), req.body));
 });
+router.post("/orders/:id/confirm", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
+  res.json(await purchasesLifecycleService.confirmDraft(String(res.locals.businessId), req.identity!.id, String(req.params.id)));
+});
 router.post("/orders/:id/cancel", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
   res.json(await purchasesLifecycleService.finishOrder(String(res.locals.businessId), req.identity!.id, String(req.params.id), "cancel"));
 });

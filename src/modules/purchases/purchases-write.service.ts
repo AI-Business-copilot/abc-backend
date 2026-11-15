@@ -25,7 +25,7 @@ export class PurchasesWriteService {
     });
   }
 
-  async createOrder(businessId: string, authUserId: string, value: unknown) {
+  async createOrder(businessId: string, authUserId: string, value: unknown, status: "ORDERED" | "DRAFT" = "ORDERED") {
     const input = orderInput(value);
     if (input.orderDate.toISOString().slice(0, 10) < purchaseToday()) {
       throw new HttpError(400, "Ngày đặt không được trước hôm nay.");
@@ -37,7 +37,7 @@ export class PurchasesWriteService {
       if (variants.length !== input.items.length) throw new HttpError(404, "An active SKU was not found in this business.");
       const { items, ...data } = input;
       return tx.purchaseOrder.create({
-        data: { ...data, businessId, createdBy, status: "ORDERED", purchaseOrderItems: { create: items } },
+        data: { ...data, businessId, createdBy, status, purchaseOrderItems: { create: items } },
         include: { purchaseOrderItems: true },
       });
     });

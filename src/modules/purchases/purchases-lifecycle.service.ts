@@ -1,7 +1,7 @@
 import { validateSupplierOrder } from "./supplier-order";
 import { Prisma } from "@prisma/client";
 import { HttpError } from "../../shared/http/http-error";
-import { object, orderInput, money } from "./purchases.input";
+import { object, orderInput, money, purchaseToday } from "./purchases.input";
 import { uuid } from "./purchases.query";
 import { actor, atomic, supplierInBusiness } from "./purchases-transaction";
 
@@ -21,7 +21,7 @@ export class PurchasesLifecycleService {
       await actor(tx, authUserId);
       const order = await loadOrder(tx, businessId, id);
       // Preserve item IDs: existing clients/drafts may refer to them.
-      if (order.status !== "ORDERED" || order.purchaseOrderItems.some((item) => item.receivedQty > 0) || await tx.purchaseReceipt.count({ where: { businessId, poId: id } })) throw new HttpError(409, "Only purchase orders without any receipts can be edited.");
+      if (!["ORDERED", "DRAFT"].includes(order.status) || order.purchaseOrderItems.some((item) => item.receivedQty > 0) || await tx.purchaseReceipt.count({ where: { businessId, poId: id } })) throw new HttpError(409, "Only purchase orders without any receipts can be edited.");
       const input = orderInput({
         poCode: order.poCode, supplierId: order.supplierId,
         orderDate: order.orderDate.toISOString().slice(0, 10),
@@ -46,6 +46,25 @@ export class PurchasesLifecycleService {
     });
   }
 
+  /** Turns a draft PO (e.g. from an AI replenishment suggestion) into a real order after the owner has reviewed it. */
+  async confirmDraft(businessId: string, authUserId: string, orderId: string) {
+    const id = uuid(orderId, "orderId");
+    return atomic(async (tx) => {
+      await actor(tx, authUserId);
+      const order = await loadOrder(tx, businessId, id);
+      if (order.status !== "DRAFT") throw new HttpError(409, "Only draft purchase orders can be confirmed.");
+      const today = new Date(`${purchaseToday()}T00:00:00.000Z`);
+      const orderDate = order.orderDate < today ? today : order.orderDate;
+      const expected = order.expectedDeliveryDate && order.expectedDeliveryDate >= orderDate ? order.expectedDeliveryDate : orderDate;
+      await validateSupplierOrder(tx, businessId, order.supplierId, order.purchaseOrderItems);
+      return tx.purchaseOrder.update({
+        where: { id },
+        data: { status: "ORDERED", orderDate, expectedDeliveryDate: expected },
+        include: { purchaseOrderItems: true },
+      });
+    });
+  }
+
   async finishOrder(businessId: string, authUserId: string, orderId: string, action: "cancel" | "close") {
     const id = uuid(orderId, "orderId");
     return atomic(async (tx) => {
@@ -53,7 +72,7 @@ export class PurchasesLifecycleService {
       const order = await loadOrder(tx, businessId, id);
       const status = action === "cancel" ? "CANCELLED" : "CLOSED_SHORT";
       if (order.status === status) return order;
-      if (!["ORDERED", "PARTIALLY_RECEIVED"].includes(order.status)) throw new HttpError(409, "Purchase order is already closed.");
+      if (action === "close" ? !["ORDERED", "PARTIALLY_RECEIVED"].includes(order.status) : !["DRAFT", "ORDERED", "PARTIALLY_RECEIVED"].includes(order.status)) throw new HttpError(409, "Purchase order is already closed.");
       const hasReceived = order.purchaseOrderItems.some((item) => item.receivedQty > 0);
       if (action === "cancel" && (hasReceived || await tx.purchaseReceipt.count({ where: { businessId, poId: id, status: "RECEIVED" } }))) throw new HttpError(409, "Received orders cannot be cancelled. Close the remaining quantity instead.");
       if (action === "close" && (!hasReceived || order.purchaseOrderItems.every((item) => item.receivedQty === item.orderedQty))) throw new HttpError(409, "Only partially received orders can be closed short.");

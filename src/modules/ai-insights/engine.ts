@@ -1,4 +1,6 @@
+import { suggestReplenishment, type ReplenishmentSuggestion } from "../ai-forecast/replenishment";
 import { buildInventoryCapitalSummary } from "./rules/inventory-capital";
+import { detectStockoutRisk } from "./rules/stockout-risk";
 import { detectDecliningSales } from "./rules/declining-sales";
 import { detectExpirationRisk } from "./rules/expiration-risk";
 import { detectLowStock } from "./rules/low-stock";
@@ -16,6 +18,7 @@ export interface ScoredFinding extends Finding {
 
 export interface AnalysisResult {
   findings: ScoredFinding[];
+  replenishment: ReplenishmentSuggestion[];
   capital: ReturnType<typeof buildInventoryCapitalSummary>;
   warnings: Array<{ code: string; message: string; count?: number }>;
   variantsAnalyzed: number;
@@ -37,20 +40,64 @@ export function scoreFindings(findings: Finding[]): ScoredFinding[] {
   }));
 }
 
+/** A stockout-risk row replaces the low-stock row of the same product and keeps the worse severity. */
+export function mergeStockoutWithLowStock(stockout: Finding[], lowStock: Finding[]) {
+  const lowByVariant = new Map(lowStock.map((f) => [f.variantId, f]));
+  const merged = stockout.map((f) => {
+    const low = lowByVariant.get(f.variantId);
+    if (!low || SEVERITY_RANK[low.severity] <= SEVERITY_RANK[f.severity]) return f;
+    return { ...f, severity: low.severity };
+  });
+  const covered = new Set(stockout.map((f) => f.variantId));
+  return { stockout: merged, lowStock: lowStock.filter((f) => !covered.has(f.variantId)) };
+}
+
 /** Pure analysis step: no database access. Demand-based rules skip products that are too new to judge. */
 export function analyze(snapshot: Snapshot, settings: InsightSettings): AnalysisResult {
   const mature = { ...snapshot, variants: snapshot.variants.filter((v) => v.ageDays >= settings.minHistoryDays) };
   const immature = snapshot.variants.length - mature.variants.length;
 
+  const lowStock = detectLowStock(mature, settings);
+  const stockout = detectStockoutRisk(mature, settings);
+  const merged = mergeStockoutWithLowStock(stockout, lowStock);
+
   const demandFindings = [
-    ...detectLowStock(mature, settings),
+    ...merged.lowStock,
+    ...merged.stockout,
     ...detectSlowMoving(mature, settings),
     ...detectDecliningSales(mature, settings),
     ...detectOverstock(mature, settings),
   ];
   const findings = scoreFindings([...demandFindings, ...detectExpirationRisk(snapshot, settings)]);
 
+  const replenishment = snapshot.variants
+    .map((v) => suggestReplenishment(v, snapshot.today, settings))
+    .filter((s): s is ReplenishmentSuggestion => s !== null);
+
   const warnings: AnalysisResult["warnings"] = [];
+  const shortHistory = snapshot.variants.filter((v) => v.forecast?.reason === "SHORT_HISTORY").length;
+  if (shortHistory > 0) {
+    warnings.push({
+      code: "FORECAST_INSUFFICIENT_DATA",
+      message: `${shortHistory} sản phẩm có dưới ${Math.max(28, settings.forecast.minSeriesDays)} ngày dữ liệu nên chưa dự báo được nhu cầu.`,
+      count: shortHistory,
+    });
+  }
+  const censored = snapshot.variants.filter((v) => v.forecast?.reason === "CENSORED_HISTORY").length;
+  if (censored) warnings.push({ code: "FORECAST_CENSORED_HISTORY", message: `${censored} sản phẩm có quá ít ngày còn hàng để dự báo.`, count: censored });
+  const longLead = snapshot.variants.filter((v) => v.forecast?.status === "OK" && v.supply &&
+    v.supply.leadTimeDays + v.supply.reviewPeriodDays > v.forecast.dailyRates.length).length;
+  if (longLead) warnings.push({
+    code: "FORECAST_HORIZON_TOO_SHORT",
+    message: `${longLead} sản phẩm có thời gian giao và chu kỳ đặt hàng vượt 28 ngày nên chưa được gợi ý nhập.`,
+    count: longLead,
+  });
+  const syntheticModels = snapshot.variants.filter((v) => v.forecast?.status === "OK" && v.forecast.model === "LIGHTGBM").length;
+  if (syntheticModels) warnings.push({
+    code: "FORECAST_SYNTHETIC_MODEL",
+    message: `${syntheticModels} sản phẩm dùng mô hình huấn luyện trên dữ liệu giả lập; cần kiểm tra gợi ý trước khi đặt hàng.`,
+    count: syntheticModels,
+  });
   if (immature > 0) {
     warnings.push({
       code: "INSUFFICIENT_HISTORY",
@@ -72,6 +119,7 @@ export function analyze(snapshot: Snapshot, settings: InsightSettings): Analysis
 
   return {
     findings,
+    replenishment,
     capital: buildInventoryCapitalSummary(mature, findings),
     warnings,
     variantsAnalyzed: mature.variants.length,

@@ -4,6 +4,7 @@ import { requireBusinessScope } from "../../shared/auth/business-scope.middlewar
 import { requirePermission } from "../../shared/auth/require-permission.middleware";
 import { requireSupabaseIdentity } from "../../shared/auth/supabase-auth.middleware";
 import { aiInsightsService } from "./ai-insights.service";
+import { replenishmentService } from "../ai-forecast/replenishment.service";
 
 const router = Router();
 router.use(requireSupabaseIdentity, requireBusinessScope);
@@ -24,6 +25,33 @@ router.put("/settings", requirePermission("ai_insights.manage"), async (req, res
 
 router.post("/run", requirePermission("ai_insights.manage"), async (_req, res) => {
   res.json(await aiInsightsService.run(businessId(res.locals), "MANUAL", String(res.locals.userId)));
+});
+
+router.get("/replenishment", requirePermission("analytics.read"), async (req, res) => {
+  res.json(await replenishmentService.list(businessId(res.locals), req.query));
+});
+
+router.post("/replenishment/draft-orders", requirePermission("ai_insights.manage"), requirePermission("inventory.receive"), async (req, res) => {
+  res
+    .status(201)
+    .json(
+      await replenishmentService.createDraftOrders(
+        businessId(res.locals),
+        req.identity!.id,
+        String(res.locals.userId),
+        req.body ?? {},
+      ),
+    );
+});
+
+router.patch("/replenishment/:id", requirePermission("ai_insights.manage"), async (req, res) => {
+  res.json(
+    await replenishmentService.setStatus(businessId(res.locals), String(req.params.id), String(res.locals.userId), req.body ?? {}),
+  );
+});
+
+router.get("/forecasts/:variantId", requirePermission("analytics.read"), async (req, res) => {
+  res.json(await replenishmentService.forecastDetail(businessId(res.locals), String(req.params.variantId)));
 });
 
 router.get("/", requirePermission("analytics.read"), async (req, res) => {
