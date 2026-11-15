@@ -5,7 +5,7 @@ import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../shared/http/http-error";
 import { filters, pagination, uuid, type PurchaseQuery } from "./purchases.query";
 
-const ORDER_STATUSES = ["ORDERED", "PARTIALLY_RECEIVED", "COMPLETED", "CLOSED_SHORT", "CANCELLED"];
+const ORDER_STATUSES = ["DRAFT", "ORDERED", "PARTIALLY_RECEIVED", "COMPLETED", "CLOSED_SHORT", "CANCELLED"];
 const RECEIPT_STATUSES = ["RECEIVED", "CANCELLED"];
 const creator = { select: { id: true, fullName: true } } as const;
 const supplier = { select: { id: true, name: true, phone: true, contactPerson: true } } as const;

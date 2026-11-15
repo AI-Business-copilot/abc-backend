@@ -3,6 +3,8 @@ import { Prisma } from "@prisma/client";
 import { HttpError } from "../../shared/http/http-error";
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { businessDataService } from "../business-data/business-data.service";
+import { attachForecasts } from "../ai-forecast/forecast-client";
+import { persistForecasts, persistReplenishment } from "../ai-forecast/replenishment.service";
 import { analyze, nextStatus } from "./engine";
 import { DEFAULT_SETTINGS, resolveSettings } from "./settings";
 import { addDays, buildSnapshot, businessToday, windowStart } from "./snapshot/build-snapshot";
@@ -45,7 +47,8 @@ export class AiInsightsService {
     const row = await prisma.aiInsightSettings.findUnique({ where: { businessId } });
     if (!row) return DEFAULT_SETTINGS;
     try {
-      return resolveSettings(row.settings);
+      const settings = resolveSettings(row.settings);
+      return { ...settings, forecast: { ...settings.forecast, minSeriesDays: Math.max(28, settings.forecast.minSeriesDays) } };
     } catch {
       return DEFAULT_SETTINGS;
     }
@@ -53,6 +56,7 @@ export class AiInsightsService {
 
   async updateSettings(businessId: string, userId: string, input: unknown) {
     const settings = resolveSettings(input, DEFAULT_SETTINGS);
+    if (settings.forecast.minSeriesDays < 28) throw new HttpError(400, "forecast.minSeriesDays must be at least 28.");
     await prisma.aiInsightSettings.upsert({
       where: { businessId },
       create: { businessId, settings: settings as unknown as Prisma.InputJsonValue, updatedBy: userId },
@@ -186,14 +190,32 @@ export class AiInsightsService {
     try {
       const settings = await this.getSettings(businessId);
       await businessDataService.rebuildPosMetrics(businessId, windowStart(asOf), asOf);
-      const snapshot = await buildSnapshot(businessId, today);
+      let snapshot = await buildSnapshot(businessId, today);
+      let forecastAvailable = true;
+      try {
+        snapshot = await attachForecasts(snapshot, settings);
+      } catch (error) {
+        if (!(error instanceof HttpError) || (error.statusCode !== 502 && error.statusCode !== 503)) throw error;
+        console.error(`Forecast unavailable for business ${businessId}.`, error);
+        forecastAvailable = false;
+      }
       const analysis = analyze(snapshot, settings);
-      const outcome = await this.persist(businessId, run.id, analysis.findings, today);
+      if (!forecastAvailable) analysis.warnings.push({
+        code: "FORECAST_UNAVAILABLE",
+        message: "Dịch vụ dự báo tạm thời không khả dụng. Cảnh báo và gợi ý nhập dựa trên dự báo trước đó chưa được cập nhật.",
+      });
+      const outcome = await this.persist(businessId, run.id, analysis.findings, today, async (tx) => ({
+        ...(forecastAvailable ? {
+          forecasts: await persistForecasts(tx, businessId, run.id, snapshot),
+          replenishment: await persistReplenishment(tx, businessId, run.id, analysis.replenishment, today),
+        } : {}),
+      }), forecastAvailable);
 
       const summary = {
         variantsAnalyzed: analysis.variantsAnalyzed,
         findings: analysis.findings.length,
         ...outcome,
+        forecastStatus: forecastAvailable ? "READY" : "UNAVAILABLE",
         capital: analysis.capital,
         settings,
       };
@@ -221,6 +243,8 @@ export class AiInsightsService {
     runId: string,
     findings: ReturnType<typeof analyze>["findings"],
     today: string,
+    extra: (tx: Prisma.TransactionClient) => Promise<Record<string, unknown>>,
+    forecastAvailable: boolean,
   ) {
     return prisma.$transaction(
       async (tx) => {
@@ -277,11 +301,13 @@ export class AiInsightsService {
         }
         if (toCreate.length) await tx.aiInsight.createMany({ data: toCreate });
 
-        const staleIds = existing.filter((row) => !seen.has(row.fingerprint) && row.status !== "RESOLVED").map((row) => row.id);
+        const staleIds = existing.filter((row) =>
+          !seen.has(row.fingerprint) && row.status !== "RESOLVED" && (forecastAvailable || row.type !== "STOCKOUT_RISK"),
+        ).map((row) => row.id);
         if (staleIds.length) {
           await tx.aiInsight.updateMany({ where: { id: { in: staleIds } }, data: { status: "RESOLVED", resolvedAt: now } });
         }
-        return { created, updated, reopened, resolved: staleIds.length };
+        return { created, updated, reopened, resolved: staleIds.length, ...(await extra(tx)) };
       },
       { timeout: 120_000, maxWait: 10_000 },
     );

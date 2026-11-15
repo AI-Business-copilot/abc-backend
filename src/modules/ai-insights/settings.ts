@@ -6,7 +6,12 @@ export const DEFAULT_SETTINGS: InsightSettings = {
   slowMoving: { noSaleDays: 30, maxUnitsInWindow: 2 },
   declining: { periodDays: 14, minBaseUnits: 5, mediumPct: 30, highPct: 50 },
   overstock: { thresholdDays: 60, targetDays: 45 },
+  forecast: { minSeriesDays: 28, serviceLevelPct: 90 },
+  stockout: { highSlackDays: 7, mediumSlackDays: 14 },
 };
+
+/** z-score for the supported service levels, used for safety stock = z x sigma x sqrt(lead time). */
+export const SERVICE_LEVEL_Z: Record<number, number> = { 80: 0.84, 85: 1.04, 90: 1.28, 95: 1.645, 97: 1.88, 99: 2.33 };
 
 type Limit = [min: number, max: number];
 
@@ -20,6 +25,10 @@ const LIMITS = {
   "declining.highPct": [1, 100] as Limit,
   "overstock.thresholdDays": [14, 365] as Limit,
   "overstock.targetDays": [7, 365] as Limit,
+  "forecast.minSeriesDays": [14, 60] as Limit,
+  "forecast.serviceLevelPct": [80, 99] as Limit,
+  "stockout.highSlackDays": [1, 60] as Limit,
+  "stockout.mediumSlackDays": [1, 90] as Limit,
 };
 
 function readNumber(source: unknown, path: keyof typeof LIMITS, fallback: number): number {
@@ -57,7 +66,21 @@ export function resolveSettings(input: unknown, base: InsightSettings = DEFAULT_
       thresholdDays: readNumber(input, "overstock.thresholdDays", base.overstock.thresholdDays),
       targetDays: readNumber(input, "overstock.targetDays", base.overstock.targetDays),
     },
+    forecast: {
+      minSeriesDays: readNumber(input, "forecast.minSeriesDays", base.forecast.minSeriesDays),
+      serviceLevelPct: readNumber(input, "forecast.serviceLevelPct", base.forecast.serviceLevelPct),
+    },
+    stockout: {
+      highSlackDays: readNumber(input, "stockout.highSlackDays", base.stockout.highSlackDays),
+      mediumSlackDays: readNumber(input, "stockout.mediumSlackDays", base.stockout.mediumSlackDays),
+    },
   };
+  if (!(result.forecast.serviceLevelPct in SERVICE_LEVEL_Z)) {
+    throw new HttpError(400, `forecast.serviceLevelPct must be one of ${Object.keys(SERVICE_LEVEL_Z).join(", ")}.`);
+  }
+  if (result.stockout.mediumSlackDays < result.stockout.highSlackDays) {
+    throw new HttpError(400, "stockout.mediumSlackDays must not be lower than stockout.highSlackDays.");
+  }
   if (result.declining.highPct < result.declining.mediumPct) {
     throw new HttpError(400, "declining.highPct must not be lower than declining.mediumPct.");
   }

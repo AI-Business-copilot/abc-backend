@@ -20,6 +20,9 @@ export function detectExpirationRisk(snapshot: Snapshot, _settings: InsightSetti
 
     let sellableAhead = 0;
     for (const lot of lots) {
+      const forecast = v.forecast;
+      const useForecast = forecast?.status === "OK" && lot.daysToExpiry >= 0 && lot.daysToExpiry <= forecast.dailyRates.length;
+      const rate = useForecast ? forecast.dailyRate : v.avgDaily30;
       const base = {
         type: "EXPIRATION_RISK" as const,
         variantId: v.variantId,
@@ -58,25 +61,28 @@ export function detectExpirationRisk(snapshot: Snapshot, _settings: InsightSetti
         continue;
       }
 
-      const projectedDemand = v.avgDaily30 * lot.daysToExpiry;
+      const projectedDemand = useForecast
+        ? forecast.dailyRates.slice(0, lot.daysToExpiry).reduce((sum, value) => sum + value, 0)
+        : rate * lot.daysToExpiry;
       const sellable = Math.min(lot.quantity, Math.max(0, Math.floor(projectedDemand - sellableAhead)));
       sellableAhead += sellable;
       const atRiskQty = lot.quantity - sellable;
 
       if (atRiskQty <= 0 || lot.daysToExpiry > MAX_HORIZON_DAYS) continue;
-      if (!(v.avgDaily30 > 0) && lot.daysToExpiry > lot.alertDaysBefore) continue;
+      if (!(rate > 0) && lot.daysToExpiry > lot.alertDaysBefore) continue;
 
       findings.push({
         ...base,
         severity: lot.daysToExpiry <= 14 ? "HIGH" : lot.daysToExpiry <= lot.alertDaysBefore ? "MEDIUM" : "LOW",
-        reasonCode: v.avgDaily30 > 0 ? "DEMAND_BELOW_STOCK_BEFORE_EXPIRY" : "NO_DEMAND_BEFORE_EXPIRY",
+        reasonCode: rate > 0 ? "DEMAND_BELOW_STOCK_BEFORE_EXPIRY" : "NO_DEMAND_BEFORE_EXPIRY",
         suggestedAction: lot.daysToExpiry <= 14 ? "CLEARANCE" : "PROMOTE",
         valueAtRisk: Math.round(atRiskQty * v.costPrice * 100) / 100,
         metrics: {
-          formula: "atRiskQty = lotQuantity - clamp(avgDaily30 x daysToExpiry - units earlier-expiring lots can still sell, 0, lotQuantity)",
+          formula: "atRiskQty = lotQuantity - clamp(projectedDemand - units earlier-expiring lots can still sell, 0, lotQuantity)",
           ...common,
           alertDaysBefore: lot.alertDaysBefore,
-          avgDaily30: Number(v.avgDaily30.toFixed(3)),
+          avgDaily30: Number(rate.toFixed(3)),
+          rateSource: useForecast ? "FORECAST" : "AVG_30",
           projectedSellableQty: sellable,
           atRiskQty,
         },

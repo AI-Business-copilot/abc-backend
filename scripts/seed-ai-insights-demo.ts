@@ -191,6 +191,11 @@ async function cleanup(businessId: string) {
     await prisma.order.deleteMany({ where: { id: { in: orderIds } } });
     await prisma.$executeRaw`DELETE FROM channel_daily_product_metrics WHERE business_id = ${businessId}::uuid AND variant_id = ANY(${variantIds}::uuid[])`;
     await prisma.aiInsight.deleteMany({ where: { businessId, variantId: { in: variantIds } } });
+    await prisma.aiReplenishmentItem.deleteMany({ where: { businessId, variantId: { in: variantIds } } });
+    await prisma.aiForecast.deleteMany({ where: { businessId, variantId: { in: variantIds } } });
+    await prisma.purchaseOrder.deleteMany({ where: { businessId, poCode: { startsWith: PREFIX } } });
+    await prisma.supplierProduct.deleteMany({ where: { businessId, variantId: { in: variantIds } } });
+    await prisma.supplier.deleteMany({ where: { businessId, supplierCode: { startsWith: PREFIX } } });
     await prisma.variantAttributeValue.deleteMany({ where: { variantId: { in: variantIds } } });
     await prisma.inventoryBalance.deleteMany({ where: { variantId: { in: variantIds } } });
     await prisma.productLotItem.deleteMany({ where: { variantId: { in: variantIds } } });
@@ -216,6 +221,55 @@ async function findOrCreateValue(businessId: string, attributeId: string, value:
     (await prisma.attributeValue.findFirst({ where: { businessId, attributeId, value } })) ??
     (await prisma.attributeValue.create({ data: { businessId, attributeId, value } }))
   );
+}
+
+// Two suppliers (clothing, cosmetics) with different lead times and pack sizes, plus one open PO that is still on its way
+async function seedSuppliers(
+  businessId: string,
+  userId: string,
+  variants: Array<{ id: string; sku: string; cost: number; cosmetic: boolean }>,
+) {
+  const defs = [
+    { code: `${PREFIX}NCC1`, name: "Xưởng may An Phát (demo)", phone: "0900000901", cosmetic: false, lead: 5, minQty: 6, multiple: 6 },
+    { code: `${PREFIX}NCC2`, name: "Mỹ phẩm Hoa Lan (demo)", phone: "0900000902", cosmetic: true, lead: 7, minQty: 12, multiple: 12 },
+  ];
+  const ids = new Map<boolean, string>();
+  for (const def of defs) {
+    const supplier = await prisma.supplier.create({
+      data: { businessId, name: def.name, phone: def.phone, supplierCode: def.code },
+    });
+    ids.set(def.cosmetic, supplier.id);
+    for (const v of variants.filter((item) => item.cosmetic === def.cosmetic)) {
+      await prisma.supplierProduct.create({
+        data: {
+          businessId,
+          supplierId: supplier.id,
+          variantId: v.id,
+          supplyPrice: new Prisma.Decimal(v.cost),
+          minOrderQty: def.minQty,
+          orderMultiple: def.multiple,
+          leadTimeDays: def.lead,
+          isPreferred: true,
+        },
+      });
+    }
+  }
+  const incoming = variants.find((v) => v.sku.endsWith("AT-TRANG-L"));
+  if (incoming) {
+    await prisma.purchaseOrder.create({
+      data: {
+        businessId,
+        poCode: `${PREFIX}PO-0001`,
+        supplierId: ids.get(false)!,
+        orderDate: dateOnly(-2),
+        expectedDeliveryDate: dateOnly(3),
+        status: "ORDERED",
+        createdBy: userId,
+        purchaseOrderItems: { create: [{ variantId: incoming.id, orderedQty: 60, unitPrice: new Prisma.Decimal(incoming.cost) }] },
+      },
+    });
+  }
+  console.log("+ 2 nhà cung cấp demo và 1 đơn đặt mua đang về.");
 }
 
 async function main() {
@@ -257,6 +311,7 @@ async function main() {
 
   const createdAt = daysAgoDate(60);
   let orderSeq = 0;
+  const seeded: Array<{ id: string; sku: string; cost: number; cosmetic: boolean }> = [];
 
   for (const p of products) {
     const hasLots = p.variants.some((v) => v.lots);
@@ -288,6 +343,8 @@ async function main() {
           createdAt,
         },
       });
+
+      seeded.push({ id: variant.id, sku, cost: v.cost, cosmetic: p.category !== "Áo" && p.category !== "Quần" && p.category !== "Váy đầm" });
 
       for (const [attr, value] of [[sizeAttr, v.size], [colorAttr, v.color]] as const) {
         if (!value) continue;
@@ -375,7 +432,8 @@ async function main() {
     }
   }
 
-  console.log("Xong. Mở 'Cảnh báo tồn kho' và bấm 'Phân tích lại'.");
+  await seedSuppliers(businessId, shift.userId, seeded);
+  console.log("Xong. Mở 'Cảnh báo tồn kho' và bấm 'Phân tích lại', sau đó xem 'Gợi ý nhập hàng'.");
 }
 
 main()

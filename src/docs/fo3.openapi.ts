@@ -11,7 +11,7 @@ const lines = (schema: Schema) => ({ type: "array", minItems: 1, maxItems: 500, 
 const query = (name: string, schema: Schema, required = false) => ({ name, in: "query", required, schema });
 const idParameter = { name: "id", in: "path", required: true, schema: uuid, description: "ID chứng từ/NCC trong cửa hàng hiện tại." };
 const paging = [query("page", { type: "integer", minimum: 1, maximum: 1000000, default: 1 }), query("pageSize", { type: "integer", minimum: 1, maximum: 100, default: 20 }), query("search", { type: "string", maxLength: 255 })];
-const orderStatuses = ["ORDERED", "PARTIALLY_RECEIVED", "COMPLETED", "CLOSED_SHORT", "CANCELLED"];
+const orderStatuses = ["DRAFT", "ORDERED", "PARTIALLY_RECEIVED", "COMPLETED", "CLOSED_SHORT", "CANCELLED"];
 const receiptStatuses = ["RECEIVED", "CANCELLED"];
 const filters = (statuses: string[]) => [...paging, query("supplierId", uuid), query("status", { type: "string", enum: statuses }), query("from", day), query("to", day)];
 const body = (schema: string, example?: unknown) => ({ required: true, content: { "application/json": { schema: ref(schema), ...(example ? { example } : {}) } } });
