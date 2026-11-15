@@ -1,8 +1,10 @@
 import { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 
 import { HttpError } from "../../shared/http/http-error";
 import { prisma } from "../../shared/infrastructure/database/prisma.client";
 import { purchasesWriteService } from "../purchases/purchases-write.service";
+import { atomic } from "../purchases/purchases-transaction";
 import { addDays, businessToday } from "../ai-insights/snapshot/build-snapshot";
 import type { Snapshot } from "../ai-insights/types";
 import type { ReplenishmentSuggestion } from "./replenishment";
@@ -32,6 +34,10 @@ export async function persistForecasts(tx: Prisma.TransactionClient, businessId:
   );
   await tx.aiForecast.deleteMany({ where: { businessId } });
   if (rows.length) await tx.aiForecast.createMany({ data: rows });
+  const history = rows.filter((row) => row.status === "OK").map((row) => ({
+    businessId, variantId: row.variantId, runId, asOf: row.asOf, result: row.result,
+  }));
+  if (history.length) await tx.aiForecastHistory.createMany({ data: history, skipDuplicates: true });
   return rows.length;
 }
 
@@ -231,69 +237,71 @@ export class ReplenishmentService {
   async createDraftOrders(businessId: string, authUserId: string, userId: string, body: Record<string, unknown>) {
     const lines = body.items;
     if (!Array.isArray(lines) || lines.length < 1 || lines.length > 200) throw new HttpError(400, "items must contain 1-200 lines.");
-    const requested = lines.map((line: Record<string, unknown>) => {
-      const qty = line.qty === undefined ? null : Number(line.qty);
-      if (typeof line.id !== "string") throw new HttpError(400, "Each line needs the suggestion id.");
+    const requested = lines.map((line: unknown) => {
+      if (!line || typeof line !== "object" || Array.isArray(line)) throw new HttpError(400, "Each line must be an object.");
+      const { id, qty: rawQty, supplierId } = line as Record<string, unknown>;
+      const qty = rawQty === undefined ? null : Number(rawQty);
+      if (typeof id !== "string") throw new HttpError(400, "Each line needs the suggestion id.");
       if (qty !== null && (!Number.isInteger(qty) || qty < 1)) throw new HttpError(400, "qty must be a positive integer.");
-      return { id: line.id, qty, supplierId: typeof line.supplierId === "string" ? line.supplierId : null };
+      return { id, qty, supplierId: typeof supplierId === "string" ? supplierId : null };
     });
     if (new Set(requested.map((r) => r.id)).size !== requested.length) throw new HttpError(400, "Duplicate suggestion in request.");
 
     const availability = await forecastAvailability(businessId);
     if (!availability.ready) throw new HttpError(409, "Dự báo chưa được cập nhật hoặc tạm thời không khả dụng. Hãy phân tích lại trước khi tạo đơn nháp.");
-    const rows = await prisma.aiReplenishmentItem.findMany({
-      where: { businessId, id: { in: requested.map((r) => r.id) }, status: "PENDING" },
-      include,
-    });
-    if (rows.length !== requested.length || rows.some((row) => row.runId !== availability.runId)) {
-      throw new HttpError(409, "Gợi ý đã cũ hoặc không còn chờ xử lý. Hãy phân tích lại và tải lại trang.");
-    }
-
     const today = await businessToday();
-    const groups = new Map<string, Array<{ row: ItemRow; qty: number; unitPrice: string; leadTime: number }>>();
-    for (const request of requested) {
-      const row = rows.find((r) => r.id === request.id)!;
-      const supplierId = request.supplierId ?? row.supplierId;
-      if (!supplierId) throw new HttpError(400, `Chưa có nhà cung cấp cho ${row.variant.sku}. Hãy chọn nhà cung cấp trước khi tạo đơn.`);
-      let unitPrice = row.unitCost.toFixed(2);
-      if (supplierId !== row.supplierId) {
-        const offer = await prisma.supplierProduct.findFirst({ where: { businessId, supplierId, variantId: row.variantId, isActive: true } });
+    return atomic(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${businessId}), hashtext('ai-insights-persist')) IS NULL AS "locked"`;
+      const latestRun = await tx.aiInsightRun.findFirst({ where: { businessId }, orderBy: { startedAt: "desc" } });
+      const runSummary = latestRun?.summary as { forecastStatus?: unknown } | null | undefined;
+      if (!latestRun || latestRun.id !== availability.runId || latestRun.status !== "SUCCEEDED" ||
+          runSummary?.forecastStatus !== "READY" || isoDate(latestRun.dataAsOf) !== addDays(today, -1)) {
+        throw new HttpError(409, "Dự báo đã thay đổi. Hãy tải lại trang trước khi tạo đơn nháp.");
+      }
+      const rows = await tx.aiReplenishmentItem.findMany({
+        where: { businessId, id: { in: requested.map((r) => r.id) }, status: "PENDING" },
+        include,
+      });
+      if (rows.length !== requested.length || rows.some((row) => row.runId !== availability.runId)) {
+        throw new HttpError(409, "Gợi ý đã cũ hoặc không còn chờ xử lý. Hãy phân tích lại và tải lại trang.");
+      }
+
+      const groups = new Map<string, Array<{ row: ItemRow; qty: number; unitPrice: string; leadTime: number }>>();
+      for (const request of requested) {
+        const row = rows.find((r) => r.id === request.id)!;
+        const supplierId = request.supplierId ?? row.supplierId;
+        if (!supplierId) throw new HttpError(400, `Chưa có nhà cung cấp cho ${row.variant.sku}. Hãy chọn nhà cung cấp trước khi tạo đơn.`);
+        const offer = await tx.supplierProduct.findFirst({ where: { businessId, supplierId, variantId: row.variantId, isActive: true } });
         if (!offer) throw new HttpError(400, `Nhà cung cấp đã chọn chưa bán ${row.variant.sku}.`);
-        unitPrice = offer.supplyPrice.toFixed(2);
+        if (supplierId === row.supplierId && !offer.supplyPrice.equals(row.unitCost)) {
+          throw new HttpError(409, `Giá nhập ${row.variant.sku} đã thay đổi. Hãy phân tích lại trước khi tạo đơn.`);
+        }
+        const details = row.details as { leadTimeDays?: number };
+        const leadTime = supplierId === row.supplierId ? details.leadTimeDays ?? 3 : offer.leadTimeDays ?? details.leadTimeDays ?? 3;
+        const list = groups.get(supplierId) ?? [];
+        list.push({ row, qty: request.qty ?? row.suggestedQty, unitPrice: offer.supplyPrice.toFixed(2), leadTime });
+        groups.set(supplierId, list);
       }
-      const details = row.details as { leadTimeDays?: number };
-      const list = groups.get(supplierId) ?? [];
-      list.push({ row, qty: request.qty ?? row.suggestedQty, unitPrice, leadTime: details.leadTimeDays ?? 3 });
-      groups.set(supplierId, list);
-    }
 
-    const created: Array<{ id: string; poCode: string; supplierId: string; lines: number }> = [];
-    for (const [supplierId, group] of groups) {
-      const expected = addDays(today, Math.max(...group.map((g) => g.leadTime)));
-      const order = await this.createDraftWithUniqueCode(businessId, authUserId, today, {
-        supplierId,
-        orderDate: today,
-        expectedDeliveryDate: expected,
-        items: group.map((g) => ({ variantId: g.row.variantId, orderedQty: g.qty, unitPrice: g.unitPrice })),
-      });
-      await prisma.aiReplenishmentItem.updateMany({
-        where: { id: { in: group.map((g) => g.row.id) } },
-        data: { status: "ORDERED", poId: order.id, handledBy: userId, handledAt: new Date() },
-      });
-      created.push({ id: order.id, poCode: order.poCode, supplierId, lines: group.length });
-    }
-    return { orders: created };
-  }
-
-  private async createDraftWithUniqueCode(businessId: string, authUserId: string, today: string, order: Record<string, unknown>) {
-    for (let attempt = 0; ; attempt++) {
-      const poCode = `AI-${today.replaceAll("-", "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-      try {
-        return await purchasesWriteService.createOrder(businessId, authUserId, { ...order, poCode }, "DRAFT");
-      } catch (error) {
-        if ((error as { code?: string }).code !== "P2002" || attempt >= 3) throw error;
+      const created: Array<{ id: string; poCode: string; supplierId: string; lines: number }> = [];
+      for (const [supplierId, group] of groups) {
+        const expected = addDays(today, Math.max(...group.map((g) => g.leadTime)));
+        const order = await purchasesWriteService.createOrderInTransaction(tx, businessId, authUserId, {
+          poCode: `AI-${today.replaceAll("-", "")}-${randomUUID().replaceAll("-", "").slice(0, 16).toUpperCase()}`,
+          supplierId,
+          orderDate: today,
+          expectedDeliveryDate: expected,
+          items: group.map((g) => ({ variantId: g.row.variantId, orderedQty: g.qty, unitPrice: g.unitPrice })),
+        }, "DRAFT");
+        const updated = await tx.aiReplenishmentItem.updateMany({
+          where: { businessId, status: "PENDING", runId: latestRun.id, id: { in: group.map((g) => g.row.id) } },
+          data: { status: "ORDERED", poId: order.id, handledBy: userId, handledAt: new Date() },
+        });
+        if (updated.count !== group.length) throw new HttpError(409, "Gợi ý đã thay đổi. Hãy tải lại trang.");
+        created.push({ id: order.id, poCode: order.poCode, supplierId, lines: group.length });
       }
-    }
+      return { orders: created };
+    });
   }
 }
 

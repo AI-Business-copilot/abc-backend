@@ -55,6 +55,7 @@ model Business {
   aiInsightRuns           AiInsightRun[]              @relation("ai_insight_runs_business_id")
   aiInsights              AiInsight[]                 @relation("ai_insights_business_id")
   aiForecasts             AiForecast[]                @relation("ai_forecasts_business_id")
+  aiForecastHistory       AiForecastHistory[]         @relation("ai_forecast_history_business_id")
   aiReplenishmentItems    AiReplenishmentItem[]       @relation("ai_replenishment_business_id")
   promotions              Promotion[]                 @relation("promotions_business_id")
   promotionTargets        PromotionTarget[]           @relation("promotion_targets_business_id")
@@ -366,6 +367,7 @@ model ProductVariant {
   channelDailyMetrics    ChannelDailyProductMetric[] @relation("channel_daily_metrics_variant_id")
   aiInsights             AiInsight[]                 @relation("ai_insights_variant_id")
   aiForecast             AiForecast?                 @relation("ai_forecasts_variant_id")
+  aiForecastHistory      AiForecastHistory[]         @relation("ai_forecast_history_variant_id")
   aiReplenishmentItem    AiReplenishmentItem?        @relation("ai_replenishment_variant_id")
 
   supplierProducts SupplierProduct[] @relation("supplier_products_variant_id")
@@ -1296,6 +1298,23 @@ model AiForecast {
 
   @@unique([businessId, variantId], map: "uq_ai_forecasts_variant")
   @@map("ai_forecasts")
+}
+
+model AiForecastHistory {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId String   @map("business_id") @db.Uuid
+  variantId  String   @map("variant_id") @db.Uuid
+  runId      String   @map("run_id") @db.Uuid
+  asOf       DateTime @map("as_of") @db.Date
+  issuedAt   DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
+  result     Json     @db.JsonB
+
+  business Business       @relation("ai_forecast_history_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant  ProductVariant @relation("ai_forecast_history_variant_id", fields: [businessId, variantId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([businessId, variantId, runId], map: "uq_ai_forecast_history_run")
+  @@index([businessId, variantId, issuedAt(sort: Desc)], map: "idx_ai_forecast_history_variant")
+  @@map("ai_forecast_history")
 }
 
 model AiReplenishmentItem {

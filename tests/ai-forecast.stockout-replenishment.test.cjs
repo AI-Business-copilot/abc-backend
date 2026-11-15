@@ -26,6 +26,24 @@ test("overdue PO is assumed to arrive tomorrow", () => {
   assert.equal(arrivalsFrom([{ qty: 5, arrivalDate: "2026-01-01" }], "2026-01-10")[0].offset, 1);
 });
 
+test("multiple partially received and overdue orders arrive in chronological order", () => {
+  const arrivals = arrivalsFrom([
+    { qty: 6, arrivalDate: "2026-01-15" },
+    { qty: 3, arrivalDate: "2026-01-08" },
+    { qty: 0, arrivalDate: "2026-01-11" },
+    { qty: 4, arrivalDate: "2026-01-12" },
+  ], "2026-01-10");
+  assert.deepEqual(arrivals, [{ offset: 1, qty: 3 }, { offset: 2, qty: 4 }, { offset: 5, qty: 6 }]);
+  assert.equal(projectStockout(2, 1, arrivals, 14).stockoutOffset, null);
+});
+
+test("later delivery exposes a stockout that an on-time delivery avoids", () => {
+  const onTime = arrivalsFrom([{ qty: 20, arrivalDate: "2026-01-12" }], "2026-01-10");
+  const late = arrivalsFrom([{ qty: 20, arrivalDate: "2026-01-15" }], "2026-01-10");
+  assert.equal(projectStockout(6, 2, onTime, 7).stockoutOffset, null);
+  assert.equal(projectStockout(6, 2, late, 7).stockoutOffset, 3);
+});
+
 test("stock lasting the horizon has no risk", () => {
   const projection = projectStockout(10000, 5, []);
   assert.equal(projection.stockoutOffset, null);

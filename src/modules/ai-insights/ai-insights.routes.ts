@@ -5,6 +5,7 @@ import { requirePermission } from "../../shared/auth/require-permission.middlewa
 import { requireSupabaseIdentity } from "../../shared/auth/supabase-auth.middleware";
 import { aiInsightsService } from "./ai-insights.service";
 import { replenishmentService } from "../ai-forecast/replenishment.service";
+import { forecastHistory } from "../ai-forecast/forecast-history.service";
 
 const router = Router();
 router.use(requireSupabaseIdentity, requireBusinessScope);
@@ -52,6 +53,10 @@ router.patch("/replenishment/:id", requirePermission("ai_insights.manage"), asyn
 
 router.get("/forecasts/:variantId", requirePermission("analytics.read"), async (req, res) => {
   res.json(await replenishmentService.forecastDetail(businessId(res.locals), String(req.params.variantId)));
+});
+
+router.get("/forecasts/:variantId/history", requirePermission("analytics.read"), async (req, res) => {
+  res.json(await forecastHistory(businessId(res.locals), String(req.params.variantId)));
 });
 
 router.get("/", requirePermission("analytics.read"), async (req, res) => {
