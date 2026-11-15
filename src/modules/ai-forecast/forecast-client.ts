@@ -36,7 +36,7 @@ function endpoint() {
 
 export function parseForecastResponse(value: unknown, requestId: string, asOf: string, expected: Map<string, number>, minSeriesDays = 28): Map<string, ForecastResult> {
   const body = object(value);
-  if (body.request_id !== requestId || body.as_of !== asOf || body.dataset_kind !== "synthetic" ||
+  if (body.request_id !== requestId || body.as_of !== asOf || body.dataset_kind !== "synthetic" || body.stock_history_policy !== "known-v1" ||
       typeof body.model_version !== "string" || !body.model_version || !Array.isArray(body.results) || body.results.length !== expected.size) return fail();
   const modelVersion = body.model_version;
   const output = new Map<string, ForecastResult>();
@@ -103,7 +103,8 @@ export async function attachForecasts(snapshot: Snapshot, settings: InsightSetti
       if (!variant.grossDailySales) throw new HttpError(500, "Không có chuỗi số bán POS để dự báo.");
       const days = Math.min(variant.ageDays, variant.grossDailySales.length);
       const sales = days ? variant.grossDailySales.slice(-days) : [];
-      const flags = days ? variant.stockoutDays.slice(-days) : [];
+      if (!variant.forecastStockoutDays) throw new HttpError(500, "Không có lịch sử tồn kho đã kiểm tra để dự báo.");
+      const flags = days ? variant.forecastStockoutDays.slice(-days) : [];
       if (flags.length !== days) throw new HttpError(500, "Dữ liệu tồn kho không khớp lịch sử bán.");
       return {
         variant_id: variant.variantId,

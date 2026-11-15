@@ -73,6 +73,8 @@ export interface VariantSnapshot {
   avgDaily30: number;
   /** Per day, oldest first, same length as dailySales: true when end-of-day stock was zero. */
   stockoutDays: boolean[];
+  /** Forecast-only closing-stock evidence; null means the ledger cannot verify the day. */
+  forecastStockoutDays: Array<boolean | null>;
   daysSinceLastSale: number | null;
   possibleStockoutBias: boolean;
   lots: LotSnapshot[];

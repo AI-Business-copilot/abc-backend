@@ -141,6 +141,14 @@ test("analyze: new products skip demand rules but still get expiry checks, and w
   assert.equal(result.capital.totalCapital, 0);
 });
 
+test("overdue purchase order warning counts each order once across products", () => {
+  const incoming = [{ poId: "po", poCode: "PO-1", qty: 5, arrivalDate: "2026-11-10", overdue: true }];
+  const result = analyze(snap(variant({ incoming }), variant({ variantId: "v2", incoming })), DEFAULT_SETTINGS);
+  const warning = result.warnings.find((entry) => entry.code === "FORECAST_OVERDUE_PO");
+  assert.equal(warning.count, 1);
+  assert.match(warning.message, /không phải xác nhận/);
+});
+
 test("scoring ranks by severity then value, and fingerprints are stable", () => {
   const scored = scoreFindings([
     { type: "OVERSTOCK", variantId: "a", lotItemId: null, severity: "HIGH", valueAtRisk: 100, metrics: {}, reasonCode: "x", suggestedAction: "y" },

@@ -84,7 +84,13 @@ export function analyze(snapshot: Snapshot, settings: InsightSettings): Analysis
     });
   }
   const censored = snapshot.variants.filter((v) => v.forecast?.reason === "CENSORED_HISTORY").length;
-  if (censored) warnings.push({ code: "FORECAST_CENSORED_HISTORY", message: `${censored} sản phẩm có quá ít ngày còn hàng để dự báo.`, count: censored });
+  if (censored) warnings.push({ code: "FORECAST_CENSORED_HISTORY", message: `${censored} sản phẩm có ngày chưa xác minh được tồn kho hoặc quá ít ngày còn hàng; hãy kiểm tra lịch sử kho trước khi dự báo.`, count: censored });
+  const overdue = new Set(snapshot.variants.flatMap((v) => (v.incoming ?? []).filter((po) => po.overdue).map((po) => po.poId)));
+  if (overdue.size) warnings.push({
+    code: "FORECAST_OVERDUE_PO",
+    message: `${overdue.size} đơn hàng đang về đã quá hạn. Mô phỏng giả định hàng về sớm nhất ngày mai, không phải xác nhận giao hàng; hãy kiểm tra với nhà cung cấp.`,
+    count: overdue.size,
+  });
   const longLead = snapshot.variants.filter((v) => v.forecast?.status === "OK" && v.supply &&
     v.supply.leadTimeDays + v.supply.reviewPeriodDays > v.forecast.dailyRates.length).length;
   if (longLead) warnings.push({

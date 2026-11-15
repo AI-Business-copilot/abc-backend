@@ -7,7 +7,7 @@ const models = ["MEAN_28", "SES", "CROSTON_SBA", "LIGHTGBM"];
 function response(requestId = "r", asOf = "2025-01-28", id = "v", days = 28) {
   const amounts = { d7: 7, d14: 21, d28: 63 };
   return {
-    request_id: requestId, as_of: asOf, dataset_kind: "synthetic", model_version: "test-model",
+    request_id: requestId, as_of: asOf, dataset_kind: "synthetic", model_version: "test-model", stock_history_policy: "known-v1",
     results: [{
       variant_id: id, status: "OK", series_days: days, model: "MEAN_28",
       daily_sigma: 2, segments: { days_1_7: 7, days_8_14: 14, days_15_28: 42 },
@@ -34,11 +34,14 @@ test("rejects mismatched identifiers, incomplete comparisons and inconsistent to
   const duplicate = response();
   duplicate.results[0].comparison[1].model = "MEAN_28";
   assert.throws(() => parseForecastResponse(duplicate, "r", "2025-01-28", new Map([["v", 28]])), /không hợp lệ/);
+  const oldService = response();
+  delete oldService.stock_history_policy;
+  assert.throws(() => parseForecastResponse(oldService, "r", "2025-01-28", new Map([["v", 28]])), /không hợp lệ/);
 });
 
 test("short and censored histories remain explicitly unavailable", () => {
   const payload = {
-    request_id: "r", as_of: "2025-01-28", dataset_kind: "synthetic", model_version: "test-model",
+    request_id: "r", as_of: "2025-01-28", dataset_kind: "synthetic", model_version: "test-model", stock_history_policy: "known-v1",
     results: [
       { variant_id: "a", status: "INSUFFICIENT_DATA", series_days: 0, reason: "SHORT_HISTORY" },
       { variant_id: "b", status: "INSUFFICIENT_DATA", series_days: 28, reason: "CENSORED_HISTORY" },
@@ -67,6 +70,7 @@ test("requests Python in batches and sends gross POS history only", async (t) =>
     assert.equal(request.min_series_days, 28);
     assert.equal(request.variants[0].history[0].date, "2025-01-01");
     assert.equal(request.variants[0].history[0].units_sold, 2);
+    assert.equal(request.variants[0].history[0].stockout, null);
     const payload = response(request.request_id, request.as_of);
     payload.results = request.variants.map((item) => response(request.request_id, request.as_of, item.variant_id).results[0]);
     return new Response(JSON.stringify(payload), { status: 200 });
@@ -74,6 +78,7 @@ test("requests Python in batches and sends gross POS history only", async (t) =>
   const variants = Array.from({ length: 201 }, (_, i) => ({
     variantId: String(i), ageDays: 28, dailySales: Array(28).fill(1),
     grossDailySales: Array(28).fill(2), stockoutDays: Array(28).fill(false),
+    forecastStockoutDays: [null, ...Array(27).fill(false)],
   }));
   const result = await attachForecasts({ asOf: "2025-01-28", today: "2025-01-29", variants }, { forecast: { minSeriesDays: 14 } });
   assert.equal(calls, 2);
