@@ -84,6 +84,7 @@ const db = {
     findFirst: async (args) => {
       calls.push(["orderFindFirst", args]);
       if (args?.where?.scrapCode) return state.lastScrapCode;
+      if (args?.where?.lotItemId) return state.existingScrapOrder ?? null;
       return state.order;
     },
     findFirstOrThrow: async (args) => {
@@ -281,7 +282,7 @@ test("scrap creation checks the quantity, the source and the available stock", a
   );
 
   state.balance = { id: "balance-1", quantityOnHand: 10, damagedQuantity: 2 };
-  state.pendingCount = 1;
+  state.existingScrapOrder = { scrapCode: "SCRAP-TEST", status: "PENDING" };
   await rejects(() => service.createScrapOrder(BUSINESS, staffActor, { ...base, scrapQty: 2 }, files), 409);
   assert.equal(uploads.length, 0, "no photo is uploaded when the order cannot be created");
 });

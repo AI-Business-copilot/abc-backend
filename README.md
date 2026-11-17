@@ -1,5 +1,24 @@
 # Backend setup
 
+## Chạy unit test
+
+Chạy trong thư mục `abc-backend`, sau khi đã cài dependencies:
+
+```powershell
+# Chỉ chạy unit/service test dùng mock
+npm run test:unit
+
+# Chạy unit/service test và Swagger/API contract test
+npm test
+
+# Chỉ chạy contract test với HTTP server cục bộ
+npm run test:contracts
+```
+
+Không cần khởi động backend hay database thật để chạy các nhóm trên. Test PostgreSQL và workflow dùng dữ liệu thật được tách riêng. Nếu schema Prisma thay đổi, chạy `npm run prisma:generate` trước khi kiểm tra kiểu dữ liệu hoặc build.
+
+Xem thêm [TESTING.md](TESTING.md).
+
 ## F04 sales API
 
 Run `npm run dev`, then open [F04 Swagger UI](http://localhost:5000/fo4/) to test counter sales independently of F03. See [F04 flow, API and test guide](docs/f04-sales.md) for setup, request examples and stock/payment checks. The API requires the existing sales and inventory domain tables; the auth-only Prisma migration does not create those tables.

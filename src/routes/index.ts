@@ -16,10 +16,12 @@ import promotionsRoutes from "../modules/promotions/promotions.routes";
 import salesRoutes from "../modules/sales/sales.routes";
 import vendorReturnsRoutes from "../modules/vendor-returns/vendor-returns.routes";
 import uploadRouter from "./upload.routes";
+import notificationRoutes from "../modules/notifications/notifications.routes";
 
 const router = Router();
 
 router.use("/auth", authRoutes);
+router.use("/notifications", notificationRoutes);
 router.use("/admin", adminRoutes);
 router.use("/businesses", businessRoutes);
 router.use("/business-data", businessDataRoutes);
