@@ -17,7 +17,7 @@ test("fo3 documents exactly the implemented purchases routes and resolves schema
     .map(([, method, path]) => `${method} /purchases${path.replace(/:id/g, "{id}").replace(/:variantId/g, "{variantId}")}`).sort();
   const documented = Object.entries(spec.paths).filter(([path]) => path.startsWith("/purchases/"))
     .flatMap(([path, methods]) => Object.keys(methods).map((method) => `${method} ${path}`)).sort();
-  assert.equal(documented.length, 24);
+  assert.equal(documented.length, 25);
   assert.deepEqual(documented, implemented);
   for (const [, name] of JSON.stringify(spec).matchAll(/"\$ref":"#\/components\/schemas\/([^"]+)"/g)) {
     assert.ok(spec.components.schemas[name], `Missing schema ${name}`);

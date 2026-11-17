@@ -1,7 +1,10 @@
 require("ts-node/register/transpile-only");
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { prisma } = require("../src/shared/infrastructure/database/prisma.client");
+// Mock the database boundary so unit tests do not depend on generated delegates or credentials.
+const prisma = { aiInsightRun: {}, aiForecast: {}, aiReplenishmentItem: {}, $transaction: undefined };
+const databasePath = require.resolve("../src/shared/infrastructure/database/prisma.client");
+require.cache[databasePath] = { id: databasePath, filename: databasePath, loaded: true, exports: { prisma } };
 const snapshot = require("../src/modules/ai-insights/snapshot/build-snapshot");
 const { aiInsightsService } = require("../src/modules/ai-insights/ai-insights.service");
 const { replenishmentService } = require("../src/modules/ai-forecast/replenishment.service");

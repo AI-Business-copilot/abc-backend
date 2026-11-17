@@ -77,7 +77,7 @@ const resetState = () => {
     formattedRow: itemRow(),
     variants: [{ id: VARIANT }],
     lotItems: [{ id: LOT_ITEM, variantId: VARIANT }],
-    lotRows: [{ id: LOT_ITEM, lot: { lotNumber: "LOT-1" } }],
+    lotRows: [{ id: LOT_ITEM, variantId: VARIANT, status: "HEALTHY", lot: { lotNumber: "LOT-1" } }],
     lotItemRow: null,
     existingLot: null,
     duplicateLotItem: null,
@@ -164,6 +164,14 @@ const db = {
     },
   },
   scrapOrder: {
+    findMany: async (args) => {
+      calls.push(["scrapFindMany", args]);
+      return state.pendingScrap ? [{ lotItemId: LOT_ITEM, scrapCode: "SCRAP-TEST", status: "PENDING" }] : [];
+    },
+    findFirst: async (args) => {
+      calls.push(["scrapFindFirst", args]);
+      return state.pendingScrap ? { scrapCode: "SCRAP-TEST", status: "PENDING" } : null;
+    },
     count: async (args) => {
       calls.push(["scrapCount", args]);
       return state.pendingScrap;
@@ -818,7 +826,7 @@ test("an apply is refused while a counted lot item has a pending scrap order", a
   state.pendingScrap = 1;
 
   await rejects(() => auditService.applyAudit(BUSINESS, "auth", AUDIT), 409);
-  assert.equal(call("scrapCount")[1].where.lotItemId.in[0], LOT_ITEM);
+  assert.equal(call("scrapFindFirst")[1].where.lotItemId.in[0], LOT_ITEM);
   assert.equal(wrote("balanceUpdate"), false);
   assert.equal(wrote("lotItemUpdate"), false);
 });

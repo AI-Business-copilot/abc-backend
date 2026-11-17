@@ -91,7 +91,7 @@ test("missing or other-business documents return 404 without reading ledger", as
 test("receipt supports standalone receipt, lot detail and scoped receipt ledger", async () => {
   receipt = {
     id, po: null, totalAmount: money("0.30"), paidAmount: money("0.10"),
-    purchaseReceiptItems: [{ receivedQty: 3, actualCost: money("0.10"), lot: { lotNumber: "LOT-1" } }],
+    purchaseReceiptItems: [{ receivedQty: 3, actualCost: money("0.10"), lotItem: { id: "lot-item", lot: { lotNumber: "LOT-1" }, expirationDate: new Date("2027-01-01"), manufacturingDate: null } }],
   };
   const result = await service.getReceipt(businessId, id);
   assert.equal(result.po, null);
