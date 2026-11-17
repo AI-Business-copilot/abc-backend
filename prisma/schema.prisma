@@ -20,6 +20,7 @@ model Business {
   createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships BusinessMembership[]
+  notificationReads NotificationRead[]
   invitations BusinessInvitation[]
   auditLogs   PlatformAuditLog[]
   roles       Role[]
@@ -75,6 +76,7 @@ model User {
   createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships     BusinessMembership[]
+  notificationReads NotificationRead[]
   platformRoles   PlatformUserRole[]
   sentInvitations BusinessInvitation[] @relation("business_invitations_invited_by")
   auditLogs       PlatformAuditLog[]   @relation("platform_audit_actor")
@@ -112,6 +114,19 @@ model User {
   onlineReportImports              OnlineReportImportBatch[] @relation("online_report_batches_imported_by")
 
   @@map("users")
+}
+
+/// Read receipts for live operational notifications, scoped to each member and store.
+model NotificationRead {
+  businessId String @map("business_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  notificationId String @map("notification_id") @db.VarChar(200)
+  readAt DateTime @default(now()) @map("read_at") @db.Timestamptz(6)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([businessId, userId, notificationId])
+  @@map("notification_reads")
 }
 
 model Role {
