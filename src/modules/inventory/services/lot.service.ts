@@ -50,10 +50,15 @@ export interface LotItemWithStatus {
   onHand: number;
   damaged: number;
   /**
-   * The scrap order already raised for this lot item, in any status. A lot can only have one
-   * scrap order, so the Owner and the staff both need to see which order is already there.
+   * The scrap order already raised for this lot item, in any status. It is the audit trail and
+   * the link the staff need, so it always points at the newest order.
    */
   scrapOrder: { id: string; scrapCode: string; status: string } | null;
+  /**
+   * True when the newest scrap order still blocks a new one. Only a PENDING order does: a
+   * rejected or cancelled order is settled, so any staff member can file a fresh order.
+   */
+  scrapOrderBlocksNew: boolean;
 }
 
 /** A batch header together with every variant it contains. */
@@ -92,6 +97,7 @@ export class LotService {
 
   /** Turn a lot item row into the API shape, adding the status calculated for today. */
   private toItemView(item: LotItemRow): LotItemWithStatus {
+    const scrapOrder = item.scrapOrders[0] ?? null;
     return {
       id: item.id,
       lotId: item.lot.id,
@@ -108,7 +114,10 @@ export class LotService {
       variant: item.variant,
       onHand: item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
       damaged: item.inventoryBalances.reduce((sum, balance) => sum + balance.damagedQuantity, 0),
-      scrapOrder: item.scrapOrders[0] ?? null,
+      scrapOrder,
+      // Only a PENDING order blocks a new one. A rejected or cancelled order is settled, so
+      // the lot stays quarantined and any staff member can file a fresh order.
+      scrapOrderBlocksNew: scrapOrder?.status === "PENDING",
     };
   }
 
@@ -124,7 +133,8 @@ export class LotService {
       lot: { select: { id: true, lotNumber: true } },
       variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
       inventoryBalances: { select: { quantityOnHand: true, damagedQuantity: true } },
-      // The newest scrap order of the lot, in any status: a lot can only have one.
+      // The newest scrap order of the lot, in any status: it is the audit trail, and only a
+      // PENDING one blocks a new order.
       scrapOrders: {
         select: { id: true, scrapCode: true, status: true },
         orderBy: { createdAt: "desc" },

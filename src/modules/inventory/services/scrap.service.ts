@@ -109,7 +109,9 @@ export class ScrapService {
 
   /**
    * STAFF only. The lot item must be QUARANTINED and have no other PENDING scrap order.
-   * Needs 1 to 10 evidence photos, which are saved with the order and cannot be changed afterward.
+   * A rejected or cancelled order does not block a new one: the lot stays quarantined and any
+   * staff member can file a fresh order. Needs 1 to 10 evidence photos, which are saved with the
+   * order and cannot be changed afterward.
    */
   async createScrapOrder(
     businessId: string,
@@ -177,16 +179,18 @@ export class ScrapService {
     }
 
     // Cheap check before touching Storage. The loop below checks again in case of a race.
+    // Only a PENDING order blocks: a rejected or cancelled order is settled, so the lot stays
+    // quarantined and any staff member can file a fresh order.
     const existingOrder = await prisma.scrapOrder.findFirst({
-      where: { businessId, lotItemId },
+      where: { businessId, lotItemId, status: "PENDING" },
       orderBy: { createdAt: "desc" },
       select: { scrapCode: true, status: true },
     });
     if (existingOrder) {
       throw new HttpError(
         409,
-        `This lot item already has a scrap order (${existingOrder.scrapCode}, ${scrapStatusLabel(existingOrder.status)}). ` +
-          `A lot can only have one scrap order; settle the existing order before creating another.`,
+        `This lot item already has a scrap order waiting for review (${existingOrder.scrapCode}). ` +
+          `Wait for the Owner to settle it before creating another.`,
       );
     }
 
@@ -206,15 +210,15 @@ export class ScrapService {
 
       for (let attempt = 0; attempt < 3; attempt++) {
         const existing = await prisma.scrapOrder.findFirst({
-          where: { businessId, lotItemId },
+          where: { businessId, lotItemId, status: "PENDING" },
           orderBy: { createdAt: "desc" },
           select: { scrapCode: true, status: true },
         });
         if (existing) {
           throw new HttpError(
             409,
-            `This lot item already has a scrap order (${existing.scrapCode}, ${scrapStatusLabel(existing.status)}). ` +
-              `A lot can only have one scrap order; settle the existing order before creating another.`,
+            `This lot item already has a scrap order waiting for review (${existing.scrapCode}). ` +
+              `Wait for the Owner to settle it before creating another.`,
           );
         }
 
