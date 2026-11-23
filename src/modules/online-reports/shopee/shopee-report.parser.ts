@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import ExcelJS from "exceljs";
 
-import { HttpError } from "../../shared/http/http-error";
+import { HttpError } from "../../../shared/http/http-error";
 
 export type ShopeeRecordType = "ORDER" | "SKU" | "ADJUSTMENT" | "SERVICE_FEE" | "SHIPPING_DISCREPANCY";
 export const SHOPEE_MAPPING_VERSION = 5;

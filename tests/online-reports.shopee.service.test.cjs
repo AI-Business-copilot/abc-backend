@@ -35,8 +35,8 @@ require.cache[databasePath] = {
     }),
   } },
 };
-const { BusinessDataService } = require("../src/modules/business-data/business-data.service.ts");
-const service = new BusinessDataService();
+const { ShopeeReportService } = require("../src/modules/online-reports/shopee/shopee-report.service.ts");
+const service = new ShopeeReportService();
 
 function row(index, mappingVersion = 5) {
   return {
@@ -60,27 +60,28 @@ function row(index, mappingVersion = 5) {
   };
 }
 
-test("AI-ready rows retain provenance, tenant scope and explicit truncation", async () => {
+test("Shopee records retain provenance, tenant scope and explicit truncation", async () => {
   onlineRows = Array.from({ length: 2001 }, (_, index) => row(index, index === 1 ? null : 5));
-  const result = await service.getAiReadyData("business-1", "2026-04-20", "2026-04-23");
+  const result = await service.getFinancialRecords("business-1", "2026-04-20", "2026-04-23");
   assert.equal(onlineQuery.where.businessId, "business-1");
   assert.equal(onlineQuery.take, 2001);
   assert.deepEqual(onlineQuery.orderBy[2], { id: "asc" });
-  assert.equal(result.shopee.recordsTruncated, true);
-  assert.equal(result.shopee.financialRecords.length, 2000);
-  assert.equal(result.shopee.quarantinedFinancialRecords, 1);
-  assert.equal(result.shopee.financialRecords[0].sourceRow, 4);
-  assert.equal(result.shopee.financialRecords[0].batch.mappingVersion, 5);
-  assert.equal(result.shopee.financialRecords[1].batch.mappingVersion, null);
-  assert.equal(result.shopee.financialRecords[0].batch.summary, undefined);
-  assert.deepEqual(result.shopee.financialRecords[0].unmappedFinancialData, { "Phí mới": -1 });
+  assert.equal(result.recordsTruncated, true);
+  assert.equal(result.financialRecords.length, 2000);
+  assert.equal(result.quarantinedFinancialRecords, 1);
+  assert.equal(result.financialRecords[0].sourceRow, 4);
+  assert.equal(result.financialRecords[0].batch.mappingVersion, 5);
+  assert.equal(result.financialRecords[1].batch.mappingVersion, null);
+  assert.equal(result.financialRecords[0].batch.summary, undefined);
+  assert.deepEqual(result.financialRecords[0].unmappedFinancialData, { "Phí mới": -1 });
+  assert.equal(result.shopee, undefined);
 });
 
 test("exactly the row limit is not falsely marked truncated", async () => {
   onlineRows = Array.from({ length: 2000 }, (_, index) => row(index));
-  const result = await service.getAiReadyData("business-1", "2026-04-20", "2026-04-23");
-  assert.equal(result.shopee.recordsTruncated, false);
-  assert.equal(result.shopee.financialRecords.length, 2000);
+  const result = await service.getFinancialRecords("business-1", "2026-04-20", "2026-04-23");
+  assert.equal(result.recordsTruncated, false);
+  assert.equal(result.financialRecords.length, 2000);
 });
 
 test("import history remains scoped and exposes current mapping version", async () => {
@@ -101,7 +102,7 @@ test("import summary distinguishes parsed file totals from inserted rows", async
     ["Order", "ORDER-1", 100],
     ["Order", "ORDER-2", 200],
   ].forEach((row, i) => row.forEach((value, j) => { sheet.getCell(i + 1, j + 1).value = value; }));
-  const result = await service.importShopeeReport("business-1", "user-1", Buffer.from(await workbook.xlsx.writeBuffer()));
+  const result = await service.importReport("business-1", "user-1", Buffer.from(await workbook.xlsx.writeBuffer()));
   assert.equal(result.importedRowCount, 1);
   assert.equal(result.skippedDuplicateRows, 1);
   assert.equal(createdBatch.businessId, "business-1");

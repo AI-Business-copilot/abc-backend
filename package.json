@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
-    "test": "node --test",
+    "test": "node scripts/run-tests.cjs local",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "seed:ai-demo": "ts-node --transpile-only scripts/seed-ai-insights-demo.ts",
+    "test:unit": "node scripts/run-tests.cjs unit",
+    "test:contracts": "node scripts/run-tests.cjs contracts"
   },
   "keywords": [],
   "author": "",

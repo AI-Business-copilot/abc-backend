@@ -25,6 +25,7 @@ const lotItemRow = (overrides = {}) => ({
   lot: { id: "lot-1", lotNumber: "LOT-1" },
   variant: { id: "variant-1", sku: "SKU-1", template: { name: "Sữa rửa mặt" } },
   inventoryBalances: [{ quantityOnHand: 5, damagedQuantity: 0 }],
+  scrapOrders: [],
   ...overrides,
 });
 

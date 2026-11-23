@@ -10,11 +10,17 @@ import { purchasesCorrectionService } from "./purchases-correction.service";
 import { purchasesPaymentsService } from "./purchases-payments.service";
 import { purchasesDraftsService } from "./purchases-drafts.service";
 import { supplierProductsService } from "./supplier-products.service";
+import supplierImportRoutes from "./supplier-import.routes";
+import { lookupSupplierTax } from "./supplier-tax.service";
 
 const router = Router();
 router.use(requireSupabaseIdentity, requireBusinessScope, requirePermission("inventory.read"));
 // These responses contain purchase costs, payments and supplier debt.
 router.use(requirePermission("finance.read"));
+router.use(supplierImportRoutes);
+router.get("/suppliers/tax-lookup", requirePermission("inventory.receive"), async (req, res) => {
+  res.json(await lookupSupplierTax(req.query.taxCode));
+});
 
 router.get("/orders", async (req: Request, res: Response) => {
   res.json(await purchasesService.listOrders(String(res.locals.businessId), req.query));
@@ -59,6 +65,9 @@ router.patch("/receipts/:id/payment", requirePermission("inventory.receive"), as
 
 router.patch("/orders/:id", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
   res.json(await purchasesLifecycleService.updateOrder(String(res.locals.businessId), req.identity!.id, String(req.params.id), req.body));
+});
+router.post("/orders/:id/confirm", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
+  res.json(await purchasesLifecycleService.confirmDraft(String(res.locals.businessId), req.identity!.id, String(req.params.id)));
 });
 router.post("/orders/:id/cancel", requirePermission("inventory.receive"), async (req: Request, res: Response) => {
   res.json(await purchasesLifecycleService.finishOrder(String(res.locals.businessId), req.identity!.id, String(req.params.id), "cancel"));

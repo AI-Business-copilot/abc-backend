@@ -299,6 +299,14 @@ const db = {
     },
   },
   scrapOrder: {
+    findMany: async (args) => {
+      calls.push(["scrapFindMany", args]);
+      return state.pendingScrap ? [{ lotItemId: LOT_ITEM, scrapCode: "SCRAP-TEST", status: "PENDING" }] : [];
+    },
+    findFirst: async (args) => {
+      calls.push(["scrapFindFirst", args]);
+      return state.pendingScrap ? { scrapCode: "SCRAP-TEST", status: "PENDING" } : null;
+    },
     count: async (args) => {
       calls.push(["scrapCount", args]);
       return state.pendingScrap;

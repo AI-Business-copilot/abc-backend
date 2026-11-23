@@ -11,7 +11,7 @@ const lines = (schema: Schema) => ({ type: "array", minItems: 1, maxItems: 500, 
 const query = (name: string, schema: Schema, required = false) => ({ name, in: "query", required, schema });
 const idParameter = { name: "id", in: "path", required: true, schema: uuid, description: "ID chứng từ/NCC trong cửa hàng hiện tại." };
 const paging = [query("page", { type: "integer", minimum: 1, maximum: 1000000, default: 1 }), query("pageSize", { type: "integer", minimum: 1, maximum: 100, default: 20 }), query("search", { type: "string", maxLength: 255 })];
-const orderStatuses = ["ORDERED", "PARTIALLY_RECEIVED", "COMPLETED", "CLOSED_SHORT", "CANCELLED"];
+const orderStatuses = ["DRAFT", "ORDERED", "PARTIALLY_RECEIVED", "COMPLETED", "CLOSED_SHORT", "CANCELLED"];
 const receiptStatuses = ["RECEIVED", "CANCELLED"];
 const filters = (statuses: string[]) => [...paging, query("supplierId", uuid), query("status", { type: "string", enum: statuses }), query("from", day), query("to", day)];
 const body = (schema: string, example?: unknown) => ({ required: true, content: { "application/json": { schema: ref(schema), ...(example ? { example } : {}) } } });
@@ -121,6 +121,7 @@ export function createFo3Document() {
         get: operation("fo3Order", orderTag, "Chi tiết PO", ref("Order"), { parameters: [idParameter] }),
         patch: operation("fo3UpdateOrder", orderTag, "Sửa PO chưa có phiếu nhận", ref("Order"), { parameters: [idParameter], write: true, requestBody: body("OrderUpdate", { items: [{ variantId: "22222222-2222-4222-8222-222222222222", orderedQty: 12, unitPrice: "49000.00" }] }), description: "Chỉ PO ORDERED chưa từng có phiếu nhận. Gửi items sẽ thay toàn bộ danh sách." }),
       },
+      "/purchases/orders/{id}/confirm": { post: operation("fo3ConfirmOrder", orderTag, "X?c nh?n ??n nh?p nh?p", ref("Order"), { parameters: [idParameter], write: true, description: "X?c nh?n PO DRAFT th?nh ORDERED tr??c khi nh?n h?ng." }) },
       "/purchases/orders/{id}/cancel": { post: operation("fo3CancelOrder", orderTag, "Hủy PO chưa nhận", ref("Order"), { parameters: [idParameter], write: true, description: "Không cần body. Gửi lại sau thành công trả PO CANCELLED, không ghi thêm." }) },
       "/purchases/orders/{id}/close": { post: operation("fo3CloseOrder", orderTag, "Đóng phần giao thiếu", ref("Order"), { parameters: [idParameter], write: true, description: "Không cần body. Chỉ PO đã nhận một phần và còn thiếu; thành CLOSED_SHORT." }) },
       "/purchases/orders/{id}/receipts": { post: operation("fo3ReceiveOrder", receiptTag, "Nhận hàng ngay và nhập kho", ref("Receipt"), { status: 201, parameters: [idParameter], write: true, requestBody: body("ReceiptInput", receiptExample), description: "Cộng tồn, cập nhật giá vốn, công nợ và khoản chi trong cùng transaction. Có thể lặp poItemId để chia lô, tổng lượng không vượt phần còn thiếu." }) },

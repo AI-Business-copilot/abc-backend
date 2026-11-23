@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 require("ts-node/register/transpile-only");
 const ExcelJS = require("exceljs");
-const { parseShopeeReport } = require("../src/modules/business-data/shopee-report.parser.ts");
+const { parseShopeeReport } = require("../src/modules/online-reports/shopee/shopee-report.parser.ts");
 
 async function sampleWorkbook() {
   const workbook = new ExcelJS.Workbook();

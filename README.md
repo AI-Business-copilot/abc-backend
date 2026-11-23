@@ -1,5 +1,24 @@
 # Backend setup
 
+## Chạy unit test
+
+Chạy trong thư mục `abc-backend`, sau khi đã cài dependencies:
+
+```powershell
+# Chỉ chạy unit/service test dùng mock
+npm run test:unit
+
+# Chạy unit/service test và Swagger/API contract test
+npm test
+
+# Chỉ chạy contract test với HTTP server cục bộ
+npm run test:contracts
+```
+
+Không cần khởi động backend hay database thật để chạy các nhóm trên. Test PostgreSQL và workflow dùng dữ liệu thật được tách riêng. Nếu schema Prisma thay đổi, chạy `npm run prisma:generate` trước khi kiểm tra kiểu dữ liệu hoặc build.
+
+Xem thêm [TESTING.md](TESTING.md).
+
 ## F04 sales API
 
 Run `npm run dev`, then open [F04 Swagger UI](http://localhost:5000/fo4/) to test counter sales independently of F03. See [F04 flow, API and test guide](docs/f04-sales.md) for setup, request examples and stock/payment checks. The API requires the existing sales and inventory domain tables; the auth-only Prisma migration does not create those tables.
@@ -44,7 +63,13 @@ The custom-RBAC migration is `20261106174000_business_custom_rbac` and must be a
 
 ## Business data foundation
 
-See [the channel data contract, API, and migration requirements](docs/business-data-foundation.md).
+See [the POS business-data contract, API, and migration requirements](docs/business-data-foundation.md).
+
+The core scope is offline/POS store management. Importing Shopee revenue reports is a separate, supplementary, optional feature (financial view only; no order or inventory sync) and can be removed independently; see [docs/online-reports-shopee.md](docs/online-reports-shopee.md).
+
+## Inventory insights (rule-based)
+
+Daily rule-based inventory alerts built on the POS data (low stock, slow-moving, declining sales, overstock, expiration risk, inventory capital); see [docs/ai-insights.md](docs/ai-insights.md).
 
 ## Initial API
 

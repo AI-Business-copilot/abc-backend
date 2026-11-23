@@ -55,6 +55,10 @@ const tx = {
     findUnique: async () => state.lot,
     create: async ({ data }) => (state.lot = { id: "lot", ...data }),
   },
+  productLotItem: {
+    findUnique: async () => state.lotItem,
+    create: async ({ data }) => (state.lotItem = { id: "lot-item", ...data }),
+  },
   inventoryBalance: {
     aggregate: async () => ({ _sum: { quantityOnHand: state.quantity } }),
     findFirst: async () => state.balance,
@@ -170,7 +174,7 @@ test("lot receipt stores dates; conflicting existing lot cannot be overwritten",
   state.variant.template.hasLotTracking = true;
   const input = receive({ items: [{ poItemId: itemId, receivedQty: 2, actualCost: "20", lotNumber: "LOT-1", expirationDate: "2027-01-01" }] });
   await service.receiveOrder(businessId, "auth", id, input);
-  assert.equal(state.items[0].lotId, "lot"); assert.equal(state.lot.expirationDate.toISOString(), "2027-01-01T00:00:00.000Z");
+  assert.equal(state.items[0].lotItemId, "lot-item"); assert.equal(state.lotItem.lotId, "lot"); assert.equal(state.lotItem.expirationDate.toISOString(), "2027-01-01T00:00:00.000Z");
   input.receiptCode = "PR-002"; input.items[0].expirationDate = "2027-02-01";
   await assert.rejects(service.receiveOrder(businessId, "auth", id, input), (err) => err.statusCode === 409);
   assert.equal(state.quantity, 12);

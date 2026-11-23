@@ -20,6 +20,7 @@ model Business {
   createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships BusinessMembership[]
+  notificationReads NotificationRead[]
   invitations BusinessInvitation[]
   auditLogs   PlatformAuditLog[]
   roles       Role[]
@@ -56,6 +57,12 @@ model Business {
   variantQuarantines      VariantQuarantine[]         @relation("variant_quarantines_business_id")
   dailyProductMetrics     DailyProductMetric[]        @relation("daily_product_metrics_business_id")
   forecastRuns            ForecastRun[]               @relation("forecast_runs_business_id")
+  aiInsightSettings       AiInsightSettings?          @relation("ai_insight_settings_business_id")
+  aiInsightRuns           AiInsightRun[]              @relation("ai_insight_runs_business_id")
+  aiInsights              AiInsight[]                 @relation("ai_insights_business_id")
+  aiForecasts             AiForecast[]                @relation("ai_forecasts_business_id")
+  aiForecastHistory       AiForecastHistory[]         @relation("ai_forecast_history_business_id")
+  aiReplenishmentItems    AiReplenishmentItem[]       @relation("ai_replenishment_business_id")
   promotions              Promotion[]                 @relation("promotions_business_id")
   promotionTargets        PromotionTarget[]           @relation("promotion_targets_business_id")
   promotionRedemptions    PromotionRedemption[]       @relation("promotion_redemptions_business_id")
@@ -74,6 +81,7 @@ model User {
   createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   memberships     BusinessMembership[]
+  notificationReads NotificationRead[]
   platformRoles   PlatformUserRole[]
   sentInvitations BusinessInvitation[] @relation("business_invitations_invited_by")
   auditLogs       PlatformAuditLog[]   @relation("platform_audit_actor")
@@ -119,6 +127,19 @@ model User {
   onlineReportImports              OnlineReportImportBatch[] @relation("online_report_batches_imported_by")
 
   @@map("users")
+}
+
+/// Read receipts for live operational notifications, scoped to each member and store.
+model NotificationRead {
+  businessId String @map("business_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  notificationId String @map("notification_id") @db.VarChar(200)
+  readAt DateTime @default(now()) @map("read_at") @db.Timestamptz(6)
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([businessId, userId, notificationId])
+  @@map("notification_reads")
 }
 
 model Role {
@@ -374,7 +395,10 @@ model ProductVariant {
   variantQuarantines     VariantQuarantine[]         @relation("variant_quarantines_variant_id")
   dailyProductMetrics    DailyProductMetric[]        @relation("daily_product_metrics_variant_id")
   channelDailyMetrics    ChannelDailyProductMetric[] @relation("channel_daily_metrics_variant_id")
-  forecastResults        ForecastResult[]            @relation("forecast_results_variant_id")
+  aiInsights             AiInsight[]                 @relation("ai_insights_variant_id")
+  aiForecast             AiForecast?                 @relation("ai_forecasts_variant_id")
+  aiForecastHistory      AiForecastHistory[]         @relation("ai_forecast_history_variant_id")
+  aiReplenishmentItem    AiReplenishmentItem?        @relation("ai_replenishment_variant_id")
 
   supplierProducts SupplierProduct[] @relation("supplier_products_variant_id")
 
@@ -414,11 +438,12 @@ model Supplier {
   debtAmount    Decimal?  @default(0) @map("debt_amount") @db.Decimal(12, 2)
   createdAt     DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business         Business          @relation("suppliers_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  purchaseOrders   PurchaseOrder[]   @relation("purchase_orders_supplier_id")
-  purchaseReceipts PurchaseReceipt[] @relation("purchase_receipts_supplier_id")
-  vendorReturns    VendorReturn[]    @relation("vendor_returns_supplier_id")
-  supplierProducts SupplierProduct[] @relation("supplier_products_supplier_id")
+  business             Business              @relation("suppliers_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  purchaseOrders       PurchaseOrder[]       @relation("purchase_orders_supplier_id")
+  purchaseReceipts     PurchaseReceipt[]     @relation("purchase_receipts_supplier_id")
+  vendorReturns        VendorReturn[]        @relation("vendor_returns_supplier_id")
+  supplierProducts     SupplierProduct[]     @relation("supplier_products_supplier_id")
+  aiReplenishmentItems AiReplenishmentItem[] @relation("ai_replenishment_supplier_id")
 
   @@unique([businessId, id], map: "uq_supplier_tenant_id")
   @@unique([businessId, supplierCode], map: "uq_supplier_tenant_code")
@@ -517,6 +542,7 @@ model ProductLotItem {
   customerReturnItems  CustomerReturnItem[]  @relation("customer_return_items_lot_item_id")
   stockAuditItems      StockAuditItem[]      @relation("stock_audit_items_lot_item_id")
   scrapOrders          ScrapOrder[]          @relation("scrap_orders_lot_item_id")
+  aiInsights           AiInsight[]           @relation("ai_insights_lot_item_id")
 
   @@unique([businessId, lotId, variantId], map: "uq_product_lot_item")
   @@index([businessId, status], map: "idx_product_lot_items_business_status")
@@ -623,11 +649,12 @@ model PurchaseOrder {
   createdBy            String    @map("created_by") @db.Uuid
   createdAt            DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  business           Business            @relation("purchase_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  supplier           Supplier            @relation("purchase_orders_supplier_id", fields: [supplierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser      User                @relation("purchase_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  purchaseOrderItems PurchaseOrderItem[] @relation("purchase_order_items_po_id")
-  purchaseReceipts   PurchaseReceipt[]   @relation("purchase_receipts_po_id")
+  business             Business              @relation("purchase_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  supplier             Supplier              @relation("purchase_orders_supplier_id", fields: [supplierId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  createdByUser        User                  @relation("purchase_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  purchaseOrderItems   PurchaseOrderItem[]   @relation("purchase_order_items_po_id")
+  purchaseReceipts     PurchaseReceipt[]     @relation("purchase_receipts_po_id")
+  aiReplenishmentItems AiReplenishmentItem[] @relation("ai_replenishment_po_id")
 
   @@unique([businessId, poCode], map: "uq_po_tenant_code")
   @@map("purchase_orders")
@@ -1223,14 +1250,14 @@ model ScrapOrder {
   cancelledAt         DateTime? @map("cancelled_at") @db.Timestamptz(6)
   cancelledNote       String?   @map("cancelled_note") @db.VarChar(500)
 
-  business       Business          @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant        ProductVariant    @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  lotItem        ProductLotItem?   @relation("scrap_orders_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  createdByUser  User              @relation("scrap_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  approvedByUser User?             @relation("scrap_orders_approved_by", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  rejectedByUser User?             @relation("scrap_orders_rejected_by", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  cancelledByUser User?            @relation("scrap_orders_cancelled_by", fields: [cancelledBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  images         ScrapOrderImage[] @relation("scrap_order_images_scrap_order_id")
+  business        Business          @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant         ProductVariant    @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  lotItem         ProductLotItem?   @relation("scrap_orders_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  createdByUser   User              @relation("scrap_orders_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  approvedByUser  User?             @relation("scrap_orders_approved_by", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  rejectedByUser  User?             @relation("scrap_orders_rejected_by", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  cancelledByUser User?             @relation("scrap_orders_cancelled_by", fields: [cancelledBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  images          ScrapOrderImage[] @relation("scrap_order_images_scrap_order_id")
 
   @@unique([businessId, scrapCode], map: "uq_scrap_tenant_code")
   @@map("scrap_orders")
@@ -1347,22 +1374,153 @@ model PromotionRedemption {
   @@map("promotion_redemptions")
 }
 
-model DailyProductMetric {
-  businessId   String   @map("business_id") @db.Uuid
-  variantId    String   @map("variant_id") @db.Uuid
-  metricDate   DateTime @map("metric_date") @db.Date
-  /// SQL CHECK (units_sold >= 0); can ap dung bang SQL rieng.
-  unitsSold    Int      @default(0) @map("units_sold")
-  netRevenue   Decimal  @default(0) @map("net_revenue") @db.Decimal(12, 2)
-  netCogs      Decimal  @default(0) @map("net_cogs") @db.Decimal(12, 2)
-  closingStock Int      @map("closing_stock")
-  isStockout   Boolean  @default(false) @map("is_stockout")
+/// Per-business overrides of the inventory insight thresholds; missing keys fall back to code defaults.
+model AiInsightSettings {
+  businessId String   @id @map("business_id") @db.Uuid
+  settings   Json     @db.JsonB
+  updatedBy  String?  @map("updated_by") @db.Uuid
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  business Business       @relation("daily_product_metrics_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  variant  ProductVariant @relation("daily_product_metrics_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  business Business @relation("ai_insight_settings_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
-  @@id([businessId, variantId, metricDate])
-  @@map("daily_product_metrics")
+  @@map("ai_insight_settings")
+}
+
+model AiInsightRun {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId  String    @map("business_id") @db.Uuid
+  /// MANUAL | SCHEDULED
+  triggerType String    @map("trigger_type") @db.VarChar(20)
+  /// RUNNING | SUCCEEDED | FAILED
+  status      String    @db.VarChar(20)
+  /// Last complete sales day included in the analysis (Asia/Ho_Chi_Minh).
+  dataAsOf    DateTime  @map("data_as_of") @db.Date
+  triggeredBy String?   @map("triggered_by") @db.Uuid
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt  DateTime? @map("finished_at") @db.Timestamptz(6)
+  summary     Json?     @db.JsonB
+  warnings    Json?     @db.JsonB
+  error       String?   @db.Text
+
+  business Business    @relation("ai_insight_runs_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  insights AiInsight[] @relation("ai_insights_run_id")
+
+  @@index([businessId, startedAt(sort: Desc)], map: "idx_ai_insight_runs_business_started")
+  @@map("ai_insight_runs")
+}
+
+model AiInsight {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId      String    @map("business_id") @db.Uuid
+  /// Last run that detected this insight.
+  runId           String    @map("run_id") @db.Uuid
+  /// LOW_STOCK | SLOW_MOVING | DECLINING_SALES | OVERSTOCK | EXPIRATION_RISK
+  type            String    @db.VarChar(30)
+  /// type:variantId:lotItemId - one live insight per fingerprint.
+  fingerprint     String    @db.VarChar(160)
+  variantId       String    @map("variant_id") @db.Uuid
+  lotItemId       String?   @map("lot_item_id") @db.Uuid
+  /// CRITICAL | HIGH | MEDIUM | LOW
+  severity        String    @db.VarChar(10)
+  reasonCode      String    @map("reason_code") @db.VarChar(60)
+  suggestedAction String    @map("suggested_action") @db.VarChar(40)
+  /// Inputs used by the rule, so every insight can be explained and audited.
+  metrics         Json      @db.JsonB
+  valueAtRisk     Decimal?  @map("value_at_risk") @db.Decimal(14, 2)
+  priorityScore   Int       @map("priority_score")
+  /// OPEN | ACKNOWLEDGED | DISMISSED | RESOLVED
+  status          String    @default("OPEN") @db.VarChar(20)
+  snoozeUntil     DateTime? @map("snooze_until") @db.Date
+  handledBy       String?   @map("handled_by") @db.Uuid
+  handledAt       DateTime? @map("handled_at") @db.Timestamptz(6)
+  firstDetectedAt DateTime  @default(now()) @map("first_detected_at") @db.Timestamptz(6)
+  lastDetectedAt  DateTime  @default(now()) @map("last_detected_at") @db.Timestamptz(6)
+  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
+
+  business Business        @relation("ai_insights_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  run      AiInsightRun    @relation("ai_insights_run_id", fields: [runId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  variant  ProductVariant  @relation("ai_insights_variant_id", fields: [businessId, variantId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
+  lotItem  ProductLotItem? @relation("ai_insights_lot_item_id", fields: [lotItemId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([businessId, fingerprint], map: "uq_ai_insights_fingerprint")
+  @@index([businessId, status, severity], map: "idx_ai_insights_business_status")
+  @@index([businessId, type, status], map: "idx_ai_insights_business_type")
+  @@map("ai_insights")
+}
+
+model AiForecast {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId String   @map("business_id") @db.Uuid
+  variantId  String   @map("variant_id") @db.Uuid
+  runId      String?  @map("run_id") @db.Uuid
+  asOf       DateTime @map("as_of") @db.Date
+  /// OK | INSUFFICIENT_DATA
+  status     String   @db.VarChar(20)
+  model      String?  @db.VarChar(20)
+  /// HIGH | MEDIUM | LOW
+  confidence String?  @db.VarChar(10)
+  dailyRate  Decimal  @default(0) @map("daily_rate") @db.Decimal(12, 4)
+  /// Full ForecastResult: totals, interval, backtest error.
+  result     Json     @db.JsonB
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  business Business       @relation("ai_forecasts_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant  ProductVariant @relation("ai_forecasts_variant_id", fields: [businessId, variantId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([businessId, variantId], map: "uq_ai_forecasts_variant")
+  @@map("ai_forecasts")
+}
+
+model AiForecastHistory {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId String   @map("business_id") @db.Uuid
+  variantId  String   @map("variant_id") @db.Uuid
+  runId      String   @map("run_id") @db.Uuid
+  asOf       DateTime @map("as_of") @db.Date
+  issuedAt   DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
+  result     Json     @db.JsonB
+
+  business Business       @relation("ai_forecast_history_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant  ProductVariant @relation("ai_forecast_history_variant_id", fields: [businessId, variantId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([businessId, variantId, runId], map: "uq_ai_forecast_history_run")
+  @@index([businessId, variantId, issuedAt(sort: Desc)], map: "idx_ai_forecast_history_variant")
+  @@map("ai_forecast_history")
+}
+
+model AiReplenishmentItem {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId   String    @map("business_id") @db.Uuid
+  variantId    String    @map("variant_id") @db.Uuid
+  runId        String?   @map("run_id") @db.Uuid
+  supplierId   String?   @map("supplier_id") @db.Uuid
+  /// PENDING | ORDERED | DISMISSED | RESOLVED
+  status       String    @default("PENDING") @db.VarChar(20)
+  /// CRITICAL | HIGH | MEDIUM | LOW
+  urgency      String    @db.VarChar(10)
+  confidence   String?   @db.VarChar(10)
+  suggestedQty Int       @map("suggested_qty")
+  unitCost     Decimal   @map("unit_cost") @db.Decimal(12, 2)
+  amount       Decimal   @db.Decimal(14, 2)
+  orderByDate  DateTime? @map("order_by_date") @db.Date
+  stockoutDate DateTime? @map("stockout_date") @db.Date
+  /// Inputs and formula so the suggestion can be explained.
+  details      Json      @db.JsonB
+  snoozeUntil  DateTime? @map("snooze_until") @db.Date
+  poId         String?   @map("po_id") @db.Uuid
+  handledBy    String?   @map("handled_by") @db.Uuid
+  handledAt    DateTime? @map("handled_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  business Business       @relation("ai_replenishment_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant  ProductVariant @relation("ai_replenishment_variant_id", fields: [businessId, variantId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
+  supplier Supplier?      @relation("ai_replenishment_supplier_id", fields: [supplierId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  po       PurchaseOrder? @relation("ai_replenishment_po_id", fields: [poId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([businessId, variantId], map: "uq_ai_replenishment_variant")
+  @@index([businessId, status, urgency], map: "idx_ai_replenishment_status")
+  @@map("ai_replenishment_items")
 }
 
 model OnlineReportImportBatch {
@@ -1389,22 +1547,22 @@ model OnlineReportImportBatch {
 }
 
 model OnlineReportRecord {
-  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId        String    @map("business_id") @db.Uuid
-  batchId           String    @map("batch_id") @db.Uuid
-  platform          String    @db.VarChar(20)
-  recordType        String    @map("record_type") @db.VarChar(32)
-  sourceKey         String    @map("source_key") @db.Char(64)
-  sourceSheet       String    @map("source_sheet") @db.VarChar(80)
-  sourceRow         Int       @map("source_row")
-  externalOrderId   String?   @map("external_order_id") @db.VarChar(100)
-  externalProductId String?   @map("external_product_id") @db.VarChar(100)
-  productName       String?   @map("product_name") @db.Text
-  transactionDate   DateTime? @map("transaction_date") @db.Date
-  settlementDate    DateTime? @map("settlement_date") @db.Date
-  financialData     Json?     @map("financial_data") @db.JsonB
-  unmappedFinancialData Json? @map("unmapped_financial_data") @db.JsonB
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId            String    @map("business_id") @db.Uuid
+  batchId               String    @map("batch_id") @db.Uuid
+  platform              String    @db.VarChar(20)
+  recordType            String    @map("record_type") @db.VarChar(32)
+  sourceKey             String    @map("source_key") @db.Char(64)
+  sourceSheet           String    @map("source_sheet") @db.VarChar(80)
+  sourceRow             Int       @map("source_row")
+  externalOrderId       String?   @map("external_order_id") @db.VarChar(100)
+  externalProductId     String?   @map("external_product_id") @db.VarChar(100)
+  productName           String?   @map("product_name") @db.Text
+  transactionDate       DateTime? @map("transaction_date") @db.Date
+  settlementDate        DateTime? @map("settlement_date") @db.Date
+  financialData         Json?     @map("financial_data") @db.JsonB
+  unmappedFinancialData Json?     @map("unmapped_financial_data") @db.JsonB
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
   batch OnlineReportImportBatch @relation("online_report_records_batch_id", fields: [businessId, batchId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -1438,56 +1596,6 @@ model ChannelDailyProductMetric {
   @@map("channel_daily_product_metrics")
 }
 
-model ForecastRun {
-  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId        String    @map("business_id") @db.Uuid
-  /// SQL CHECK (problem_type IN ('REORDER_7D_14D', 'SLOW_MOVING_EXCESS')); can ap dung bang SQL rieng.
-  problemType       String    @map("problem_type") @db.VarChar(50)
-  /// SQL CHECK (horizon_days IN (7, 14)); can ap dung bang SQL rieng.
-  horizonDays       Int       @map("horizon_days")
-  algorithmName     String    @map("algorithm_name") @db.VarChar(100)
-  modelVersion      String    @map("model_version") @db.VarChar(50)
-  trainingStartDate DateTime  @map("training_start_date") @db.Date
-  trainingEndDate   DateTime  @map("training_end_date") @db.Date
-  dataCutoffDate    DateTime  @map("data_cutoff_date") @db.Date
-  forecastStartDate DateTime  @map("forecast_start_date") @db.Date
-  forecastEndDate   DateTime  @map("forecast_end_date") @db.Date
-  hyperparameters   Json?     @db.JsonB
-  executedAt        DateTime? @default(now()) @map("executed_at") @db.Timestamptz(6)
-  executedBy        String?   @map("executed_by") @db.Uuid
-
-  business        Business         @relation("forecast_runs_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  executedByUser  User?            @relation("forecast_runs_executed_by", fields: [executedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  forecastResults ForecastResult[] @relation("forecast_results_run_id")
-
-  @@map("forecast_runs")
-}
-
-model ForecastResult {
-  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  runId                 String    @map("run_id") @db.Uuid
-  variantId             String    @map("variant_id") @db.Uuid
-  currentStock          Int       @map("current_stock")
-  /// SQL CHECK (predicted_demand_qty >= 0); can ap dung bang SQL rieng.
-  predictedDemandQty    Int       @map("predicted_demand_qty")
-  /// SQL CHECK (recommended_order_qty >= 0); can ap dung bang SQL rieng.
-  recommendedOrderQty   Int       @default(0) @map("recommended_order_qty")
-  /// SQL CHECK (risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')); can ap dung bang SQL rieng.
-  riskLevel             String    @map("risk_level") @db.VarChar(20)
-  /// SQL CHECK (owner_decision IN ('ACCEPTED', 'MODIFIED', 'IGNORED')); can ap dung bang SQL rieng.
-  ownerDecision         String?   @map("owner_decision") @db.VarChar(30)
-  /// SQL CHECK (owner_modified_order_qty >= 0); can ap dung bang SQL rieng.
-  ownerModifiedOrderQty Int?      @map("owner_modified_order_qty")
-  decisionNotes         String?   @map("decision_notes") @db.Text
-  actualRealizedSales   Int?      @map("actual_realized_sales")
-  errorAbsoluteQty      Int?      @map("error_absolute_qty")
-  evaluatedAt           DateTime? @map("evaluated_at") @db.Timestamptz(6)
-
-  run     ForecastRun    @relation("forecast_results_run_id", fields: [runId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  variant ProductVariant @relation("forecast_results_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-
-  @@map("forecast_results")
-}
 
 enum StockTransactionType {
   OPENING_STOCK
