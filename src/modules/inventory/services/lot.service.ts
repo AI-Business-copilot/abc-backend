@@ -50,10 +50,15 @@ export interface LotItemWithStatus {
   onHand: number;
   damaged: number;
   /**
-   * The scrap order already raised for this lot item, in any status. A lot can only have one
-   * scrap order, so the Owner and the staff both need to see which order is already there.
+   * The scrap order already raised for this lot item, in any status. It is the audit trail and
+   * the link the staff need, so it always points at the newest order.
    */
   scrapOrder: { id: string; scrapCode: string; status: string } | null;
+  /**
+   * True when the newest scrap order still blocks a new one. Only a PENDING order does: a
+   * rejected or cancelled order is settled, so any staff member can file a fresh order.
+   */
+  scrapOrderBlocksNew: boolean;
 }
 
 /** A batch header together with every variant it contains. */
@@ -92,6 +97,7 @@ export class LotService {
 
   /** Turn a lot item row into the API shape, adding the status calculated for today. */
   private toItemView(item: LotItemRow): LotItemWithStatus {
+    const scrapOrder = item.scrapOrders[0] ?? null;
     return {
       id: item.id,
       lotId: item.lot.id,
@@ -108,7 +114,10 @@ export class LotService {
       variant: item.variant,
       onHand: item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
       damaged: item.inventoryBalances.reduce((sum, balance) => sum + balance.damagedQuantity, 0),
-      scrapOrder: item.scrapOrders[0] ?? null,
+      scrapOrder,
+      // Only a PENDING order blocks a new one. A rejected or cancelled order is settled, so
+      // the lot stays quarantined and any staff member can file a fresh order.
+      scrapOrderBlocksNew: scrapOrder?.status === "PENDING",
     };
   }
 
@@ -124,7 +133,8 @@ export class LotService {
       lot: { select: { id: true, lotNumber: true } },
       variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
       inventoryBalances: { select: { quantityOnHand: true, damagedQuantity: true } },
-      // The newest scrap order of the lot, in any status: a lot can only have one.
+      // The newest scrap order of the lot, in any status: it is the audit trail, and only a
+      // PENDING one blocks a new order.
       scrapOrders: {
         select: { id: true, scrapCode: true, status: true },
         orderBy: { createdAt: "desc" },
@@ -438,6 +448,104 @@ export class LotService {
         },
       });
     });
+  }
+
+  /**
+   * Staff pull a quantity of one product off the shelf, for a product that has no lot item.
+   * The quarantined quantity is recorded on the variant, the same way the lot flow records it on
+   * the lot item, so the goods can then be scrapped.
+   */
+  async quarantineVariant(
+    businessId: string,
+    variantId: string,
+    userId: string,
+    body: { quantity?: unknown; note?: unknown },
+  ): Promise<any> {
+    const quantity = Number(body.quantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new HttpError(400, 'quantity must be a whole number greater than 0.');
+    }
+
+    const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : null;
+    if (note && note.length > 500) {
+      throw new HttpError(400, 'note must be 500 characters or fewer.');
+    }
+
+    return prisma.$transaction(async (tx) => {
+      const variant = await tx.productVariant.findUnique({ where: { id: variantId } });
+      if (!variant || variant.businessId !== businessId) {
+        throw new HttpError(404, 'Variant not found');
+      }
+
+      await assertVariantNotLockedForAudit(tx, businessId, variantId);
+
+      const pending = await tx.scrapOrder.count({
+        where: { businessId, variantId, lotItemId: null, status: 'PENDING' },
+      });
+      if (pending > 0) {
+        throw new HttpError(
+          409,
+          'This SKU has a scrap order waiting for review. Resolve it before changing the quarantine.',
+        );
+      }
+
+      const balances = await tx.inventoryBalance.aggregate({
+        where: { businessId, variantId, lotItemId: null },
+        _sum: { quantityOnHand: true, damagedQuantity: true },
+      });
+      const available = (balances._sum.quantityOnHand ?? 0) + (balances._sum.damagedQuantity ?? 0);
+
+      if (quantity > available) {
+        throw new HttpError(
+          409,
+          `Quarantine quantity ${quantity} is more than the ${available} unit(s) of this SKU.`,
+        );
+      }
+
+      // One quarantine row per variant: a second quarantine replaces the first.
+      return tx.variantQuarantine.upsert({
+        where: { businessId_variantId: { businessId, variantId } },
+        create: {
+          businessId,
+          variantId,
+          quarantineQty: quantity,
+          quarantinedAt: new Date(),
+          quarantinedBy: userId,
+          quarantineNote: note,
+        },
+        update: {
+          quarantineQty: quantity,
+          quarantinedAt: new Date(),
+          quarantinedBy: userId,
+          quarantineNote: note,
+          updatedAt: new Date(),
+        },
+        include: {
+          variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
+        },
+      });
+    });
+  }
+
+  /** The variant-level quarantine of a SKU, or null when it is not quarantined. */
+  async getVariantQuarantine(businessId: string, variantId: string) {
+    const quarantine = await prisma.variantQuarantine.findFirst({
+      where: { businessId, variantId },
+      include: {
+        variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
+      },
+    });
+    if (!quarantine) return null;
+    return {
+      id: quarantine.id,
+      variantId: quarantine.variantId,
+      sku: quarantine.variant.sku,
+      productName: quarantine.variant.template.name,
+      quarantineQty: quarantine.quarantineQty,
+      quarantinedAt: quarantine.quarantinedAt,
+      quarantinedBy: quarantine.quarantinedBy,
+      quarantineNote: quarantine.quarantineNote,
+    };
   }
 
   /**

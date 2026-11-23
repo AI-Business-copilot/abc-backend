@@ -52,6 +52,11 @@ model Business {
   stockAudits             StockAudit[]                @relation("stock_audits_business_id")
   scrapOrders             ScrapOrder[]                @relation("scrap_orders_business_id")
   scrapOrderImages        ScrapOrderImage[]           @relation("scrap_order_images_business_id")
+  auditCountImages        StockAuditItemCountImage[]  @relation("stock_audit_item_count_images_business_id")
+  auditItemHistories      StockAuditItemHistory[]     @relation("stock_audit_item_histories_business_id")
+  variantQuarantines      VariantQuarantine[]         @relation("variant_quarantines_business_id")
+  dailyProductMetrics     DailyProductMetric[]        @relation("daily_product_metrics_business_id")
+  forecastRuns            ForecastRun[]               @relation("forecast_runs_business_id")
   aiInsightSettings       AiInsightSettings?          @relation("ai_insight_settings_business_id")
   aiInsightRuns           AiInsightRun[]              @relation("ai_insight_runs_business_id")
   aiInsights              AiInsight[]                 @relation("ai_insights_business_id")
@@ -100,6 +105,8 @@ model User {
   stockAuditsCreated               StockAudit[]              @relation("stock_audits_created_by")
   stockAuditItemsCreatedBy         StockAuditItem[]          @relation("stock_audit_items_created_by_user_id")
   stockAuditItemsAssignedTo        StockAuditItem[]          @relation("stock_audit_items_assigned_to_user_id")
+  stockAuditItemsSecondCounter     StockAuditItem[]          @relation("stock_audit_items_second_counter_user_id")
+  stockAuditItemCounts             StockAuditItemCount[]     @relation("stock_audit_item_counts_counter_user_id")
   stockAuditItemsSubmittedBy       StockAuditItem[]          @relation("stock_audit_items_submitted_by_user_id")
   stockAuditItemsApprovedBy        StockAuditItem[]          @relation("stock_audit_items_approved_by_user_id")
   stockAuditItemsRejectedBy        StockAuditItem[]          @relation("stock_audit_items_rejected_by_user_id")
@@ -109,7 +116,13 @@ model User {
   scrapOrdersCancelled             ScrapOrder[]              @relation("scrap_orders_cancelled_by")
   scrapImagesUploaded              ScrapOrderImage[]         @relation("scrap_order_images_uploaded_by")
   scrapImagesDeleted               ScrapOrderImage[]         @relation("scrap_order_images_deleted_by")
+  auditCountImagesUploaded         StockAuditItemCountImage[] @relation("stock_audit_item_count_images_uploaded_by")
+  auditCountImagesDeleted          StockAuditItemCountImage[] @relation("stock_audit_item_count_images_deleted_by")
+  auditItemHistoriesRecorded       StockAuditItemHistory[]    @relation("stock_audit_item_histories_actor_id")
+  auditItemHistoryCounts           StockAuditItemHistoryCount[] @relation("stock_audit_item_history_counts_counter_user_id")
   lotItemsQuarantined              ProductLotItem[]          @relation("product_lot_items_quarantined_by")
+  variantQuarantinesCreated        VariantQuarantine[]       @relation("variant_quarantines_quarantined_by")
+  forecastRuns                     ForecastRun[]             @relation("forecast_runs_executed_by")
   promotionsCreated                Promotion[]               @relation("promotions_created_by")
   onlineReportImports              OnlineReportImportBatch[] @relation("online_report_batches_imported_by")
 
@@ -379,6 +392,8 @@ model ProductVariant {
   customerReturnItems    CustomerReturnItem[]        @relation("customer_return_items_variant_id")
   stockAuditItems        StockAuditItem[]            @relation("stock_audit_items_variant_id")
   scrapOrders            ScrapOrder[]                @relation("scrap_orders_variant_id")
+  variantQuarantines     VariantQuarantine[]         @relation("variant_quarantines_variant_id")
+  dailyProductMetrics    DailyProductMetric[]        @relation("daily_product_metrics_variant_id")
   channelDailyMetrics    ChannelDailyProductMetric[] @relation("channel_daily_metrics_variant_id")
   aiInsights             AiInsight[]                 @relation("ai_insights_variant_id")
   aiForecast             AiForecast?                 @relation("ai_forecasts_variant_id")
@@ -1022,15 +1037,17 @@ model StockAudit {
   id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   businessId       String    @map("business_id") @db.Uuid
   auditCode        String    @map("audit_code") @db.VarChar(50)
-  countStartAt     DateTime  @default(now()) @map("count_start_at") @db.Timestamptz(6)
+  /// Set when the counting starts, not when the draft is created.
+  countStartAt     DateTime? @map("count_start_at") @db.Timestamptz(6)
   completedAt      DateTime? @map("completed_at") @db.Timestamptz(6)
   /// SQL CHECK (scope_type IN ('FULL_STORE', 'CATEGORY', 'SHELF')); can ap dung bang SQL rieng.
   scopeType        String    @default("FULL_STORE") @map("scope_type") @db.VarChar(30)
-  /// SQL CHECK (audit_type IN ('NEW_LOTS', 'RE_AUDIT')); can ap dung bang SQL rieng.
-  auditType        String    @default("NEW_LOTS") @map("audit_type") @db.VarChar(30)
-  isLockedForAudit Boolean   @default(true) @map("is_locked_for_audit")
-  /// SQL CHECK (status IN ('DONE', 'IN_PROGRESS', 'PENDING_APPROVAL', 'APPLIED', 'CANCELLED')); DONE is the terminal status written on apply.
-  status           String    @default("IN_PROGRESS") @db.VarChar(30)
+  /// Every row counts a lot that is already in the system, so there is only one audit type.
+  auditType        String    @default("RE_AUDIT") @map("audit_type") @db.VarChar(30)
+  /// A draft locks nothing; the SKUs are locked when the counting starts.
+  isLockedForAudit Boolean   @default(false) @map("is_locked_for_audit")
+  /// SQL CHECK (status IN ('DRAFT', 'DONE', 'IN_PROGRESS', 'PENDING_APPROVAL', 'APPLIED', 'CANCELLED')); DONE is the terminal status written on apply.
+  status           String    @default("DRAFT") @db.VarChar(30)
   approvedBy       String?   @map("approved_by") @db.Uuid
   createdBy        String?   @map("created_by") @db.Uuid
 
@@ -1051,12 +1068,16 @@ model StockAuditItem {
   snapshotQty             Int       @map("snapshot_qty")
   /// SQL CHECK (counted_qty >= 0); can ap dung bang SQL rieng.
   countedQty              Int       @map("counted_qty")
+  /// Broken goods found during the count. Added to the balance's damaged_quantity when the audit is applied.
+  countedDamagedQty       Int       @default(0) @map("counted_damaged_qty")
   /// SQL GENERATED ALWAYS AS (counted_qty - snapshot_qty) STORED; dbgenerated() chi danh dau gia tri do DB sinh.
   diffQty                 Int?      @default(dbgenerated()) @map("diff_qty")
   discrepancyReason       String?   @map("discrepancy_reason") @db.Text
   /// SQL CHECK (item_status IN ('IN_PROGRESS', 'PENDING_APPROVAL', 'APPROVED')); can ap dung bang SQL rieng.
   itemStatus              String    @default("IN_PROGRESS") @map("item_status") @db.VarChar(30)
   assignedToUserId        String?   @map("assigned_to_user_id") @db.Uuid
+  /// The second employee assigned to the same row. When set, the row needs two independent counts.
+  secondCounterUserId     String?   @map("second_counter_user_id") @db.Uuid
   submittedAt             DateTime? @map("submitted_at") @db.Timestamptz(6)
   submittedBy             String?   @map("submitted_by") @db.Uuid
   approvedAt              DateTime? @map("approved_at") @db.Timestamptz(6)
@@ -1066,11 +1087,9 @@ model StockAuditItem {
   rejectedAt              DateTime? @map("rejected_at") @db.Timestamptz(6)
   rejectedBy              String?   @map("rejected_by") @db.Uuid
   createdBy               String?   @map("created_by") @db.Uuid
-  /// Lot number: autofilled from product_lot_items when lot_item_id is set; typed by the employee for a new lot.
+  /// Lot number: autofilled from product_lot_items when lot_item_id is set.
   lotNumber               String?   @map("lot_number") @db.VarChar(100)
-  /// Task type set by the owner: EXISTING (employee counts a lot already in the system) or NEW (employee types a new lot).
-  /// The employee cannot switch between the two.
-  lotMode                 String    @default("EXISTING") @map("lot_mode") @db.VarChar(20)
+  /// Correction of the lot's expiry / manufacturing date, written to the lot item when the audit is applied.
   newLotExpirationDate    DateTime? @map("new_lot_expiration_date") @db.Date
   newLotManufacturingDate DateTime? @map("new_lot_manufacturing_date") @db.Date
 
@@ -1078,12 +1097,126 @@ model StockAuditItem {
   variant         ProductVariant  @relation("stock_audit_items_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   lotItem         ProductLotItem? @relation("stock_audit_items_lot_item_id", fields: [lotItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   assignedToUser  User?           @relation("stock_audit_items_assigned_to_user_id", fields: [assignedToUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  secondCounterUser User?         @relation("stock_audit_items_second_counter_user_id", fields: [secondCounterUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   submittedByUser User?           @relation("stock_audit_items_submitted_by_user_id", fields: [submittedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   approvedByUser  User?           @relation("stock_audit_items_approved_by_user_id", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   rejectedByUser  User?           @relation("stock_audit_items_rejected_by_user_id", fields: [rejectedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   createdByUser   User?           @relation("stock_audit_items_created_by_user_id", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  counts          StockAuditItemCount[] @relation("stock_audit_item_counts_item_id")
+  histories       StockAuditItemHistory[] @relation("stock_audit_item_histories_item_id")
 
   @@map("stock_audit_items")
+}
+
+/// A record of one audit row at one point in time: written when the owner approves, rejects or
+/// asks for another count. The row is a copy of the numbers as they were then, not a link to the
+/// live row, so the history does not change when the live row does.
+model StockAuditItemHistory {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId        String   @map("business_id") @db.Uuid
+  itemId            String   @map("item_id") @db.Uuid
+  auditId           String   @map("audit_id") @db.Uuid
+  /// The nth time this row was recorded. The pair (item, revision) is unique.
+  revision          Int
+  /// APPROVED | REJECTED | RECOUNT
+  action            String   @db.VarChar(30)
+  /// Why the owner sent the row back, when they did.
+  reason            String?  @db.Text
+  /// The owner who made the decision.
+  actorId           String   @map("actor_id") @db.Uuid
+  /// The row's numbers at the moment of the record.
+  snapshotQty       Int      @map("snapshot_qty")
+  countedQty        Int      @map("counted_qty")
+  countedDamagedQty Int      @map("counted_damaged_qty")
+  discrepancyReason String?  @map("discrepancy_reason") @db.Text
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  business Business              @relation("stock_audit_item_histories_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  item     StockAuditItem        @relation("stock_audit_item_histories_item_id", fields: [itemId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  actor    User                  @relation("stock_audit_item_histories_actor_id", fields: [actorId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  counts   StockAuditItemHistoryCount[] @relation("stock_audit_item_history_counts_history_id")
+  images   StockAuditItemCountImage[] @relation("stock_audit_item_count_images_history_id")
+
+  @@unique([itemId, revision], map: "uq_stock_audit_item_histories_item_revision")
+  @@index([businessId, itemId], map: "idx_stock_audit_item_histories_business_item")
+  @@map("stock_audit_item_histories")
+}
+
+/// What each counter had counted at the moment of the record. Without this the history would only
+/// say that the row was sent back, not what the two people had found.
+model StockAuditItemHistoryCount {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  historyId         String   @map("history_id") @db.Uuid
+  counterUserId     String   @map("counter_user_id") @db.Uuid
+  countedQty        Int      @map("counted_qty")
+  countedDamagedQty Int      @map("counted_damaged_qty")
+  discrepancyReason String?  @map("discrepancy_reason") @db.Text
+  submittedAt       DateTime? @map("submitted_at") @db.Timestamptz(6)
+
+  history    StockAuditItemHistory @relation("stock_audit_item_history_counts_history_id", fields: [historyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  counterUser User                 @relation("stock_audit_item_history_counts_counter_user_id", fields: [counterUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([historyId], map: "idx_stock_audit_item_history_counts_history")
+  @@map("stock_audit_item_history_counts")
+}
+
+/// One employee's own count of a row. Kept apart from the item so the two counters never see
+/// each other's number: a row is only comparable once both employees have submitted.
+model StockAuditItemCount {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  itemId         String   @map("item_id") @db.Uuid
+  counterUserId  String   @map("counter_user_id") @db.Uuid
+  countedQty     Int      @default(0) @map("counted_qty")
+  countedDamagedQty Int    @default(0) @map("counted_damaged_qty")
+  discrepancyReason String? @map("discrepancy_reason") @db.Text
+  /// Correction of the lot's expiry / manufacturing date, written to the lot item when the audit is applied.
+  newLotExpirationDate    DateTime? @map("new_lot_expiration_date") @db.Date
+  newLotManufacturingDate DateTime? @map("new_lot_manufacturing_date") @db.Date
+  submittedAt    DateTime? @map("submitted_at") @db.Timestamptz(6)
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  item        StockAuditItem @relation("stock_audit_item_counts_item_id", fields: [itemId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  counterUser User           @relation("stock_audit_item_counts_counter_user_id", fields: [counterUserId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  images      StockAuditItemCountImage[] @relation("stock_audit_item_count_images_count_id")
+
+  @@unique([itemId, counterUserId], map: "uq_stock_audit_item_counts_item_counter")
+  @@index([itemId], map: "idx_stock_audit_item_counts_item")
+  @@map("stock_audit_item_counts")
+}
+
+/// Evidence photos of one counter's count. They hang off the count row, not the item, because
+/// each of the two counters documents their own numbers and must not see the other's photos.
+/// Rows are soft-deleted (deleted_at) so removals stay auditable.
+model StockAuditItemCountImage {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId   String    @map("business_id") @db.Uuid
+  countId      String    @map("count_id") @db.Uuid
+  /// The history entry this photo was filed under. Set when the row is approved, rejected or sent
+  /// back for another count; the photo then belongs to that moment instead of the live row.
+  historyId    String?   @map("history_id") @db.Uuid
+  storagePath  String    @map("storage_path") @db.VarChar(500)
+  mimeType     String    @map("mime_type") @db.VarChar(50)
+  sizeBytes    Int       @map("size_bytes")
+  note         String?   @db.VarChar(500)
+  uploadedBy   String    @map("uploaded_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy    String?   @map("deleted_by") @db.Uuid
+  /// Set when the photo was filed under a history entry. A filed photo is no longer shown in the
+  /// live gallery, so old evidence never sits next to fresh numbers.
+  archivedAt   DateTime? @map("archived_at") @db.Timestamptz(6)
+
+  business       Business             @relation("stock_audit_item_count_images_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  count          StockAuditItemCount  @relation("stock_audit_item_count_images_count_id", fields: [countId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  history        StockAuditItemHistory? @relation("stock_audit_item_count_images_history_id", fields: [historyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  uploadedByUser User                 @relation("stock_audit_item_count_images_uploaded_by", fields: [uploadedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  deletedByUser  User?                @relation("stock_audit_item_count_images_deleted_by", fields: [deletedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([businessId, countId], map: "idx_stock_audit_item_count_images_count")
+  @@index([historyId], map: "idx_stock_audit_item_count_images_history")
+  @@map("stock_audit_item_count_images")
 }
 
 model ScrapOrder {
@@ -1128,6 +1261,29 @@ model ScrapOrder {
 
   @@unique([businessId, scrapCode], map: "uq_scrap_tenant_code")
   @@map("scrap_orders")
+}
+
+/// Quarantine state for a product that has no lot item. The quantity pulled off the shelf is
+/// recorded here instead, so broken goods can be quarantined and scrapped.
+model VariantQuarantine {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId     String    @map("business_id") @db.Uuid
+  variantId      String    @map("variant_id") @db.Uuid
+  /// SQL CHECK (quarantine_qty > 0).
+  quarantineQty  Int       @map("quarantine_qty")
+  quarantinedAt  DateTime  @default(now()) @map("quarantined_at") @db.Timestamptz(6)
+  quarantinedBy  String    @map("quarantined_by") @db.Uuid
+  quarantineNote String?   @map("quarantine_note") @db.VarChar(500)
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  business          Business       @relation("variant_quarantines_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  variant           ProductVariant @relation("variant_quarantines_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  quarantinedByUser User           @relation("variant_quarantines_quarantined_by", fields: [quarantinedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([businessId, variantId], map: "uq_variant_quarantine_tenant_variant")
+  @@index([businessId], map: "idx_variant_quarantines_business")
+  @@map("variant_quarantines")
 }
 
 /// Evidence photos for a scrap order. Rows are soft-deleted (deleted_at) so removals stay auditable.

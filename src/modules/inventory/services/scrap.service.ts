@@ -96,7 +96,7 @@ export class ScrapService {
     db: Prisma.TransactionClient | typeof prisma,
     businessId: string,
     variantId: string,
-    lotItemId: string,
+    lotItemId: string | null,
     source: ScrapSource,
   ) {
     const balance = await db.inventoryBalance.findFirst({ where: { businessId, variantId, lotItemId } });
@@ -108,7 +108,10 @@ export class ScrapService {
   }
 
   /**
-   * STAFF only. The lot item must be QUARANTINED and have no other PENDING scrap order.
+   * STAFF only. The target is either a lot item or, for a product with no lot, a variant.
+   * A lot item must be QUARANTINED; a variant must have a variant quarantine. Either way there
+   * must be no other PENDING scrap order for that target. A rejected or cancelled order does not
+   * block a new one: the stock stays quarantined and any staff member can file a fresh order.
    * Needs 1 to 10 evidence photos, which are saved with the order and cannot be changed afterward.
    */
   async createScrapOrder(
@@ -124,42 +127,79 @@ export class ScrapService {
     files: { buffer: Buffer }[] | undefined,
   ) {
     assertStaff(actor);
-    const lotItemId = assertUuid(data.lotItemId, "Lot item");
     const scrapReason = parseReason(data.scrapReason);
     const images = imageService.prepareImages(files);
 
-    const lotItem = await prisma.productLotItem.findFirst({
-      where: { id: lotItemId, businessId },
-      include: { variant: { select: { costPrice: true, isLockedForAudit: true } } },
-    });
-    if (!lotItem) {
-      throw new HttpError(404, "Lot item not found");
-    }
-    if (lotItem.variant.isLockedForAudit) {
-      throw new HttpError(409, "This SKU is locked for a stock audit. Finish the count before scrapping its stock.");
-    }
-    if (data.variantId !== undefined && data.variantId !== lotItem.variantId) {
-      throw new HttpError(400, "variantId does not match this lot item.");
-    }
-    if (lotItem.status !== "QUARANTINED") {
-      throw new HttpError(409, "Only a quarantined lot item can be scrapped. Quarantine it first.");
+    // The target is a lot item when one is given, otherwise the variant itself.
+    const rawLotItemId = typeof data.lotItemId === "string" ? data.lotItemId.trim() : "";
+    const lotItemId = rawLotItemId ? assertUuid(data.lotItemId, "Lot item") : null;
+
+    let variantId: string;
+    let unitCost: Prisma.Decimal;
+    let quarantineQty: number | null;
+    let lotStatus: string | null = null;
+
+    if (lotItemId) {
+      const lotItem = await prisma.productLotItem.findFirst({
+        where: { id: lotItemId, businessId },
+        include: { variant: { select: { costPrice: true, isLockedForAudit: true } } },
+      });
+      if (!lotItem) {
+        throw new HttpError(404, "Lot item not found");
+      }
+      if (lotItem.variant.isLockedForAudit) {
+        throw new HttpError(409, "This SKU is locked for a stock audit. Finish the count before scrapping its stock.");
+      }
+      if (data.variantId !== undefined && data.variantId !== lotItem.variantId) {
+        throw new HttpError(400, "variantId does not match this lot item.");
+      }
+      if (lotItem.status !== "QUARANTINED") {
+        throw new HttpError(409, "Only a quarantined lot item can be scrapped. Quarantine it first.");
+      }
+      variantId = lotItem.variantId;
+      unitCost = lotItem.variant.costPrice;
+      quarantineQty = lotItem.quarantineQty;
+      lotStatus = lotItem.status;
+    } else {
+      // No lot item: the order targets the variant. The variant must be quarantined first,
+      // exactly as a lot item must be QUARANTINED.
+      variantId = assertUuid(data.variantId, "Variant");
+      const variant = await prisma.productVariant.findFirst({
+        where: { id: variantId, businessId },
+        select: { costPrice: true, isLockedForAudit: true },
+      });
+      if (!variant) {
+        throw new HttpError(404, "Variant not found");
+      }
+      if (variant.isLockedForAudit) {
+        throw new HttpError(409, "This SKU is locked for a stock audit. Finish the count before scrapping its stock.");
+      }
+      const quarantine = await prisma.variantQuarantine.findFirst({
+        where: { businessId, variantId },
+        select: { quarantineQty: true },
+      });
+      if (!quarantine) {
+        throw new HttpError(409, "Only a quarantined SKU can be scrapped. Quarantine it first.");
+      }
+      unitCost = variant.costPrice;
+      quarantineQty = quarantine.quarantineQty;
     }
 
     const scrapQty =
       data.scrapQty === undefined || data.scrapQty === null
-        ? lotItem.quarantineQty
+        ? quarantineQty
         : parseQuantity(data.scrapQty, "scrapQty");
     if (!scrapQty || scrapQty <= 0) {
-      throw new HttpError(400, "scrapQty is required because this lot item has no recorded quarantine quantity.");
+      throw new HttpError(400, "scrapQty is required because this target has no recorded quarantine quantity.");
     }
-    if (lotItem.quarantineQty && scrapQty > lotItem.quarantineQty) {
-      throw new HttpError(409, `scrapQty ${scrapQty} is more than the ${lotItem.quarantineQty} unit(s) quarantined.`);
+    if (quarantineQty && scrapQty > quarantineQty) {
+      throw new HttpError(409, `scrapQty ${scrapQty} is more than the ${quarantineQty} unit(s) quarantined.`);
     }
 
     let scrapSource: ScrapSource;
     if (data.scrapSource === undefined || data.scrapSource === null) {
       const balance = await prisma.inventoryBalance.findFirst({
-        where: { businessId, variantId: lotItem.variantId, lotItemId },
+        where: { businessId, variantId, lotItemId },
       });
       scrapSource = balance && balance.quantityOnHand >= scrapQty ? "SELLABLE_STOCK" : "DAMAGED_STOCK";
     } else if (data.scrapSource === "DAMAGED_STOCK" || data.scrapSource === "SELLABLE_STOCK") {
@@ -168,7 +208,7 @@ export class ScrapService {
       throw new HttpError(400, "scrapSource must be DAMAGED_STOCK or SELLABLE_STOCK.");
     }
 
-    const { available } = await this.availableFor(prisma, businessId, lotItem.variantId, lotItemId, scrapSource);
+    const { available } = await this.availableFor(prisma, businessId, variantId, lotItemId, scrapSource);
     if (available < scrapQty) {
       throw new HttpError(
         409,
@@ -177,16 +217,18 @@ export class ScrapService {
     }
 
     // Cheap check before touching Storage. The loop below checks again in case of a race.
+    // Only a PENDING order blocks: a rejected or cancelled order is settled, so the stock stays
+    // quarantined and any staff member can file a fresh order.
     const existingOrder = await prisma.scrapOrder.findFirst({
-      where: { businessId, lotItemId },
+      where: { businessId, ...(lotItemId ? { lotItemId } : { variantId, lotItemId: null }), status: "PENDING" },
       orderBy: { createdAt: "desc" },
       select: { scrapCode: true, status: true },
     });
     if (existingOrder) {
       throw new HttpError(
         409,
-        `This lot item already has a scrap order (${existingOrder.scrapCode}, ${scrapStatusLabel(existingOrder.status)}). ` +
-          `A lot can only have one scrap order; settle the existing order before creating another.`,
+        `${lotItemId ? "This lot item" : "This SKU"} already has a scrap order waiting for review (${existingOrder.scrapCode}). ` +
+          `Wait for the Owner to settle it before creating another.`,
       );
     }
 
@@ -206,15 +248,15 @@ export class ScrapService {
 
       for (let attempt = 0; attempt < 3; attempt++) {
         const existing = await prisma.scrapOrder.findFirst({
-          where: { businessId, lotItemId },
+          where: { businessId, ...(lotItemId ? { lotItemId } : { variantId, lotItemId: null }), status: "PENDING" },
           orderBy: { createdAt: "desc" },
           select: { scrapCode: true, status: true },
         });
         if (existing) {
           throw new HttpError(
             409,
-            `This lot item already has a scrap order (${existing.scrapCode}, ${scrapStatusLabel(existing.status)}). ` +
-              `A lot can only have one scrap order; settle the existing order before creating another.`,
+            `${lotItemId ? "This lot item" : "This SKU"} already has a scrap order waiting for review (${existing.scrapCode}). ` +
+              `Wait for the Owner to settle it before creating another.`,
           );
         }
 
@@ -225,10 +267,10 @@ export class ScrapService {
               id: orderId,
               businessId,
               scrapCode: await this.generateScrapCode(businessId),
-              variantId: lotItem.variantId,
+              variantId,
               lotItemId,
               scrapQty,
-              unitCost: lotItem.variant.costPrice,
+              unitCost,
               scrapSource,
               scrapReason,
               status: "PENDING",
@@ -247,7 +289,7 @@ export class ScrapService {
           });
           return formatScrapOrder(created);
         } catch (error) {
-          // P2002 is either a duplicate scrap code (retry with a fresh one) or the one-PENDING-per-lot-item index.
+          // P2002 is either a duplicate scrap code (retry with a fresh one) or the one-PENDING-per-target index.
           if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
             throw error;
           }
@@ -348,11 +390,23 @@ export class ScrapService {
           where: { id: scrapOrderId, businessId },
           include: { lotItem: { select: { quarantineQty: true } } },
         });
-        if (order.lotItem?.quarantineQty && newQty > order.lotItem.quarantineQty) {
-          throw new HttpError(409, `scrapQty ${newQty} is more than the ${order.lotItem.quarantineQty} unit(s) quarantined.`);
-        }
-        if (!order.lotItemId) {
-          throw new HttpError(409, "This scrap order has no lot item.");
+        // The cap is the quarantined quantity: the lot item's for a lot order, the variant's for a
+        // product that has no lot.
+        if (order.lotItemId) {
+          if (order.lotItem?.quarantineQty && newQty > order.lotItem.quarantineQty) {
+            throw new HttpError(409, `scrapQty ${newQty} is more than the ${order.lotItem.quarantineQty} unit(s) quarantined.`);
+          }
+        } else {
+          const quarantine = await tx.variantQuarantine.findFirst({
+            where: { businessId, variantId: order.variantId },
+            select: { quarantineQty: true },
+          });
+          if (!quarantine) {
+            throw new HttpError(409, "This scrap order has no lot item and its SKU is not quarantined.");
+          }
+          if (newQty > quarantine.quarantineQty) {
+            throw new HttpError(409, `scrapQty ${newQty} is more than the ${quarantine.quarantineQty} unit(s) quarantined.`);
+          }
         }
         const { available } = await this.availableFor(
           tx,
@@ -436,17 +490,29 @@ export class ScrapService {
       }
 
       const order = await tx.scrapOrder.findFirstOrThrow({ where: { id: scrapOrderId, businessId } });
-      if (!order.lotItemId) {
-        throw new HttpError(409, "This scrap order has no lot item.");
-      }
-      const lotItem = await tx.productLotItem.findFirstOrThrow({ where: { id: order.lotItemId, businessId } });
-      if (lotItem.status !== "QUARANTINED") {
-        throw new HttpError(
-          409,
-          `Lô hàng đang ${lotStatusLabel(lotItem.status)}, không phải đang cách ly, nên không thể hủy hàng.`,
-        );
-      }
       await assertVariantNotLockedForAudit(tx, businessId, order.variantId);
+
+      // The target is either a lot item or, for a product with no lot, the variant itself.
+      let lotItem: { id: string; status: string; expirationDate: Date; quarantineQty: number | null } | null = null;
+      let variantQuarantine: { id: string; quarantineQty: number } | null = null;
+
+      if (order.lotItemId) {
+        lotItem = await tx.productLotItem.findFirstOrThrow({ where: { id: order.lotItemId, businessId } });
+        if (lotItem.status !== "QUARANTINED") {
+          throw new HttpError(
+            409,
+            `Lô hàng đang ${lotStatusLabel(lotItem.status)}, không phải đang cách ly, nên không thể hủy hàng.`,
+          );
+        }
+      } else {
+        variantQuarantine = await tx.variantQuarantine.findFirst({
+          where: { businessId, variantId: order.variantId },
+          select: { id: true, quarantineQty: true },
+        });
+        if (!variantQuarantine) {
+          throw new HttpError(409, "This scrap order has no lot item and its SKU is not quarantined.");
+        }
+      }
 
       const source = order.scrapSource as ScrapSource;
       const { balance } = await this.availableFor(tx, businessId, order.variantId, order.lotItemId, source);
@@ -489,28 +555,45 @@ export class ScrapService {
       });
 
       // The lot item is SCRAPPED only when nothing is left on it; otherwise it keeps what is still quarantined.
-      const lotStock = await tx.inventoryBalance.aggregate({
-        where: { businessId, lotItemId: order.lotItemId },
-        _sum: { quantityOnHand: true, damagedQuantity: true },
-      });
-      const lotRemaining = (lotStock._sum.quantityOnHand ?? 0) + (lotStock._sum.damagedQuantity ?? 0);
-      const quarantineLeft = (lotItem.quarantineQty ?? order.scrapQty) - order.scrapQty;
+      // A variant-level order consumes its quarantine instead: the quantity drops, and the record goes
+      // away when nothing is left to quarantine.
+      let lotScrapped = false;
 
-      if (lotRemaining === 0) {
-        await tx.productLotItem.update({ where: { id: lotItem.id }, data: { status: "SCRAPPED" } });
-      } else if (quarantineLeft > 0) {
-        await tx.productLotItem.update({ where: { id: lotItem.id }, data: { quarantineQty: quarantineLeft } });
-      } else {
-        await tx.productLotItem.update({
-          where: { id: lotItem.id },
-          data: {
-            status: lotStatusService.calculateStatus(lotItem.expirationDate),
-            quarantineQty: null,
-            quarantinedAt: null,
-            quarantinedBy: null,
-            quarantineNote: null,
-          },
+      if (lotItem) {
+        const lotStock = await tx.inventoryBalance.aggregate({
+          where: { businessId, lotItemId: order.lotItemId },
+          _sum: { quantityOnHand: true, damagedQuantity: true },
         });
+        const lotRemaining = (lotStock._sum.quantityOnHand ?? 0) + (lotStock._sum.damagedQuantity ?? 0);
+        const quarantineLeft = (lotItem.quarantineQty ?? order.scrapQty) - order.scrapQty;
+
+        if (lotRemaining === 0) {
+          await tx.productLotItem.update({ where: { id: lotItem.id }, data: { status: "SCRAPPED" } });
+          lotScrapped = true;
+        } else if (quarantineLeft > 0) {
+          await tx.productLotItem.update({ where: { id: lotItem.id }, data: { quarantineQty: quarantineLeft } });
+        } else {
+          await tx.productLotItem.update({
+            where: { id: lotItem.id },
+            data: {
+              status: lotStatusService.calculateStatus(lotItem.expirationDate),
+              quarantineQty: null,
+              quarantinedAt: null,
+              quarantinedBy: null,
+              quarantineNote: null,
+            },
+          });
+        }
+      } else if (variantQuarantine) {
+        const quarantineLeft = variantQuarantine.quarantineQty - order.scrapQty;
+        if (quarantineLeft > 0) {
+          await tx.variantQuarantine.update({
+            where: { id: variantQuarantine.id },
+            data: { quarantineQty: quarantineLeft, updatedAt: new Date() },
+          });
+        } else {
+          await tx.variantQuarantine.delete({ where: { id: variantQuarantine.id } });
+        }
       }
 
       const completed = await tx.scrapOrder.update({
@@ -529,7 +612,7 @@ export class ScrapService {
         scrapOrder: formatScrapOrder(completed),
         inventoryReduced: order.scrapQty,
         lossAmount: Number(totalCost),
-        lotScrapped: lotRemaining === 0,
+        lotScrapped,
         ledgerCreated: true,
       };
     });

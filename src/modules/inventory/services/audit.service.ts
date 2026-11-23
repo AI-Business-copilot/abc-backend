@@ -1,27 +1,42 @@
 import { Prisma, StockTransactionType } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { HttpError } from "../../../shared/http/http-error";
+import { deleteObjects, uploadObject } from "../../../shared/infrastructure/storage/supabase-storage";
+import { AuditImageService, type PreparedAuditImage } from "./audit-image.service";
 import { LotStatusService } from "./lot-status.service";
 import { scrapStatusLabel } from "./scrap-access";
 
 const num = (value: unknown) => Number(value ?? 0);
 
-/** What the employee counts: a lot already in the system, or a lot that does not exist yet. */
-type LotMode = "EXISTING" | "NEW";
+const imageService = new AuditImageService();
+
+/**
+ * How the two counters of a row compare:
+ *   SINGLE      - only one employee is assigned, so there is nothing to compare
+ *   NOT_STARTED - two employees are assigned but nobody has sent a count yet
+ *   PENDING     - two employees are assigned but at least one has not submitted yet
+ *   AGREED      - both submitted and their numbers match
+ *   CONFLICT    - both submitted and their numbers differ; the owner decides
+ */
+type CountAgreement = "SINGLE" | "NOT_STARTED" | "PENDING" | "AGREED" | "CONFLICT";
+
+/** Statuses a counter row can be in before the owner resolves a conflict. */
+type CountStatus = "PENDING" | "SUBMITTED";
 
 type AuditItemInput = {
   assignedToUserId?: unknown;
+  /** The second employee assigned to the same row. Both count it independently. */
+  secondCounterUserId?: unknown;
   variantId?: unknown;
   lotItemId?: unknown;
-  lotMode?: unknown;
 };
 
 type CreateAuditBody = {
   auditCode?: unknown;
-  auditType?: unknown;
   note?: unknown;
-  /** Rows created by the owner: employee + variant + optional lot. */
+  /** Rows created by the owner: employee + variant + lot. */
   items?: unknown;
 };
 
@@ -31,6 +46,8 @@ type AssignItemsBody = {
 
 type ReassignItemBody = {
   assignedToUserId?: unknown;
+  /** The second employee, when the owner asks for a second count on the row. */
+  secondCounterUserId?: unknown;
 };
 
 type RecordCountBody = {
@@ -41,11 +58,12 @@ type RecordCountBody = {
 
 type UpdateCountBody = {
   countedQty?: unknown;
+  /** Broken goods found during the count. The total (usable + broken) is derived, never sent. */
+  countedDamagedQty?: unknown;
   discrepancyReason?: unknown;
   /** Existing lot item: lot number and expiry are autofilled from product_lot_items. */
   lotItemId?: unknown;
-  /** Lot that does not exist yet: typed by the employee. */
-  newLotNumber?: unknown;
+  /** Correction of the lot's expiry / manufacturing date. */
   newLotExpirationDate?: unknown;
   newLotManufacturingDate?: unknown;
 };
@@ -62,6 +80,8 @@ type AuditListQuery = {
   status?: string;
   page?: number;
   pageSize?: number;
+  /** The caller. A draft is only visible to the owner, so the viewer decides what is listed. */
+  authUserId: string;
 };
 
 type AuditItemsQuery = {
@@ -105,16 +125,17 @@ const AUDIT_ITEM_SELECT = {
   variantId: true,
   lotItemId: true,
   lotNumber: true,
-  lotMode: true,
   newLotExpirationDate: true,
   newLotManufacturingDate: true,
   auditId: true,
   snapshotQty: true,
   countedQty: true,
+  countedDamagedQty: true,
   diffQty: true,
   discrepancyReason: true,
   itemStatus: true,
   assignedToUserId: true,
+  secondCounterUserId: true,
   submittedAt: true,
   submittedBy: true,
   approvedAt: true,
@@ -145,10 +166,41 @@ const AUDIT_ITEM_SELECT = {
     },
   },
   assignedToUser: { select: { id: true, fullName: true, email: true } },
+  secondCounterUser: { select: { id: true, fullName: true, email: true } },
   createdByUser: { select: { id: true, fullName: true, email: true } },
   submittedByUser: { select: { id: true, fullName: true, email: true } },
   approvedByUser: { select: { id: true, fullName: true, email: true } },
   rejectedByUser: { select: { id: true, fullName: true, email: true } },
+  counts: {
+    select: {
+      id: true,
+      counterUserId: true,
+      countedQty: true,
+      countedDamagedQty: true,
+      discrepancyReason: true,
+      newLotExpirationDate: true,
+      newLotManufacturingDate: true,
+      submittedAt: true,
+      counterUser: { select: { id: true, fullName: true, email: true } },
+      images: {
+        // Only the photos still part of the live gallery. A filed photo belongs to a history
+        // entry, so it is no longer the row's evidence: keeping it here would make the client
+        // render a placeholder for every photo of an already-decided round.
+        where: { deletedAt: null, archivedAt: null, historyId: null },
+        select: {
+          id: true,
+          storagePath: true,
+          mimeType: true,
+          sizeBytes: true,
+          uploadedBy: true,
+          createdAt: true,
+          updatedAt: true,
+          uploadedByUser: { select: { id: true, fullName: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: "asc" as const },
+  },
 } satisfies Prisma.StockAuditItemSelect;
 
 type AuditItemRow = Prisma.StockAuditItemGetPayload<{ select: typeof AUDIT_ITEM_SELECT }>;
@@ -156,7 +208,72 @@ type AuditItemRow = Prisma.StockAuditItemGetPayload<{ select: typeof AUDIT_ITEM_
 const person = (user: { id: string; fullName: string } | null | undefined) =>
   user ? { id: user.id, name: user.fullName } : null;
 
-function formatAuditItem(item: AuditItemRow) {
+/**
+ * Compare the counters of a row.
+ *
+ * A row has one counter when the owner assigned a single employee, and two when the owner also
+ * assigned a second one. Two counters only agree once both have sent their count, so a half-filled
+ * row is PENDING rather than AGREED. A row nobody has finished yet is NOT_STARTED: it is not
+ * waiting for anyone in particular, so it must not be shown as waiting for the other counter.
+ */
+function resolveCountAgreement(
+  item: {
+    secondCounterUserId: string | null;
+    counts: { countedQty: number; countedDamagedQty: number; submittedAt: Date | null }[];
+  },
+): CountAgreement {
+  if (!item.secondCounterUserId) return "SINGLE";
+  // Only a count that was sent for approval is finished. A saved but unsent number is still work
+  // in progress, so the row is not waiting for anyone yet.
+  const sent = item.counts.filter((c) => c.submittedAt);
+  // Nobody has sent a count yet: the row is not waiting for anyone in particular.
+  if (sent.length === 0) return "NOT_STARTED";
+  // One counter sent their number: the row now waits for the other one.
+  if (sent.length < 2) return "PENDING";
+  const [first, second] = sent;
+  // Both the usable quantity and the broken goods must match: two counters who found a
+  // different amount of broken goods have not settled the row.
+  const sameUsable = first.countedQty === second.countedQty;
+  const sameBroken = first.countedDamagedQty === second.countedDamagedQty;
+  return sameUsable && sameBroken ? "AGREED" : "CONFLICT";
+}
+
+/**
+ * Shape an item for one viewer.
+ *
+ * The owner sees every counter's number so they can compare them. A staff member sees only their
+ * own count and never the other counter's, which is what makes the second count blind.
+ */
+function formatAuditItem(item: AuditItemRow, viewerId?: string | null, viewerIsOwner = false) {
+  const counts = item.counts.map((count) => ({
+    id: count.id,
+    counterUserId: count.counterUserId,
+    counter: person(count.counterUser),
+    countedQty: count.countedQty,
+    countedDamagedQty: count.countedDamagedQty,
+    discrepancyReason: count.discrepancyReason,
+    newLotExpirationDate: count.newLotExpirationDate,
+    newLotManufacturingDate: count.newLotManufacturingDate,
+    submittedAt: count.submittedAt,
+    /**
+     * The photos this counter took of the broken goods. They belong to the count, so the other
+     * counter never sees them. The signed links are short-lived; the client refreshes them
+     * through GET /audits/:id/items/:itemId/counts/:countId/images when they expire.
+     */
+    images: (count.images ?? []).map((image) => ({
+      id: image.id,
+      mimeType: image.mimeType,
+      sizeBytes: image.sizeBytes,
+      uploadedBy: image.uploadedBy,
+      uploadedByName: image.uploadedByUser.fullName,
+      createdAt: image.createdAt,
+    })),
+  }));
+
+  const visibleCounts = viewerIsOwner
+    ? counts
+    : counts.filter((count) => count.counterUserId === viewerId);
+
   return {
     id: item.id,
     variantId: item.variantId,
@@ -168,10 +285,10 @@ function formatAuditItem(item: AuditItemRow) {
       .join(" · "),
     lotId: item.lotItem?.lot.id ?? null,
     lotItemId: item.lotItem?.id ?? item.lotItemId ?? null,
-    // Existing lot item: the number comes from the batch. New lot: number typed by the employee.
+    // The number comes from the batch the row points at.
     lotNumber: item.lotItem?.lot.lotNumber ?? item.lotNumber ?? null,
-    // Dates typed by the employee win: for a new lot they are the lot item's dates, for an existing lot
-    // they are a correction that is written to the lot item when the audit is applied.
+    // Dates typed by the employee win: they are a correction that is written to the lot item
+    // when the audit is applied.
     expirationDate: item.newLotExpirationDate ?? item.lotItem?.expirationDate ?? null,
     manufacturingDate: item.newLotManufacturingDate ?? item.lotItem?.manufacturingDate ?? null,
     newLotManufacturingDate: item.newLotManufacturingDate ?? null,
@@ -180,15 +297,33 @@ function formatAuditItem(item: AuditItemRow) {
     lotManufacturingDate: item.lotItem?.manufacturingDate ?? null,
     /** True when the employee changed an existing lot item's dates. */
     datesCorrected: Boolean(item.lotItemId && (item.newLotExpirationDate || item.newLotManufacturingDate)),
-    /** Task type set by the owner. The employee cannot switch it. */
-    lotMode: item.lotMode as LotMode,
-    isNewLot: item.lotMode === "NEW",
     snapshotQty: item.snapshotQty,
     countedQty: item.countedQty,
+    /** Broken goods found during the count. The total (usable + broken) is derived on the client. */
+    countedDamagedQty: item.countedDamagedQty,
     diffQty: item.diffQty,
     discrepancyReason: item.discrepancyReason,
     itemStatus: item.itemStatus,
     assignedTo: person(item.assignedToUser),
+    /** The second employee assigned to the row, when the owner asked for a second count. */
+    secondCounter: person(item.secondCounterUser),
+    secondCounterUserId: item.secondCounterUserId,
+    /** SINGLE / NOT_STARTED / PENDING / AGREED / CONFLICT. */
+    countAgreement: resolveCountAgreement(item),
+    /** Every counter of the row. Only the owner receives the full list. */
+    counts: visibleCounts,
+    /**
+     * The row keeps one reason and one broken figure, but two counters each have their own. The
+     * owner therefore gets both here: the row's own fields belong to the employee the row was
+     * assigned to, and this list carries every counter's reason and broken quantity. A staff
+     * member only ever sees their own entry, so the other counter's reason stays hidden.
+     */
+    counterDetails: visibleCounts.map((count) => ({
+      counterUserId: count.counterUserId,
+      counter: count.counter,
+      discrepancyReason: count.discrepancyReason,
+      countedDamagedQty: count.countedDamagedQty,
+    })),
     createdBy: person(item.createdByUser),
     submittedBy: person(item.submittedByUser),
     submittedAt: item.submittedAt,
@@ -200,7 +335,12 @@ function formatAuditItem(item: AuditItemRow) {
   };
 }
 
-async function getFormattedItem(db: DbClient, itemId: string) {
+async function getFormattedItem(
+  db: DbClient,
+  itemId: string,
+  viewerId?: string | null,
+  viewerIsOwner = false,
+) {
   const item = await db.stockAuditItem.findUnique({
     where: { id: itemId },
     select: AUDIT_ITEM_SELECT,
@@ -208,13 +348,10 @@ async function getFormattedItem(db: DbClient, itemId: string) {
   if (!item) {
     throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
   }
-  return formatAuditItem(item);
+  return formatAuditItem(item, viewerId, viewerIsOwner);
 }
 
 const toDay = (date: Date | null | undefined) => (date ? date.toISOString().slice(0, 10) : null);
-
-const hasLotDateFields = (body: UpdateCountBody) =>
-  body.newLotExpirationDate !== undefined || body.newLotManufacturingDate !== undefined;
 
 /** A non-empty date string that cannot be parsed is an error; an empty value means "no change". */
 function parseOptionalDate(value: unknown, label: string): Date | null {
@@ -263,16 +400,32 @@ async function isBusinessOwner(db: DbClient, businessId: string, userId: string)
   return membership?.role.code === "OWNER";
 }
 
-/** Only the assigned employee or the business owner may count or submit an item. */
+/** The owner alone may start, cancel or delete an audit. */
+async function assertBusinessOwner(db: DbClient, businessId: string, userId: string) {
+  if (!(await isBusinessOwner(db, businessId, userId))) {
+    throw new HttpError(403, "Chỉ chủ cửa hàng mới được thao tác đợt kiểm kê này.");
+  }
+}
+
+/**
+ * Only one of the row's two counters may count or submit it.
+ *
+ * The owner never counts: they assign the two counters, compare their numbers and resolve the
+ * rows that disagree. Letting the owner count would add a third number nobody is waiting for.
+ */
 async function assertCanActOnItem(
   db: DbClient,
   businessId: string,
   userId: string,
   assignedToUserId: string | null,
+  secondCounterUserId: string | null = null,
 ) {
   if (assignedToUserId === userId) return;
-  if (await isBusinessOwner(db, businessId, userId)) return;
-  throw new HttpError(403, "Chỉ nhân viên được giao hoặc chủ cửa hàng mới thao tác được dòng kiểm kê này.");
+  if (secondCounterUserId === userId) return;
+  if (await isBusinessOwner(db, businessId, userId)) {
+    throw new HttpError(403, "Chủ cửa hàng không đếm hộ. Hai người kiểm kê phải tự đếm dòng này.");
+  }
+  throw new HttpError(403, "Chỉ nhân viên được giao mới thao tác được dòng kiểm kê này.");
 }
 
 /** Ensure every assignee is an active STAFF member of this business. */
@@ -307,20 +460,11 @@ async function getSnapshotQty(db: DbClient, businessId: string, variantId: strin
 
 type NormalizedRow = {
   assignedToUserId: string;
+  /** The second employee. Every row is counted by two people. */
+  secondCounterUserId: string;
   variantId: string;
-  lotItemId: string | null;
-  lotMode: LotMode;
+  lotItemId: string;
 };
-
-/** The audit type decides which kind of lot an item row may point at. */
-function assertLotMatchesAuditType(auditType: string, lotItemId: string | null, prefix = "") {
-  if (auditType === "NEW_LOTS" && lotItemId) {
-    throw new HttpError(400, `${prefix}Đợt kiểm kê lô mới không được chọn lô có sẵn.`);
-  }
-  if (auditType === "RE_AUDIT" && !lotItemId) {
-    throw new HttpError(400, `${prefix}Đợt kiểm kê lại bắt buộc chọn lô có sẵn.`);
-  }
-}
 
 /**
  * Scrap orders that still keep a lot out of an audit: one waiting for the Owner, and one the
@@ -366,35 +510,49 @@ async function findLotsWithOpenScrapOrder(
 async function normalizeAndValidateRows(
   db: DbClient,
   businessId: string,
-  auditType: string,
   rawItems: unknown,
   existing: Array<{ variantId: string; lotItemId: string | null }> = [],
 ): Promise<NormalizedRow[]> {
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
-    throw new HttpError(400, "Cần ít nhất một dòng kiểm kê (nhân viên + SKU).");
+    throw new HttpError(400, "Cần ít nhất một dòng kiểm kê (nhân viên + SKU + lô).");
   }
 
   const rows: NormalizedRow[] = (rawItems as AuditItemInput[]).map((raw, index) => {
     const assignedToUserId = typeof raw?.assignedToUserId === "string" ? raw.assignedToUserId.trim() : "";
+    const secondCounterUserId =
+      typeof raw?.secondCounterUserId === "string" ? raw.secondCounterUserId.trim() : "";
     const variantId = typeof raw?.variantId === "string" ? raw.variantId.trim() : "";
     const lotItemId =
       typeof raw?.lotItemId === "string" && raw.lotItemId.trim() ? raw.lotItemId.trim() : null;
     if (!assignedToUserId) {
       throw new HttpError(400, `Dòng ${index + 1}: chưa chọn nhân viên.`);
     }
+    // Every row is counted twice: the owner always names a second person.
+    if (!secondCounterUserId) {
+      throw new HttpError(400, `Dòng ${index + 1}: chưa chọn người kiểm kê thứ hai.`);
+    }
+    // The second counter is a different person: two people counting the same row is the point.
+    if (secondCounterUserId === assignedToUserId) {
+      throw new HttpError(
+        400,
+        `Dòng ${index + 1}: người kiểm kê thứ hai phải khác người được giao.`,
+      );
+    }
     if (!variantId) {
       throw new HttpError(400, `Dòng ${index + 1}: chưa chọn SKU.`);
     }
+    // Every row counts a lot that is already in the system.
+    if (!lotItemId) {
+      throw new HttpError(400, `Dòng ${index + 1}: bắt buộc chọn lô có sẵn.`);
+    }
 
-    // The audit type fixes the lot kind of every row: new-lot audits take no existing lot item,
-    // re-audits require one. Neither role can change that while counting.
-    assertLotMatchesAuditType(auditType, lotItemId, `Dòng ${index + 1}: `);
-
-    const lotMode: LotMode = lotItemId ? "EXISTING" : "NEW";
-    return { assignedToUserId, variantId, lotItemId, lotMode };
+    return { assignedToUserId, secondCounterUserId, variantId, lotItemId };
   });
 
-  await assertAssigneesAreStaff(db, businessId, rows.map((r) => r.assignedToUserId));
+  await assertAssigneesAreStaff(db, businessId, [
+    ...rows.map((r) => r.assignedToUserId),
+    ...rows.map((r) => r.secondCounterUserId),
+  ]);
 
   const variantIds = [...new Set(rows.map((r) => r.variantId))];
   const variants = await db.productVariant.findMany({
@@ -405,7 +563,7 @@ async function normalizeAndValidateRows(
     throw new HttpError(404, "Có SKU không tồn tại hoặc không hoạt động.");
   }
 
-  const lotItemIds = [...new Set(rows.map((r) => r.lotItemId).filter((id): id is string => !!id))];
+  const lotItemIds = [...new Set(rows.map((r) => r.lotItemId))];
   if (lotItemIds.length > 0) {
     const lotItems = await db.productLotItem.findMany({
       where: { id: { in: lotItemIds }, businessId },
@@ -414,7 +572,7 @@ async function normalizeAndValidateRows(
     const itemVariant = new Map(lotItems.map((l) => [l.id, l.variantId]));
     const lotNumberById = new Map(lotItems.map((l) => [l.id, l.lot.lotNumber]));
     for (const row of rows) {
-      if (row.lotItemId && itemVariant.get(row.lotItemId) !== row.variantId) {
+      if (itemVariant.get(row.lotItemId) !== row.variantId) {
         throw new HttpError(400, "Lô không tồn tại hoặc không thuộc SKU đã chọn.");
       }
     }
@@ -423,13 +581,12 @@ async function normalizeAndValidateRows(
     const scrapped = rows
       .map((row, index) => ({ row, index }))
       .filter(({ row }) => {
-        if (!row.lotItemId) return false;
         const item = lotItems.find((l) => l.id === row.lotItemId);
         return item?.status === "SCRAPPED";
       })
       .map(
         ({ row, index }) =>
-          `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} đã bị hủy hàng.`,
+          `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId) ?? row.lotItemId} đã bị hủy hàng.`,
       )
       .join(" ");
     if (scrapped) {
@@ -443,10 +600,10 @@ async function normalizeAndValidateRows(
     if (blocked.size > 0) {
       const details = rows
         .map((row, index) => ({ row, index }))
-        .filter(({ row }) => row.lotItemId && blocked.has(row.lotItemId))
+        .filter(({ row }) => blocked.has(row.lotItemId))
         .map(({ row, index }) => {
-          const order = blocked.get(row.lotItemId!)!;
-          return `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId!) ?? row.lotItemId} có phiếu hủy ${order.scrapCode} (${scrapStatusLabel(order.status)}).`;
+          const order = blocked.get(row.lotItemId)!;
+          return `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId) ?? row.lotItemId} có phiếu hủy ${order.scrapCode} (${scrapStatusLabel(order.status)}).`;
         })
         .join(" ");
       throw new HttpError(
@@ -458,7 +615,6 @@ async function normalizeAndValidateRows(
 
   const seen = new Set(existing.filter((e) => e.lotItemId).map((e) => `${e.variantId}:${e.lotItemId}`));
   for (const row of rows) {
-    if (!row.lotItemId) continue;
     const key = `${row.variantId}:${row.lotItemId}`;
     if (seen.has(key)) {
       throw new HttpError(409, "Có dòng kiểm kê trùng SKU và lô.");
@@ -477,7 +633,7 @@ async function buildItemData(
   createdBy: string,
   rows: NormalizedRow[],
 ) {
-  const lotItemIds = [...new Set(rows.map((r) => r.lotItemId).filter((id): id is string => !!id))];
+  const lotItemIds = [...new Set(rows.map((r) => r.lotItemId))];
   const lotItems = lotItemIds.length
     ? await db.productLotItem.findMany({
         where: { id: { in: lotItemIds } },
@@ -492,12 +648,12 @@ async function buildItemData(
       auditId,
       variantId: row.variantId,
       lotItemId: row.lotItemId,
-      lotNumber: row.lotItemId ? (lotNumberById.get(row.lotItemId) ?? null) : null,
-      lotMode: row.lotMode,
-      snapshotQty: row.lotItemId ? await getSnapshotQty(db, businessId, row.variantId, row.lotItemId) : 0,
+      lotNumber: lotNumberById.get(row.lotItemId) ?? null,
+      snapshotQty: await getSnapshotQty(db, businessId, row.variantId, row.lotItemId),
       countedQty: 0,
       itemStatus: "IN_PROGRESS",
       assignedToUserId: row.assignedToUserId,
+      secondCounterUserId: row.secondCounterUserId,
       createdBy,
     });
   }
@@ -510,11 +666,7 @@ class AuditService {
 
     // The code is generated for the caller; an explicitly provided code is still accepted.
     const providedCode = typeof body.auditCode === "string" ? body.auditCode.trim() : "";
-    const auditType = typeof body.auditType === "string" ? body.auditType.toUpperCase() : "NEW_LOTS";
-
-    if (!["NEW_LOTS", "RE_AUDIT"].includes(auditType)) {
-      throw new HttpError(400, "Loại kiểm kê không hợp lệ (NEW_LOTS, RE_AUDIT).");
-    }
+    const auditType = "RE_AUDIT";
 
     const auditCode = providedCode || (await nextAuditCode(businessId));
 
@@ -530,19 +682,23 @@ class AuditService {
     // When rows are provided (employee + variant + optional lot), they are validated and created too.
     const hasRows = Array.isArray(body.items) && body.items.length > 0;
     const rows = hasRows
-      ? await normalizeAndValidateRows(prisma, businessId, auditType, body.items)
+      ? await normalizeAndValidateRows(prisma, businessId, body.items)
       : [];
     const affectedVariantIds = [...new Set(rows.map((r) => r.variantId))];
 
-    // Create audit, lock variants and create the owner-defined items in one transaction
+    // Create the audit and the owner-defined rows in one transaction. A draft locks nothing:
+    // the SKUs are locked when the owner starts the counting, so a misconfigured audit can still
+    // be deleted without freezing the store's stock.
     const audit = await prisma.$transaction(async (tx) => {
       const created = await tx.stockAudit.create({
         data: {
           businessId,
           auditCode,
           auditType,
-          status: "IN_PROGRESS",
-          isLockedForAudit: true,
+          status: "DRAFT",
+          isLockedForAudit: false,
+          // The count has not started: the date is written when the owner starts the audit.
+          countStartAt: null,
           createdBy: user.id,
         },
         select: {
@@ -557,24 +713,10 @@ class AuditService {
       });
 
       if (rows.length > 0) {
-        // Lock all affected variants
-        await tx.productVariant.updateMany({
-          where: { id: { in: affectedVariantIds } },
-          data: { isLockedForAudit: true, updatedAt: new Date() },
-        });
-
+        // The snapshot is read again when the audit starts, because the draft may sit for a while
+        // and the stock it compares against is the stock of that moment. The value written here is
+        // only a placeholder for a draft that is never started.
         const itemData = await buildItemData(tx, businessId, created.id, user.id, rows);
-
-        // For RE_AUDIT type, lock the affected lot items
-        if (auditType === "RE_AUDIT") {
-          const lotItemIds = rows.map((r) => r.lotItemId).filter((id): id is string => !!id);
-          if (lotItemIds.length > 0) {
-            await tx.productLotItem.updateMany({
-              where: { id: { in: lotItemIds } },
-              data: { isLockedForAudit: true },
-            });
-          }
-        }
 
         await tx.stockAuditItem.createMany({ data: itemData });
       }
@@ -595,14 +737,304 @@ class AuditService {
     };
   }
 
+  /**
+   * Owner: start the counting of a draft.
+   *
+   * This is the moment the SKUs are locked and the snapshot is taken, so both happen here and not
+   * when the draft is written: a draft may sit for a while, and the stock it compares against is
+   * the stock of the moment counting starts.
+   */
+  async startAudit(businessId: string, authUserId: string, auditId: string) {
+    const user = await resolveUser(authUserId);
+
+    const audit = await prisma.stockAudit.findFirst({
+      where: { id: auditId, businessId },
+      select: {
+        id: true,
+        status: true,
+        stockAuditItems: {
+          select: {
+            id: true,
+            variantId: true,
+            lotItemId: true,
+            assignedToUserId: true,
+            secondCounterUserId: true,
+          },
+        },
+      },
+    });
+
+    if (!audit) {
+      throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+    }
+
+    if (audit.status !== "DRAFT") {
+      throw new HttpError(409, "Chỉ đợt kiểm kê ở trạng thái Nháp mới bắt đầu kiểm kê được.");
+    }
+
+    if (audit.stockAuditItems.length === 0) {
+      throw new HttpError(400, "Đợt kiểm kê chưa có dòng nào. Hãy thêm dòng rồi bắt đầu.");
+    }
+
+    // The draft may have been sitting for a while: the lot may have been scrapped, or a scrap
+    // order may have been opened on it since the row was written. The same validation the rows
+    // went through when they were added is run again before the counting starts.
+    const rows = await normalizeAndValidateRows(
+      prisma,
+      businessId,
+      audit.stockAuditItems.map((item) => ({
+        assignedToUserId: item.assignedToUserId,
+        secondCounterUserId: item.secondCounterUserId,
+        variantId: item.variantId,
+        lotItemId: item.lotItemId,
+      })),
+      [],
+    );
+
+    const variantIds = [...new Set(rows.map((r) => r.variantId))];
+    const lotItemIds = [...new Set(rows.map((r) => r.lotItemId))];
+
+    const started = await prisma.$transaction(async (tx) => {
+      // The snapshot is read now, so the audit compares against the stock of this moment.
+      for (const item of audit.stockAuditItems) {
+        await tx.stockAuditItem.update({
+          where: { id: item.id },
+          data: {
+            snapshotQty: await getSnapshotQty(tx, businessId, item.variantId, item.lotItemId),
+          },
+        });
+      }
+
+      // From now on the SKUs are frozen: no sale, purchase, scrap or return may move them.
+      await tx.productVariant.updateMany({
+        where: { id: { in: variantIds } },
+        data: { isLockedForAudit: true, updatedAt: new Date() },
+      });
+
+      if (lotItemIds.length > 0) {
+        await tx.productLotItem.updateMany({
+          where: { id: { in: lotItemIds } },
+          data: { isLockedForAudit: true },
+        });
+      }
+
+      return tx.stockAudit.update({
+        where: { id: auditId },
+        data: {
+          status: "IN_PROGRESS",
+          countStartAt: new Date(),
+          isLockedForAudit: true,
+        },
+        select: {
+          id: true,
+          auditCode: true,
+          status: true,
+          isLockedForAudit: true,
+          countStartAt: true,
+        },
+      });
+    }, { timeout: 30000 });
+
+    return {
+      id: started.id,
+      auditCode: started.auditCode,
+      status: started.status,
+      isLockedForAudit: started.isLockedForAudit,
+      countStartAt: started.countStartAt,
+    };
+  }
+
+  /**
+   * Owner: delete a draft.
+   *
+   * Only a draft can be deleted. A running audit has already been counted, so it can only be
+   * cancelled. The rows go with the audit through the cascade; the files in storage are collected
+   * before the delete, because afterwards the rows that hold their paths are gone.
+   */
+  async deleteAudit(businessId: string, authUserId: string, auditId: string) {
+    const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
+
+    const paths = await prisma.$transaction(async (tx) => {
+      const audit = await tx.stockAudit.findFirst({
+        where: { id: auditId, businessId },
+        select: { id: true, status: true },
+      });
+
+      if (!audit) {
+        throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+      }
+
+      if (audit.status !== "DRAFT") {
+        throw new HttpError(409, "Chỉ đợt kiểm kê ở trạng thái Nháp mới xoá được. Đợt đang chạy thì hãy huỷ.");
+      }
+
+      // Includes soft-deleted photos: once the audit is gone nothing refers to their files.
+      const images = await tx.stockAuditItemCountImage.findMany({
+        where: { businessId, count: { item: { auditId } } },
+        select: { storagePath: true },
+      });
+
+      await tx.stockAudit.delete({ where: { id: auditId } });
+      return images.map((image) => image.storagePath);
+    });
+
+    // After commit and best effort: a storage hiccup must not undo the delete.
+    await deleteObjects(paths);
+  }
+
+  /**
+   * Owner: remove one row from a draft.
+   *
+   * The row's counts and their photos go with it through the cascade; the files in storage are
+   * collected before the delete.
+   */
+  async deleteAuditItem(businessId: string, authUserId: string, auditId: string, itemId: string) {
+    const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
+
+    const paths = await prisma.$transaction(async (tx) => {
+      const audit = await tx.stockAudit.findFirst({
+        where: { id: auditId, businessId },
+        select: { id: true, status: true },
+      });
+
+      if (!audit) {
+        throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+      }
+
+      if (audit.status !== "DRAFT") {
+        throw new HttpError(409, "Chỉ sửa được dòng của đợt kiểm kê ở trạng thái Nháp.");
+      }
+
+      const item = await tx.stockAuditItem.findFirst({
+        where: { id: itemId, auditId },
+        select: { id: true },
+      });
+
+      if (!item) {
+        throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
+      }
+
+      const images = await tx.stockAuditItemCountImage.findMany({
+        where: { businessId, count: { itemId } },
+        select: { storagePath: true },
+      });
+
+      await tx.stockAuditItem.delete({ where: { id: itemId } });
+      return images.map((image) => image.storagePath);
+    });
+
+    // After commit and best effort: a storage hiccup must not undo the delete.
+    await deleteObjects(paths);
+  }
+
+  /**
+   * Owner: cancel a running audit.
+   *
+   * A running audit cannot be deleted, only cancelled: its rows and their counts are a record of
+   * what was counted. Cancelling frees the SKUs again, which is why it is done here - a locked
+   * SKU blocks every sale, purchase, scrap and return of that stock.
+   */
+  async cancelAudit(businessId: string, authUserId: string, auditId: string) {
+    const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
+
+    const cancelled = await prisma.$transaction(async (tx) => {
+      const audit = await tx.stockAudit.findFirst({
+        where: { id: auditId, businessId },
+        select: {
+          id: true,
+          status: true,
+          stockAuditItems: { select: { variantId: true, lotItemId: true } },
+        },
+      });
+
+      if (!audit) {
+        throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+      }
+
+      if (audit.status !== "IN_PROGRESS") {
+        throw new HttpError(409, "Chỉ đợt kiểm kê đang chạy mới huỷ được.");
+      }
+
+      const variantIds = [...new Set(audit.stockAuditItems.map((item) => item.variantId))];
+      const lotItemIds = [
+        ...new Set(
+          audit.stockAuditItems
+            .map((item) => item.lotItemId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+
+      // A SKU that another running audit also holds stays locked: that audit still needs it.
+      const heldByAnother = new Set<string>();
+      if (variantIds.length > 0) {
+        const others = await tx.stockAudit.findMany({
+          where: {
+            businessId,
+            id: { not: auditId },
+            isLockedForAudit: true,
+            status: { in: ["IN_PROGRESS", "PENDING_APPROVAL"] },
+            stockAuditItems: { some: { variantId: { in: variantIds } } },
+          },
+          select: { stockAuditItems: { select: { variantId: true } } },
+        });
+        for (const other of others) {
+          for (const item of other.stockAuditItems) {
+            heldByAnother.add(item.variantId);
+          }
+        }
+      }
+
+      const freeVariants = variantIds.filter((variantId) => !heldByAnother.has(variantId));
+      if (freeVariants.length > 0) {
+        await tx.productVariant.updateMany({
+          where: { id: { in: freeVariants } },
+          data: { isLockedForAudit: false, updatedAt: new Date() },
+        });
+      }
+
+      if (lotItemIds.length > 0) {
+        await tx.productLotItem.updateMany({
+          where: { id: { in: lotItemIds } },
+          data: { isLockedForAudit: false },
+        });
+      }
+
+      return tx.stockAudit.update({
+        where: { id: auditId },
+        data: { status: "CANCELLED", isLockedForAudit: false, completedAt: new Date() },
+        select: { id: true, auditCode: true, status: true, completedAt: true },
+      });
+    }, { timeout: 30000 });
+
+    return {
+      id: cancelled.id,
+      auditCode: cancelled.auditCode,
+      status: cancelled.status,
+      completedAt: cancelled.completedAt,
+    };
+  }
+
   async listAudits(businessId: string, params: AuditListQuery) {
     const page = Math.max(1, Number(params.page) || 1);
     const pageSize = Math.min(50, Math.max(1, Number(params.pageSize) || 10));
     const status = String(params.status ?? "").trim().toUpperCase();
 
+    const viewer = await resolveUser(params.authUserId);
+    const viewerIsOwner = await isBusinessOwner(prisma, businessId, viewer.id);
+
     const where: Prisma.StockAuditWhereInput = { businessId };
-    if (["IN_PROGRESS", "DONE", "CANCELLED"].includes(status)) {
-      where.status = status;
+    if (["DRAFT", "IN_PROGRESS", "DONE", "CANCELLED"].includes(status)) {
+      // A draft is a preparation the owner makes before counting starts, so staff never see it.
+      if (status === "DRAFT" && !viewerIsOwner) {
+        where.status = "__no_draft__";
+      } else {
+        where.status = status;
+      }
+    } else if (!viewerIsOwner) {
+      where.status = { not: "DRAFT" };
     }
 
     const [audits, total] = await Promise.all([
@@ -612,7 +1044,8 @@ class AuditService {
           approvedByUser: { select: { fullName: true, email: true } },
           stockAuditItems: { select: { id: true } },
         },
-        orderBy: [{ countStartAt: "desc" }, { auditCode: "desc" }],
+        // A draft has no start date yet, so it sorts by its code instead of by a null date.
+        orderBy: [{ countStartAt: { sort: "desc", nulls: "last" } }, { auditCode: "desc" }],
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
@@ -640,7 +1073,10 @@ class AuditService {
     };
   }
 
-  async getAudit(businessId: string, auditId: string) {
+  async getAudit(businessId: string, authUserId: string, auditId: string) {
+    const viewer = await resolveUser(authUserId);
+    const viewerIsOwner = await isBusinessOwner(prisma, businessId, viewer.id);
+
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
       include: {
@@ -657,6 +1093,11 @@ class AuditService {
       throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
     }
 
+    // A draft is the owner's own preparation, so staff never see it.
+    if (audit.status === "DRAFT" && !viewerIsOwner) {
+      throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+    }
+
     return {
       id: audit.id,
       auditCode: audit.auditCode,
@@ -669,7 +1110,7 @@ class AuditService {
       approvedBy: audit.approvedByUser?.fullName || audit.approvedByUser?.email || null,
       createdBy: person(audit.createdByUser),
       itemCount: audit.stockAuditItems.length,
-      items: audit.stockAuditItems.map(formatAuditItem),
+      items: audit.stockAuditItems.map((item) => formatAuditItem(item, viewer.id, viewerIsOwner)),
     };
   }
 
@@ -705,9 +1146,11 @@ class AuditService {
 
     const candidates = await prisma.stockAuditItem.findMany({
       where: { auditId, variantId, lotItemId },
-      select: { id: true, assignedToUserId: true },
+      select: { id: true, assignedToUserId: true, secondCounterUserId: true },
     });
-    const item = candidates.find((c) => c.assignedToUserId === user.id) ?? candidates[0];
+    const item =
+      candidates.find((c) => c.assignedToUserId === user.id || c.secondCounterUserId === user.id) ??
+      candidates[0];
 
     if (!item) {
       throw new HttpError(
@@ -716,17 +1159,27 @@ class AuditService {
       );
     }
 
-    await assertCanActOnItem(prisma, businessId, user.id, item.assignedToUserId);
+    await assertCanActOnItem(
+      prisma,
+      businessId,
+      user.id,
+      item.assignedToUserId,
+      item.secondCounterUserId,
+    );
 
-    await prisma.stockAuditItem.update({
-      where: { id: item.id },
-      data: { countedQty },
+    // The count goes into the caller's own slot so the other counter never sees it.
+    await prisma.stockAuditItemCount.upsert({
+      where: { itemId_counterUserId: { itemId: item.id, counterUserId: user.id } },
+      create: { itemId: item.id, counterUserId: user.id, countedQty },
+      update: { countedQty, submittedAt: null },
     });
 
-    return getFormattedItem(prisma, item.id);
+    await this.syncAgreedCount(prisma, businessId, item.id, user.id);
+
+    return getFormattedItem(prisma, item.id, user.id, false);
   }
 
-  /** Owner: add more employee + variant + optional lot rows to an in-progress audit. */
+  /** Owner: add more employee + variant + lot rows to a draft or a running audit. */
   async addAuditItems(businessId: string, authUserId: string, auditId: string, body: AssignItemsBody) {
     const user = await resolveUser(authUserId);
 
@@ -739,25 +1192,27 @@ class AuditService {
       throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
     }
 
-    if (audit.status !== "IN_PROGRESS") {
-      throw new HttpError(409, "Chỉ có thể thêm dòng khi đợt kiểm kê đang IN_PROGRESS.");
+    // A draft is where the owner builds the rows, so they can be added then too.
+    if (audit.status !== "DRAFT" && audit.status !== "IN_PROGRESS") {
+      throw new HttpError(409, "Chỉ có thể thêm dòng khi đợt kiểm kê đang Nháp hoặc IN_PROGRESS.");
     }
 
     const existing = await prisma.stockAuditItem.findMany({
       where: { auditId },
       select: { variantId: true, lotItemId: true },
     });
-    const rows = await normalizeAndValidateRows(prisma, businessId, audit.auditType, body.items, existing);
+    const rows = await normalizeAndValidateRows(prisma, businessId, body.items, existing);
     const variantIds = [...new Set(rows.map((r) => r.variantId))];
 
     await prisma.$transaction(async (tx) => {
-      await tx.productVariant.updateMany({
-        where: { id: { in: variantIds } },
-        data: { isLockedForAudit: true, updatedAt: new Date() },
-      });
+      // A draft locks nothing: the SKUs are frozen when the counting starts.
+      if (audit.status === "IN_PROGRESS") {
+        await tx.productVariant.updateMany({
+          where: { id: { in: variantIds } },
+          data: { isLockedForAudit: true, updatedAt: new Date() },
+        });
 
-      if (audit.auditType === "RE_AUDIT") {
-        const lotItemIds = rows.map((r) => r.lotItemId).filter((id): id is string => !!id);
+        const lotItemIds = rows.map((r) => r.lotItemId);
         if (lotItemIds.length > 0) {
           await tx.productLotItem.updateMany({
             where: { id: { in: lotItemIds } },
@@ -773,7 +1228,7 @@ class AuditService {
     return { added: rows.length };
   }
 
-  /** Owner: reassign an item to a different employee. */
+  /** Owner: reassign an item to a different employee, and set the second counter. */
   async reassignAuditItem(
     businessId: string,
     auditId: string,
@@ -786,6 +1241,17 @@ class AuditService {
       throw new HttpError(400, "Chưa chọn nhân viên.");
     }
 
+    // Every row is counted twice, so the owner always names a second person.
+    const secondCounterUserId =
+      typeof body.secondCounterUserId === "string" ? body.secondCounterUserId.trim() : "";
+    if (!secondCounterUserId) {
+      throw new HttpError(400, "Chưa chọn người kiểm kê thứ hai.");
+    }
+
+    if (secondCounterUserId === assignedToUserId) {
+      throw new HttpError(400, "Người kiểm kê thứ hai phải khác người được giao.");
+    }
+
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
       select: { status: true },
@@ -795,8 +1261,9 @@ class AuditService {
       throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
     }
 
-    if (audit.status !== "IN_PROGRESS") {
-      throw new HttpError(409, "Chỉ có thể đổi người được giao khi đợt kiểm kê đang IN_PROGRESS.");
+    // A draft is where the owner builds the rows, so they can be changed then too.
+    if (audit.status !== "DRAFT" && audit.status !== "IN_PROGRESS") {
+      throw new HttpError(409, "Chỉ có thể đổi người được giao khi đợt kiểm kê đang Nháp hoặc IN_PROGRESS.");
     }
 
     const item = await prisma.stockAuditItem.findFirst({
@@ -812,14 +1279,19 @@ class AuditService {
       throw new HttpError(409, "Chỉ có thể đổi người được giao cho dòng đang IN_PROGRESS.");
     }
 
-    await assertAssigneesAreStaff(prisma, businessId, [assignedToUserId]);
+    await assertAssigneesAreStaff(prisma, businessId, [assignedToUserId, secondCounterUserId]);
 
     await prisma.stockAuditItem.update({
       where: { id: itemId },
-      data: { assignedToUserId },
+      data: { assignedToUserId, secondCounterUserId },
     });
 
-    return getFormattedItem(prisma, itemId);
+    // Changing the people means the old counts no longer belong to this row's counters.
+    await prisma.stockAuditItemCount.deleteMany({
+      where: { itemId, counterUserId: { notIn: [assignedToUserId, secondCounterUserId] } },
+    });
+
+    return getFormattedItem(prisma, itemId, null, true);
   }
 
   async updateCount(
@@ -828,14 +1300,23 @@ class AuditService {
     auditId: string,
     itemId: string,
     body: UpdateCountBody,
+    files?: { buffer: Buffer }[],
   ) {
     const user = await resolveUser(authUserId);
     const countedQty = Math.trunc(Number(body.countedQty));
+    // Broken goods are counted separately from the usable quantity; the total is derived.
+    const countedDamagedQty =
+      body.countedDamagedQty === undefined || body.countedDamagedQty === null
+        ? 0
+        : Math.trunc(Number(body.countedDamagedQty));
     const discrepancyReason =
       typeof body.discrepancyReason === "string" ? body.discrepancyReason.trim().slice(0, 1000) : null;
 
     if (!Number.isFinite(countedQty) || countedQty < 0) {
       throw new HttpError(400, "Số lượng đếm phải lớn hơn hoặc bằng 0.");
+    }
+    if (!Number.isFinite(countedDamagedQty) || countedDamagedQty < 0) {
+      throw new HttpError(400, "Số lượng hàng hỏng phải lớn hơn hoặc bằng 0.");
     }
 
     const audit = await prisma.stockAudit.findFirst({
@@ -857,12 +1338,12 @@ class AuditService {
         variantId: true,
         lotItemId: true,
         lotNumber: true,
-        lotMode: true,
         newLotExpirationDate: true,
         newLotManufacturingDate: true,
         snapshotQty: true,
         itemStatus: true,
         assignedToUserId: true,
+        secondCounterUserId: true,
       },
     });
 
@@ -870,87 +1351,36 @@ class AuditService {
       throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
     }
 
-    await assertCanActOnItem(prisma, businessId, user.id, item.assignedToUserId);
+    await assertCanActOnItem(
+      prisma,
+      businessId,
+      user.id,
+      item.assignedToUserId,
+      item.secondCounterUserId,
+    );
 
     if (item.itemStatus !== "IN_PROGRESS") {
       throw new HttpError(409, "Chỉ có thể sửa dòng đang IN_PROGRESS.");
     }
 
-    // Resolve the lot for this item. Existing lot item => autofill from product_lot_items.
-    // New lot => number and expiry typed by the employee; the lot and its item are created on apply.
+    // The row keeps the lot the owner assigned: the employee counts it and may correct its dates,
+    // but cannot switch the lot or create a new one.
     const lotData: {
-      lotItemId?: string | null;
-      lotNumber?: string | null;
       newLotExpirationDate?: Date | null;
       newLotManufacturingDate?: Date | null;
-      lotMode?: LotMode;
     } = {};
     let snapshotQty = item.snapshotQty;
 
     const lotItemId =
       typeof body.lotItemId === "string" && body.lotItemId.trim() ? body.lotItemId.trim() : null;
-    const newLotNumber =
-      typeof body.newLotNumber === "string" ? body.newLotNumber.trim().slice(0, 100) : "";
 
-    if (lotItemId && newLotNumber) {
-      throw new HttpError(400, "Chỉ chọn lô có sẵn hoặc nhập lô mới, không dùng cả hai.");
+    if (body.lotItemId !== undefined && lotItemId !== item.lotItemId) {
+      throw new HttpError(400, "Không được đổi lô của dòng kiểm kê.");
     }
 
-    // The audit type fixes the lot of the row. A new-lot audit may never point at an existing lot item, and a
-    // re-audit keeps the lot the owner assigned: the employee can still count and correct its dates, but cannot
-    // switch the lot or create a new one.
-    if (audit.auditType === "NEW_LOTS" && lotItemId) {
-      throw new HttpError(400, "Đợt kiểm kê lô mới không được chọn lô có sẵn.");
-    }
-    if (audit.auditType === "RE_AUDIT") {
-      if (newLotNumber || (body.lotItemId !== undefined && lotItemId !== item.lotItemId)) {
-        throw new HttpError(400, "Đợt kiểm kê lại không được đổi lô của dòng kiểm kê.");
-      }
-    }
-
-    // Where the audit type allows a choice, the request decides between an existing lot and a new one.
-    if (lotItemId) {
-      const lotItem = await prisma.productLotItem.findFirst({
-        where: { id: lotItemId, businessId, variantId: item.variantId },
-        select: {
-          id: true,
-          expirationDate: true,
-          manufacturingDate: true,
-          lot: { select: { lotNumber: true } },
-        },
-      });
-      if (!lotItem) {
-        throw new HttpError(404, "Lô không tồn tại hoặc không thuộc SKU của dòng này.");
-      }
-
-      const duplicate = await prisma.stockAuditItem.findFirst({
-        where: { auditId, variantId: item.variantId, lotItemId, id: { not: itemId } },
-        select: { id: true },
-      });
-      if (duplicate) {
-        throw new HttpError(409, "Đợt kiểm kê này đã có dòng cho SKU và lô này.");
-      }
-
-      // The employee may correct a wrong expiry / manufacturing date. Only differences from the lot item
-      // are stored; the lot item itself is updated when the owner applies the audit.
-      const correction = resolveLotDateCorrection(lotItem, body);
-
-      lotData.lotItemId = lotItem.id;
-      lotData.lotNumber = lotItem.lot.lotNumber;
-      lotData.lotMode = "EXISTING";
-      lotData.newLotExpirationDate = correction.expiration;
-      lotData.newLotManufacturingDate = correction.manufacturing;
-      snapshotQty = await getSnapshotQty(prisma, businessId, item.variantId, lotItem.id);
-    } else if (!newLotNumber && body.lotItemId === null && item.lotItemId) {
-      // The employee switched to "New lot" but has not typed the number yet: drop the previous existing lot.
-      lotData.lotItemId = null;
-      lotData.lotNumber = null;
-      lotData.lotMode = "NEW";
-      lotData.newLotExpirationDate = null;
-      lotData.newLotManufacturingDate = null;
-      snapshotQty = 0;
-    } else if (!newLotNumber && item.lotItemId && hasLotDateFields(body)) {
-      // Same existing lot, only the dates changed
+    // The employee may correct a wrong expiry / manufacturing date. Only differences from the lot item
+    // are stored; the lot item itself is updated when the owner applies the audit.
+    if (item.lotItemId) {
       const lotItem = await prisma.productLotItem.findFirst({
         where: { id: item.lotItemId, businessId, variantId: item.variantId },
         select: {
@@ -963,52 +1393,12 @@ class AuditService {
       if (!lotItem) {
         throw new HttpError(404, "Lô không tồn tại hoặc không thuộc SKU của dòng này.");
       }
+
       const correction = resolveLotDateCorrection(lotItem, body);
+
       lotData.newLotExpirationDate = correction.expiration;
       lotData.newLotManufacturingDate = correction.manufacturing;
-    } else if (newLotNumber) {
-      const expiration = parseDate(body.newLotExpirationDate);
-      if (!expiration) {
-        throw new HttpError(400, "Lô mới cần có hạn sử dụng.");
-      }
-      const manufacturing = parseDate(body.newLotManufacturingDate);
-      if (manufacturing && manufacturing > expiration) {
-        throw new HttpError(400, "Ngày sản xuất không được sau hạn sử dụng.");
-      }
-
-      // A lot number is shared by every variant in the batch, so the number being taken only blocks
-      // this row when the same variant is already inside that batch.
-      const existingLot = await prisma.productLot.findFirst({
-        where: { businessId, lotNumber: newLotNumber },
-        select: { id: true, items: { where: { variantId: item.variantId }, select: { id: true } } },
-      });
-      if (existingLot && existingLot.items.length > 0) {
-        throw new HttpError(
-          409,
-          `Lô "${newLotNumber}" đã có SKU này. Hãy chọn lô có sẵn trong danh sách.`,
-        );
-      }
-
-      const sameNewLot = await prisma.stockAuditItem.findFirst({
-        where: {
-          auditId,
-          variantId: item.variantId,
-          lotItemId: null,
-          lotNumber: newLotNumber,
-          id: { not: itemId },
-        },
-        select: { id: true },
-      });
-      if (sameNewLot) {
-        throw new HttpError(409, `Đợt kiểm kê này đã có lô mới "${newLotNumber}" cho SKU này.`);
-      }
-
-      lotData.lotItemId = null;
-      lotData.lotNumber = newLotNumber;
-      lotData.lotMode = "NEW";
-      lotData.newLotExpirationDate = expiration;
-      lotData.newLotManufacturingDate = manufacturing;
-      snapshotQty = 0;
+      snapshotQty = await getSnapshotQty(prisma, businessId, item.variantId, lotItem.id);
     }
 
     // Every counted row requires a discrepancy reason, whether or not quantities differ
@@ -1016,17 +1406,238 @@ class AuditService {
       throw new HttpError(400, "Bắt buộc nhập lý do chênh lệch.");
     }
 
-    await prisma.stockAuditItem.update({
-      where: { id: itemId },
-      data: {
-        ...lotData,
-        snapshotQty,
+    // Broken goods are documented with photos, so the owner can see what was found.
+    const preparedImages = imageService.prepareImages(files);
+
+    if (countedDamagedQty > 0 && preparedImages.length === 0) {
+      throw new HttpError(
+        400,
+        "Khi phát hiện hàng hỏng, bắt buộc có ít nhất một ảnh bằng chứng.",
+      );
+    }
+
+    // Each employee's count lives in their own row, so the other counter never sees it.
+    const count = await prisma.stockAuditItemCount.upsert({
+      where: { itemId_counterUserId: { itemId, counterUserId: user.id } },
+      create: {
+        itemId,
+        counterUserId: user.id,
         countedQty,
-        discrepancyReason: discrepancyReason || null,
+        countedDamagedQty,
+        discrepancyReason,
+        ...lotData,
+      },
+      update: {
+        countedQty,
+        countedDamagedQty,
+        discrepancyReason,
+        ...lotData,
+        // Editing a submitted count pulls it back so the owner compares the latest numbers.
+        submittedAt: null,
       },
     });
 
-    return getFormattedItem(prisma, itemId);
+    // The photos are stored next to the count they belong to. The files go up first; when the
+    // database write fails the uploaded objects are removed again.
+    await this.saveCountImages(businessId, auditId, count.id, user.id, preparedImages);
+
+    // The row keeps the agreed figure: the shared number once both counters agree, otherwise the
+    // single count while there is only one counter.
+    await this.syncAgreedCount(prisma, businessId, itemId, user.id);
+
+    return getFormattedItem(prisma, itemId, user.id, false);
+  }
+
+  /**
+   * Store the evidence photos of one count.
+   *
+   * The files are uploaded before the rows are written, so a failed upload never leaves a row
+   * pointing at a file that is not there. When the write fails the uploaded objects are deleted
+   * again; the cleanup is best effort and never hides the original error.
+   */
+  private async saveCountImages(
+    businessId: string,
+    auditId: string,
+    countId: string,
+    userId: string,
+    images: PreparedAuditImage[],
+  ): Promise<void> {
+    if (images.length === 0) return;
+
+    const storedImages = images.map((image) => ({
+      ...image,
+      storagePath: `${businessId}/audits/${auditId}/${countId}/${randomUUID()}.${image.extension}`,
+    }));
+
+    const uploadedPaths: string[] = [];
+    try {
+      for (const image of storedImages) {
+        await uploadObject(image.storagePath, image.buffer, image.mimeType);
+        uploadedPaths.push(image.storagePath);
+      }
+    } catch (error) {
+      await deleteObjects(uploadedPaths);
+      throw error;
+    }
+
+    try {
+      await prisma.stockAuditItemCountImage.createMany({
+        data: storedImages.map((image) => ({
+          businessId,
+          countId,
+          storagePath: image.storagePath,
+          mimeType: image.mimeType,
+          sizeBytes: image.buffer.length,
+          uploadedBy: userId,
+        })),
+      });
+    } catch (error) {
+      await deleteObjects(uploadedPaths);
+      throw error;
+    }
+  }
+
+  /**
+   * Write the row's agreed figure from the counters' own numbers.
+   *
+   * With one counter, the row shows that number. With two, the row only takes a number once both
+   * counters agree, so the owner never sees a half-filled row as if it were settled.
+   */
+  private async syncAgreedCount(db: DbClient, businessId: string, itemId: string, actorId: string) {
+    const item = await db.stockAuditItem.findFirst({
+      where: { id: itemId },
+      select: {
+        id: true,
+        variantId: true,
+        lotItemId: true,
+        secondCounterUserId: true,
+        counts: {
+          select: { counterUserId: true, countedQty: true, countedDamagedQty: true, submittedAt: true },
+        },
+      },
+    });
+    if (!item) return;
+
+    if (!item.secondCounterUserId) {
+      const own = item.counts.find((c) => c.counterUserId === actorId);
+      if (!own) return;
+      await db.stockAuditItem.update({
+        where: { id: itemId },
+        data: { countedQty: own.countedQty, countedDamagedQty: own.countedDamagedQty },
+      });
+      return;
+    }
+
+    if (item.counts.length < 2) return;
+    if (item.counts.some((c) => !c.submittedAt)) return;
+    const [first, second] = item.counts;
+    if (first.countedQty !== second.countedQty) return;
+    if (first.countedDamagedQty !== second.countedDamagedQty) return;
+
+    await db.stockAuditItem.update({
+      where: { id: itemId },
+      data: { countedQty: first.countedQty, countedDamagedQty: first.countedDamagedQty },
+    });
+  }
+
+  /**
+   * Record what the row looked like at the moment the owner decided something.
+   *
+   * The record is a copy of the numbers, so the history does not change when the live row does.
+   * Each counter's own number is copied too, otherwise the history would only say that the row
+   * was sent back, not what the two people had found.
+   *
+   * The evidence photos are filed under the record: they keep their count (so only the counter who
+   * took them and the owner may read them) but they leave the live gallery, so old evidence never
+   * sits next to fresh numbers.
+   *
+   * This must run before the numbers are cleared, otherwise the snapshot would be empty.
+   */
+  private async recordItemHistory(
+    db: DbClient,
+    businessId: string,
+    itemId: string,
+    action: "APPROVED" | "REJECTED" | "RECOUNT",
+    actorId: string,
+    reason: string | null,
+  ) {
+    const item = await db.stockAuditItem.findFirst({
+      where: { id: itemId, audit: { businessId } },
+      select: {
+        id: true,
+        auditId: true,
+        snapshotQty: true,
+        countedQty: true,
+        countedDamagedQty: true,
+        discrepancyReason: true,
+        counts: {
+          select: {
+            id: true,
+            counterUserId: true,
+            countedQty: true,
+            countedDamagedQty: true,
+            discrepancyReason: true,
+            submittedAt: true,
+          },
+        },
+      },
+    });
+    if (!item) return;
+
+    // The nth time this row was recorded. The pair (item, revision) is unique.
+    const last = await db.stockAuditItemHistory.findFirst({
+      where: { itemId },
+      orderBy: { revision: "desc" },
+      select: { revision: true, createdAt: true },
+    });
+    const revision = (last?.revision ?? 0) + 1;
+
+    const history = await db.stockAuditItemHistory.create({
+      data: {
+        businessId,
+        itemId: item.id,
+        auditId: item.auditId,
+        revision,
+        action,
+        reason,
+        actorId,
+        snapshotQty: item.snapshotQty,
+        countedQty: item.countedQty,
+        countedDamagedQty: item.countedDamagedQty,
+        discrepancyReason: item.discrepancyReason,
+        counts: {
+          create: item.counts.map((count) => ({
+            counterUserId: count.counterUserId,
+            countedQty: count.countedQty,
+            countedDamagedQty: count.countedDamagedQty,
+            discrepancyReason: count.discrepancyReason,
+            submittedAt: count.submittedAt,
+          })),
+        },
+      },
+      select: { id: true },
+    });
+
+    // The photos taken since the last decision now belong to this moment.
+    //
+    // The count rows are reused: a rejected row is counted again on the same rows, so the count
+    // id alone does not tell which round a photo came from. The time of the previous decision
+    // does. A photo taken after that moment belongs to this round; a photo already filed under an
+    // earlier entry keeps its entry.
+    const countIds = item.counts.map((count) => count.id);
+    if (countIds.length > 0) {
+      await db.stockAuditItemCountImage.updateMany({
+        where: {
+          businessId,
+          countId: { in: countIds },
+          deletedAt: null,
+          archivedAt: null,
+          historyId: null,
+          ...(last?.createdAt ? { createdAt: { gt: last.createdAt } } : {}),
+        },
+        data: { historyId: history.id, archivedAt: new Date() },
+      });
+    }
   }
 
   async submitAuditItem(
@@ -1065,6 +1676,7 @@ class AuditService {
         discrepancyReason: true,
         itemStatus: true,
         assignedToUserId: true,
+        secondCounterUserId: true,
         submittedAt: true,
         submittedBy: true,
         approvedAt: true,
@@ -1076,19 +1688,33 @@ class AuditService {
       throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
     }
 
-    // Only the assigned employee or the owner (on behalf) may submit
-    await assertCanActOnItem(prisma, businessId, user.id, item.assignedToUserId);
+    // Only an assigned employee or the owner (on behalf) may submit
+    await assertCanActOnItem(
+      prisma,
+      businessId,
+      user.id,
+      item.assignedToUserId,
+      item.secondCounterUserId,
+    );
 
-    // Every item must have a lot number; a new lot also needs an expiration date
-    if (!item.lotNumber) {
-      throw new HttpError(400, "Cần chọn lô có sẵn hoặc nhập số lô trước khi nộp.");
+    // Every item must point at a lot in the system. The expiry is optional: clothes have no shelf life.
+    if (!item.lotItemId) {
+      throw new HttpError(400, "Dòng kiểm kê chưa có lô. Hãy báo chủ cửa hàng xử lý.");
     }
-    if (!item.lotItemId && !item.newLotExpirationDate) {
-      throw new HttpError(400, "Lô mới cần có hạn sử dụng trước khi nộp.");
+
+    // The employee submits their own count. With two counters, the row is only ready for the owner
+    // once both numbers are in and they match; a disagreement waits for the owner's decision.
+    const ownCount = await prisma.stockAuditItemCount.findUnique({
+      where: { itemId_counterUserId: { itemId, counterUserId: user.id } },
+      select: { countedQty: true, discrepancyReason: true },
+    });
+
+    if (!ownCount) {
+      throw new HttpError(400, "Bạn chưa nhập số đếm cho dòng này.");
     }
 
     // Every item requires a discrepancy reason before it can be submitted
-    if (!item.discrepancyReason) {
+    if (!ownCount.discrepancyReason) {
       throw new HttpError(400, "Bắt buộc nhập lý do chênh lệch trước khi nộp.");
     }
 
@@ -1097,12 +1723,83 @@ class AuditService {
       throw new HttpError(409, "Dòng kiểm kê không còn ở trạng thái IN_PROGRESS.");
     }
 
+    await prisma.stockAuditItemCount.update({
+      where: { itemId_counterUserId: { itemId, counterUserId: user.id } },
+      data: { submittedAt: new Date() },
+    });
+
+    // A row with two counters waits for the second number. Only when both are in and they agree
+    // does the row move on to the owner for approval.
+    const counters = await prisma.stockAuditItemCount.findMany({
+      where: { itemId },
+      select: {
+        counterUserId: true,
+        countedQty: true,
+        countedDamagedQty: true,
+        submittedAt: true,
+      },
+    });
+
+    const needsTwoCounters = Boolean(item.secondCounterUserId);
+    const bothSubmitted =
+      counters.length >= 2 && counters.every((c) => Boolean(c.submittedAt));
+    // The broken goods count too: two counters who found a different amount of broken goods have
+    // not settled the row, even when the usable quantity matches.
+    const agree =
+      counters.length >= 2 &&
+      counters[0].countedQty === counters[1].countedQty &&
+      counters[0].countedDamagedQty === counters[1].countedDamagedQty;
+
+    if (needsTwoCounters && !bothSubmitted) {
+      // The owner's number goes on the row once it is settled; until then the row keeps waiting.
+      await this.syncAgreedCount(prisma, businessId, itemId, user.id);
+      return getFormattedItem(prisma, itemId, user.id, false);
+    }
+
+    if (needsTwoCounters && !agree) {
+      // The two numbers differ: the row stays in progress until the owner sends it back.
+      await this.syncAgreedCount(prisma, businessId, itemId, user.id);
+      return getFormattedItem(prisma, itemId, user.id, false);
+    }
+
+    // The row's own fields carry the agreed figure so the owner approves one number.
+    // They belong to the employee the row was assigned to, so the owner always sees the same
+    // reason and broken figure no matter who submitted last.
+    const primary =
+      counters.find((c) => c.counterUserId === item.assignedToUserId) ?? counters[0];
+    const primaryRow = primary
+      ? await prisma.stockAuditItemCount.findUnique({
+          where: { itemId_counterUserId: { itemId, counterUserId: primary.counterUserId } },
+          select: { countedQty: true, countedDamagedQty: true, discrepancyReason: true },
+        })
+      : null;
+    // The lot dates are the submitter's own correction, so they keep coming from their count.
+    const ownCountRow = await prisma.stockAuditItemCount.findUnique({
+      where: { itemId_counterUserId: { itemId, counterUserId: user.id } },
+      select: {
+        countedQty: true,
+        countedDamagedQty: true,
+        discrepancyReason: true,
+        newLotExpirationDate: true,
+        newLotManufacturingDate: true,
+      },
+    });
+
     await prisma.stockAuditItem.update({
       where: { id: itemId },
       data: {
         itemStatus: "PENDING_APPROVAL",
         submittedAt: new Date(),
         submittedBy: user.id,
+        countedQty: primaryRow?.countedQty ?? ownCountRow?.countedQty ?? 0,
+        countedDamagedQty: primaryRow?.countedDamagedQty ?? ownCountRow?.countedDamagedQty ?? 0,
+        discrepancyReason: primaryRow?.discrepancyReason ?? null,
+        ...(ownCountRow?.newLotExpirationDate
+          ? { newLotExpirationDate: ownCountRow.newLotExpirationDate }
+          : {}),
+        ...(ownCountRow?.newLotManufacturingDate
+          ? { newLotManufacturingDate: ownCountRow.newLotManufacturingDate }
+          : {}),
         // A new submission answers any earlier rejection
         rejectionReason: null,
         rejectedAt: null,
@@ -1110,7 +1807,7 @@ class AuditService {
       },
     });
 
-    return getFormattedItem(prisma, itemId);
+    return getFormattedItem(prisma, itemId, user.id, false);
   }
 
   /** Owner: send a submitted item back to the employee for a recount, with a required reason. */
@@ -1153,6 +1850,9 @@ class AuditService {
       throw new HttpError(409, "Chỉ có thể từ chối item đang ở trạng thái PENDING_APPROVAL.");
     }
 
+    // The history is written before the numbers are cleared, so it keeps what was counted.
+    await this.recordItemHistory(prisma, businessId, itemId, "REJECTED", user.id, reason);
+
     await prisma.stockAuditItem.update({
       where: { id: itemId },
       data: {
@@ -1165,7 +1865,107 @@ class AuditService {
       },
     });
 
-    return getFormattedItem(prisma, itemId);
+    // A rejected row is counted again, so the previous numbers no longer count as submitted.
+    await prisma.stockAuditItemCount.updateMany({
+      where: { itemId },
+      data: { submittedAt: null },
+    });
+
+    return getFormattedItem(prisma, itemId, user.id, true);
+  }
+
+  /**
+   * Owner: the two counters did not agree, so send the row back to both for another count.
+   *
+   * The row keeps its two counters; both have to count again before it moves on. This is the
+   * owner's only way out of a disagreement, which is what keeps the decision with the owner.
+   */
+  async requestRecount(
+    businessId: string,
+    authUserId: string,
+    auditId: string,
+    itemId: string,
+    body: RejectItemBody,
+  ) {
+    const user = await resolveUser(authUserId);
+
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    if (!reason) {
+      throw new HttpError(400, "Cần nhập lý do khi yêu cầu kiểm kê lại.");
+    }
+    if (reason.length > 1000) {
+      throw new HttpError(400, "Lý do tối đa 1000 ký tự.");
+    }
+
+    const audit = await prisma.stockAudit.findFirst({
+      where: { id: auditId, businessId },
+      select: { id: true, status: true },
+    });
+    if (!audit) {
+      throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+    }
+    if (audit.status !== "IN_PROGRESS") {
+      throw new HttpError(409, "Chỉ có thể yêu cầu kiểm kê lại khi đợt kiểm kê đang IN_PROGRESS.");
+    }
+
+    const item = await prisma.stockAuditItem.findFirst({
+      where: { id: itemId, auditId },
+      select: {
+        id: true,
+        itemStatus: true,
+        secondCounterUserId: true,
+        counts: {
+          select: {
+            counterUserId: true,
+            countedQty: true,
+            countedDamagedQty: true,
+            submittedAt: true,
+          },
+        },
+      },
+    });
+    if (!item) {
+      throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
+    }
+    if (!item.secondCounterUserId) {
+      throw new HttpError(409, "Dòng này chỉ có một người kiểm kê nên không cần kiểm kê lại.");
+    }
+
+    // Only a row whose two counters actually disagree needs a recount. The broken goods count as a
+    // difference too: they change the stock the owner approves.
+    const submitted = item.counts.filter((c) => c.submittedAt);
+    const sameUsable = submitted[0]?.countedQty === submitted[1]?.countedQty;
+    const sameBroken = submitted[0]?.countedDamagedQty === submitted[1]?.countedDamagedQty;
+    if (submitted.length < 2 || (sameUsable && sameBroken)) {
+      throw new HttpError(409, "Hai người kiểm kê đang có cùng số liệu nên không cần kiểm kê lại.");
+    }
+
+    // The history is written before the numbers are cleared, so it keeps what was counted.
+    await this.recordItemHistory(prisma, businessId, itemId, "RECOUNT", user.id, reason);
+
+    // Both counters start over: the old numbers are cleared so neither number can be mistaken
+    // for the new one.
+    await prisma.stockAuditItemCount.updateMany({
+      where: { itemId },
+      data: { submittedAt: null, countedQty: 0, countedDamagedQty: 0 },
+    });
+
+    await prisma.stockAuditItem.update({
+      where: { id: itemId },
+      data: {
+        itemStatus: "IN_PROGRESS",
+        rejectionReason: reason,
+        rejectedAt: new Date(),
+        rejectedBy: user.id,
+        submittedAt: null,
+        submittedBy: null,
+        countedQty: 0,
+        countedDamagedQty: 0,
+        discrepancyReason: null,
+      },
+    });
+
+    return getFormattedItem(prisma, itemId, user.id, true);
   }
 
   async approveAuditItem(
@@ -1216,6 +2016,9 @@ class AuditService {
     if (item.itemStatus !== "PENDING_APPROVAL") {
       throw new HttpError(409, "Chỉ có thể approve item đang ở trạng thái PENDING_APPROVAL.");
     }
+
+    // The history is written before the row is approved, so it keeps the numbers as they were.
+    await this.recordItemHistory(prisma, businessId, itemId, "APPROVED", user.id, null);
 
     // Approve the item
     const updated = await prisma.stockAuditItem.update({
@@ -1272,11 +2075,22 @@ class AuditService {
       throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
     }
 
-    // The count page asks for "mine": only items assigned to the caller.
+    const viewer = await resolveUser(authUserId);
+    const viewerIsOwner = await isBusinessOwner(prisma, businessId, viewer.id);
+
+    // A draft is the owner's own preparation, so staff never see it.
+    if (audit.status === "DRAFT" && !viewerIsOwner) {
+      throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+    }
+
+    // The count page asks for "mine": only items the caller is assigned to, counting as either
+    // of the two employees.
     let where: Prisma.StockAuditItemWhereInput = { auditId };
     if (params.mine) {
-      const user = await resolveUser(authUserId);
-      where = { auditId, assignedToUserId: user.id };
+      where = {
+        auditId,
+        OR: [{ assignedToUserId: viewer.id }, { secondCounterUserId: viewer.id }],
+      };
     }
 
     const [items, total] = await Promise.all([
@@ -1291,7 +2105,7 @@ class AuditService {
     ]);
 
     return {
-      items: items.map(formatAuditItem),
+      items: items.map((item) => formatAuditItem(item, viewer.id, viewerIsOwner)),
       pagination: {
         page,
         pageSize,
@@ -1302,7 +2116,24 @@ class AuditService {
   }
 
   /** Read one item of an audit. Used by the per-item count page. */
-  async getAuditItem(businessId: string, auditId: string, itemId: string) {
+  async getAuditItem(businessId: string, authUserId: string, auditId: string, itemId: string) {
+    const viewer = await resolveUser(authUserId);
+    const viewerIsOwner = await isBusinessOwner(prisma, businessId, viewer.id);
+
+    const audit = await prisma.stockAudit.findFirst({
+      where: { id: auditId, businessId },
+      select: { id: true, status: true },
+    });
+
+    if (!audit) {
+      throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+    }
+
+    // A draft is the owner's own preparation, so staff never see it.
+    if (audit.status === "DRAFT" && !viewerIsOwner) {
+      throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
+    }
+
     const item = await prisma.stockAuditItem.findFirst({
       where: { id: itemId, auditId, audit: { businessId } },
       select: AUDIT_ITEM_SELECT,
@@ -1312,7 +2143,87 @@ class AuditService {
       throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
     }
 
-    return formatAuditItem(item);
+    return formatAuditItem(item, viewer.id, viewerIsOwner);
+  }
+
+  /**
+   * The history of one row: what was counted each time the owner decided something.
+   *
+   * Only the owner reads it. The history holds what the two counters found, so a staff member
+   * must not see it: that would break the blind count.
+   */
+  async getItemHistory(businessId: string, authUserId: string, auditId: string, itemId: string) {
+    const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
+
+    const item = await prisma.stockAuditItem.findFirst({
+      where: { id: itemId, auditId, audit: { businessId } },
+      select: { id: true },
+    });
+    if (!item) {
+      throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
+    }
+
+    const histories = await prisma.stockAuditItemHistory.findMany({
+      where: { businessId, itemId },
+      orderBy: { revision: "desc" },
+      select: {
+        id: true,
+        revision: true,
+        action: true,
+        reason: true,
+        createdAt: true,
+        snapshotQty: true,
+        countedQty: true,
+        countedDamagedQty: true,
+        discrepancyReason: true,
+        actor: { select: { id: true, fullName: true, email: true } },
+        counts: {
+          select: {
+            id: true,
+            counterUserId: true,
+            countedQty: true,
+            countedDamagedQty: true,
+            discrepancyReason: true,
+            submittedAt: true,
+            counterUser: { select: { id: true, fullName: true, email: true } },
+          },
+        },
+        images: {
+          where: { deletedAt: null },
+          select: { id: true },
+        },
+      },
+    });
+
+    // The photos of every moment are signed in one go, so the page needs a single request.
+    const imagesByHistory = await imageService.listImagesForHistories(
+      businessId,
+      histories.map((history) => history.id),
+    );
+
+    return histories.map((history) => ({
+      id: history.id,
+      revision: history.revision,
+      action: history.action,
+      reason: history.reason,
+      createdAt: history.createdAt,
+      snapshotQty: history.snapshotQty,
+      countedQty: history.countedQty,
+      countedDamagedQty: history.countedDamagedQty,
+      discrepancyReason: history.discrepancyReason,
+      actor: person(history.actor),
+      counts: history.counts.map((count) => ({
+        id: count.id,
+        counterUserId: count.counterUserId,
+        counter: person(count.counterUser),
+        countedQty: count.countedQty,
+        countedDamagedQty: count.countedDamagedQty,
+        discrepancyReason: count.discrepancyReason,
+        submittedAt: count.submittedAt,
+      })),
+      images: imagesByHistory.get(history.id) ?? [],
+    }));
   }
 
   async approveAudit(businessId: string, authUserId: string, auditId: string) {
@@ -1422,6 +2333,7 @@ class AuditService {
               auditId: true,
               snapshotQty: true,
               countedQty: true,
+              countedDamagedQty: true,
               diffQty: true,
               discrepancyReason: true,
               variant: { select: { costPrice: true } },
@@ -1450,11 +2362,6 @@ class AuditService {
 
       if (audit.status !== "IN_PROGRESS") {
         throw new HttpError(409, "Chỉ có thể áp dụng đợt kiểm kê đang IN_PROGRESS.");
-      }
-
-      // Check auditType to determine business logic
-      if (!audit.auditType) {
-        throw new HttpError(400, "Loại kiểm kê không xác định.");
       }
 
       if (audit.stockAuditItems.length === 0) {
@@ -1493,86 +2400,41 @@ class AuditService {
       const ledgerEntries = [];
       
       for (const item of audit.stockAuditItems) {
-        // The lot item this row is applied to. Starts as the existing item (if any).
-        let lotItemId: string | null = item.lotItemId;
+        // The lot item this row is applied to. Every row points at a lot that is already in the system.
+        const lotItemId: string | null = item.lotItemId;
 
-        // Step 1: Resolve the batch header and its item, creating both when the employee typed a new lot.
-        if (!lotItemId && item.lotNumber) {
-          // New lot typed by the employee: the batch header is created only if the number is new,
-          // so two variants entered with the same number end up in one batch.
-          if (!item.newLotExpirationDate) {
-            throw new HttpError(400, `Lô mới "${item.lotNumber}" thiếu hạn sử dụng.`);
-          }
-
-          const lot = await tx.productLot.upsert({
-            where: { businessId_lotNumber: { businessId, lotNumber: item.lotNumber } },
-            create: { businessId, lotNumber: item.lotNumber },
-            update: {},
-            select: { id: true },
-          });
-
-          const clash = await tx.productLotItem.findFirst({
-            where: { lotId: lot.id, variantId: item.variantId },
-            select: { id: true },
-          });
-          if (clash) {
-            throw new HttpError(
-              409,
-              `Lô "${item.lotNumber}" đã có SKU này ở nơi khác trong lúc kiểm kê. Hãy đổi dòng này sang lô có sẵn.`,
-            );
-          }
-
-          const createdItem = await tx.productLotItem.create({
-            data: {
-              businessId,
-              lotId: lot.id,
-              variantId: item.variantId,
-              manufacturingDate: item.newLotManufacturingDate,
-              expirationDate: item.newLotExpirationDate,
-              status: lotStatusService.calculateStatus(item.newLotExpirationDate),
-              isLockedForAudit: false,
-            },
-            select: { id: true },
-          });
-
-          lotItemId = createdItem.id;
-          await tx.stockAuditItem.update({
-            where: { id: item.id },
-            data: { lotItemId },
-          });
-        } else if (item.lotItem) {
+        // Step 1: Update the lot item the employee corrected during the count.
+        if (item.lotItem) {
           // Existing lot item. The employee may have corrected its expiry / manufacturing date during the count.
           const correctedExpiration = item.newLotExpirationDate;
           const correctedManufacturing = item.newLotManufacturingDate;
           const hasCorrection = Boolean(correctedExpiration || correctedManufacturing);
 
-          if (hasCorrection || audit.auditType === "RE_AUDIT") {
-            const expirationDate = correctedExpiration ?? item.lotItem.expirationDate;
-            const recalculatedStatus = lotStatusService.calculateStatus(expirationDate);
-            const wasQuarantined = item.lotItem.status === "QUARANTINED";
-            const wasScrapped = item.lotItem.status === "SCRAPPED";
-            // A re-audit releases a quarantine only when the lot is sellable again. Expiry alone never
-            // releases a quarantine, and a scrap decision is never undone.
-            const releasesQuarantine =
-              audit.auditType === "RE_AUDIT" &&
-              wasQuarantined &&
-              (recalculatedStatus === "HEALTHY" || recalculatedStatus === "WARNING");
-            const keepsStatus = wasScrapped || (wasQuarantined && !releasesQuarantine);
+          const expirationDate = correctedExpiration ?? item.lotItem.expirationDate;
+          const recalculatedStatus = lotStatusService.calculateStatus(expirationDate);
+          const wasQuarantined = item.lotItem.status === "QUARANTINED";
+          const wasScrapped = item.lotItem.status === "SCRAPPED";
+          // A re-audit releases a quarantine only when the lot is sellable again. Expiry alone never
+          // releases a quarantine, and a scrap decision is never undone.
+          const releasesQuarantine =
+            hasCorrection &&
+            wasQuarantined &&
+            (recalculatedStatus === "HEALTHY" || recalculatedStatus === "WARNING");
+          const keepsStatus = wasScrapped || (wasQuarantined && !releasesQuarantine);
 
-            await tx.productLotItem.update({
-              where: { id: item.lotItem.id },
-              data: {
-                ...(correctedExpiration ? { expirationDate: correctedExpiration } : {}),
-                ...(correctedManufacturing ? { manufacturingDate: correctedManufacturing } : {}),
-                ...(keepsStatus ? {} : { status: recalculatedStatus }),
-                // Releasing a quarantine must not leave a HEALTHY row still carrying a quarantine quantity.
-                ...(releasesQuarantine
-                  ? { quarantineQty: null, quarantinedAt: null, quarantinedBy: null, quarantineNote: null }
-                  : {}),
-                ...(audit.auditType === "RE_AUDIT" ? { isLockedForAudit: false } : {}),
-              },
-            });
-          }
+          await tx.productLotItem.update({
+            where: { id: item.lotItem.id },
+            data: {
+              ...(correctedExpiration ? { expirationDate: correctedExpiration } : {}),
+              ...(correctedManufacturing ? { manufacturingDate: correctedManufacturing } : {}),
+              ...(keepsStatus ? {} : { status: recalculatedStatus }),
+              // Releasing a quarantine must not leave a HEALTHY row still carrying a quarantine quantity.
+              ...(releasesQuarantine
+                ? { quarantineQty: null, quarantinedAt: null, quarantinedBy: null, quarantineNote: null }
+                : {}),
+              isLockedForAudit: false,
+            },
+          });
         }
 
         // Step 2: Update or create inventory_balance
@@ -1589,6 +2451,9 @@ class AuditService {
             where: { id: balance.id },
             data: {
               quantityOnHand: item.countedQty,
+              // The count replaced the stock, so the broken goods replace the damaged bucket too.
+              // Adding to it would count the same broken goods twice.
+              damagedQuantity: item.countedDamagedQty,
               updatedAt: new Date(),
             },
           });
@@ -1599,7 +2464,7 @@ class AuditService {
               variantId: item.variantId,
               lotItemId,
               quantityOnHand: item.countedQty,
-              damagedQuantity: 0,
+              damagedQuantity: item.countedDamagedQty,
             },
           });
         }

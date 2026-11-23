@@ -4,6 +4,7 @@ import { inventoryService, auditService } from "./inventory.service";
 import { LotService } from "./services/lot.service";
 import { ScrapService } from "./services/scrap.service";
 import { ScrapImageService } from "./services/scrap-image.service";
+import { AuditImageService } from "./services/audit-image.service";
 import { LotStatusService } from "./services/lot-status.service";
 
 const fail = (res: Response, err: any) => {
@@ -22,6 +23,7 @@ const actorOf = (res: Response) => ({
 const lotService = new LotService(new LotStatusService());
 const scrapService = new ScrapService();
 const scrapImageService = new ScrapImageService();
+const auditImageService = new AuditImageService();
 
 export class InventoryController {
   async listSheets(req: Request, res: Response) {
@@ -176,6 +178,7 @@ export class InventoryController {
         status: String(req.query.status || ""),
         page: Number(req.query.page) || 1,
         pageSize: Number(req.query.pageSize) || 10,
+        authUserId: authUserId(req),
       });
       return res.json(result);
     } catch (err: any) {
@@ -186,8 +189,57 @@ export class InventoryController {
   async getAudit(req: Request, res: Response) {
     try {
       const businessId = String(res.locals.businessId || "");
-      const result = await auditService.getAudit(businessId, String(req.params.id));
+      const result = await auditService.getAudit(businessId, authUserId(req), String(req.params.id));
       return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  /** Owner: start the counting of a draft. The SKUs are locked from this moment on. */
+  async startAudit(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.startAudit(businessId, authUserId(req), String(req.params.id));
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  /** Owner: cancel a running audit. The SKUs are freed again. */
+  async cancelAudit(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.cancelAudit(businessId, authUserId(req), String(req.params.id));
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  /** Owner: delete a draft. A running audit can only be cancelled. */
+  async deleteAudit(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      await auditService.deleteAudit(businessId, authUserId(req), String(req.params.id));
+      return res.status(204).send();
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  /** Owner: remove one row from a draft. */
+  async deleteAuditItem(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      await auditService.deleteAuditItem(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
+        String(req.params.itemId),
+      );
+      return res.status(204).send();
     } catch (err: any) {
       return fail(res, err);
     }
@@ -247,6 +299,7 @@ export class InventoryController {
         String(req.params.id),
         String(req.params.itemId),
         req.body ?? {},
+        req.files as Express.Multer.File[] | undefined,
       );
       return res.json(result);
     } catch (err: any) {
@@ -275,6 +328,7 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await auditService.getAuditItem(
         businessId,
+        authUserId(req),
         String(req.params.id),
         String(req.params.itemId),
       );
@@ -303,6 +357,22 @@ export class InventoryController {
     try {
       const businessId = String(res.locals.businessId || "");
       const result = await auditService.rejectAuditItem(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
+        String(req.params.itemId),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async requestRecount(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.requestRecount(
         businessId,
         authUserId(req),
         String(req.params.id),
@@ -407,6 +477,31 @@ export class InventoryController {
         String(res.locals.userId || ""),
         req.body ?? {},
       );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async quarantineVariant(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await lotService.quarantineVariant(
+        businessId,
+        String(req.params.variantId),
+        String(res.locals.userId || ""),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async getVariantQuarantine(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await lotService.getVariantQuarantine(businessId, String(req.params.variantId));
       return res.json(result);
     } catch (err: any) {
       return fail(res, err);
@@ -549,6 +644,59 @@ export class InventoryController {
     try {
       const businessId = String(res.locals.businessId || "");
       return res.json(await scrapImageService.getImage(businessId, String(req.params.imageId)));
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  // F07: evidence photos of one counter's audit count
+
+  async listAuditCountImages(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const actor = actorOf(res);
+      return res.json(
+        await auditImageService.listImages(
+          businessId,
+          String(req.params.countId),
+          actor.userId,
+          actor.role === "OWNER",
+        ),
+      );
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async getAuditCountImage(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const actor = actorOf(res);
+      return res.json(
+        await auditImageService.getImage(
+          businessId,
+          String(req.params.imageId),
+          actor.userId,
+          actor.role === "OWNER",
+        ),
+      );
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  // F07: the history of one audit row. Only the owner reads it.
+  async getAuditItemHistory(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(
+        await auditService.getItemHistory(
+          businessId,
+          authUserId(req),
+          String(req.params.id),
+          String(req.params.itemId),
+        ),
+      );
     } catch (err: any) {
       return fail(res, err);
     }

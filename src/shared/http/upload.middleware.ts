@@ -46,3 +46,24 @@ export function requireMultipart(req: Request, _res: Response, next: NextFunctio
   }
   next();
 }
+
+/**
+ * Parses the multipart body only when the request actually is multipart.
+ *
+ * A route that accepts both a plain JSON body and a body with photos uses this: the JSON body is
+ * already parsed by express.json(), and a multipart body is parsed here. A non-multipart request
+ * passes through untouched.
+ */
+export function uploadImagesIfMultipart(req: Request, res: Response, next: NextFunction): void {
+  if (!req.is("multipart/form-data")) {
+    next();
+    return;
+  }
+  multiUploader.array("files", MAX_UPLOAD_IMAGES)(req, res, (error: unknown) => {
+    if (error) {
+      next(error);
+      return;
+    }
+    next();
+  });
+}
