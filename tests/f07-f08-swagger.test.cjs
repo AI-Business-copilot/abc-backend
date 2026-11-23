@@ -16,6 +16,7 @@ const normalize = (routePath) => routePath.replace(/:([A-Za-z]+)/g, "{$1}");
 /** Only the F07 audit and F08 lot/scrap routes belong to this spec. */
 const isF07F08 = (routePath) =>
   routePath.startsWith("/audits") ||
+  routePath.startsWith("/audit-count-images") ||
   routePath === "/lots/expiring" ||
   /^\/lots\/\{[^}]+\}$/.test(routePath) ||
   routePath.endsWith("/quarantine") ||

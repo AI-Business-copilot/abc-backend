@@ -119,7 +119,7 @@ components:
           enum: [FULL_STORE, CATEGORY, SHELF]
         status:
           type: string
-          enum: [IN_PROGRESS, PENDING_APPROVAL, APPLIED, CANCELLED]
+          enum: [DRAFT, IN_PROGRESS, PENDING_APPROVAL, APPLIED, CANCELLED]
         note:
           type: string
           nullable: true
@@ -148,6 +148,168 @@ components:
         status:
           type: string
           enum: [PENDING, SUBMITTED, APPROVED, REJECTED]
+        countedDamagedQty:
+          type: integer
+          nullable: true
+        countAgreement:
+          type: string
+          enum: [SINGLE, NOT_STARTED, PENDING, AGREED, CONFLICT]
+        counts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditItemCount'
+        counterDetails:
+          type: array
+          description: >
+            The reason and broken goods of every counter. The row's own fields belong to the
+            employee the row was assigned to.
+          items:
+            $ref: '#/components/schemas/AuditCounterDetail'
+
+    AuditCounterDetail:
+      type: object
+      description: One counter's own reason and broken goods.
+      properties:
+        counterUserId:
+          type: string
+          format: uuid
+        discrepancyReason:
+          type: string
+          nullable: true
+        countedDamagedQty:
+          type: integer
+
+    AuditItemHistory:
+      type: object
+      description: >
+        One record of a row: what was counted when the owner approved it, rejected it or asked
+        for another count. The numbers are a copy of that moment, not a link to the live row.
+      properties:
+        id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+        action:
+          type: string
+          enum: [APPROVED, REJECTED, RECOUNT]
+        reason:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        snapshotQty:
+          type: integer
+        countedQty:
+          type: integer
+        countedDamagedQty:
+          type: integer
+        discrepancyReason:
+          type: string
+          nullable: true
+        actor:
+          $ref: '#/components/schemas/AuditCountPerson'
+        counts:
+          type: array
+          description: What each counter had found at that moment.
+          items:
+            $ref: '#/components/schemas/AuditItemHistoryCount'
+        images:
+          type: array
+          description: The evidence photos filed under this record.
+          items:
+            $ref: '#/components/schemas/AuditCountImage'
+
+    AuditItemHistoryCount:
+      type: object
+      description: One counter's number at the moment of a history record.
+      properties:
+        id:
+          type: string
+          format: uuid
+        counterUserId:
+          type: string
+          format: uuid
+        counter:
+          $ref: '#/components/schemas/AuditCountPerson'
+        countedQty:
+          type: integer
+        countedDamagedQty:
+          type: integer
+        discrepancyReason:
+          type: string
+          nullable: true
+        submittedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    AuditCountPerson:
+      type: object
+      description: A person taking part in the count.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+
+    AuditItemCount:
+      type: object
+      description: One counter's own count of a row.
+      properties:
+        id:
+          type: string
+          format: uuid
+        counterUserId:
+          type: string
+          format: uuid
+        countedQty:
+          type: integer
+        countedDamagedQty:
+          type: integer
+        discrepancyReason:
+          type: string
+          nullable: true
+        submittedAt:
+          type: string
+          format: date-time
+          nullable: true
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditCountImage'
+
+    AuditCountImage:
+      type: object
+      description: An evidence photo of the broken goods one counter found.
+      properties:
+        id:
+          type: string
+          format: uuid
+        countId:
+          type: string
+          format: uuid
+        mimeType:
+          type: string
+          enum: [image/jpeg, image/png, image/webp]
+        sizeBytes:
+          type: integer
+        uploadedBy:
+          type: string
+          format: uuid
+        uploadedByName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        url:
+          type: string
+          nullable: true
+          description: Short-lived signed link (5 minutes). Null when storage could not sign it.
     
     AuditListResponse:
       type: object
@@ -622,7 +784,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Audit'
-  
+
+    delete:
+      tags: [F07 Stock Audit]
+      summary: Delete a draft audit
+      description: >
+        "Permission: inventory.audit.create. Owner only. Only a DRAFT audit can be deleted; a running
+        audit has been counted already and can only be cancelled. The audit's rows, counts, photos
+        and history go with it."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      responses:
+        '204':
+          description: Audit deleted
+        '404':
+          description: The audit does not exist in this business
+        '409':
+          description: The audit is not a draft
+
+  /inventory/audits/{id}/start:
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Start the counting of a draft audit
+      description: >
+        "Permission: inventory.audit.create. Owner only. The SKUs are locked and the snapshot is
+        taken at this moment, so the audit compares against the stock of now."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      responses:
+        '200':
+          description: Audit started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Audit'
+        '400':
+          description: The draft has no rows
+        '409':
+          description: The audit is not a draft
+
+  /inventory/audits/{id}/cancel:
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Cancel a running audit
+      description: >
+        "Permission: inventory.audit.create. Owner only. A running audit cannot be deleted, only
+        cancelled. Cancelling frees the locked SKUs again."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      responses:
+        '200':
+          description: Audit cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Audit'
+        '409':
+          description: The audit is not running
+
   /inventory/audits/{id}/items/assign:
     post:
       tags: [F07 Stock Audit]
@@ -719,7 +941,10 @@ paths:
     patch:
       tags: [F07 Stock Audit]
       summary: Update count
-      description: "Permission: inventory.audit.count"
+      description: >-
+        "Permission: inventory.audit.count. The body may be JSON, or multipart/form-data when the
+        count carries evidence photos of the broken goods. At least one photo is required when
+        countedDamagedQty is greater than zero."
       parameters:
         - $ref: '#/components/parameters/businessIdHeader'
         - $ref: '#/components/parameters/auditId'
@@ -732,10 +957,130 @@ paths:
               properties:
                 countedQty:
                   type: integer
+                countedDamagedQty:
+                  type: integer
+                discrepancyReason:
+                  type: string
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                countedQty:
+                  type: integer
+                countedDamagedQty:
+                  type: integer
+                discrepancyReason:
+                  type: string
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
       responses:
         '200':
           description: Count updated
-  
+        '400':
+          description: Broken goods found without an evidence photo
+        '415':
+          description: The uploaded file is not a JPEG, PNG or WebP image
+
+    delete:
+      tags: [F07 Stock Audit]
+      summary: Delete one row of a draft audit
+      description: >
+        "Permission: inventory.audit.create. Owner only. Only a DRAFT audit can have its rows
+        removed."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      responses:
+        '204':
+          description: Audit item deleted
+        '404':
+          description: The audit or the row does not exist in this business
+        '409':
+          description: The audit is not a draft
+
+  /inventory/audits/{id}/items/{itemId}/counts/{countId}/images:
+    get:
+      tags: [F07 Stock Audit]
+      summary: List the evidence photos of one counter's count
+      description: "Permission: inventory.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+        - name: countId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The photos of this count with short-lived signed links
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditCountImage'
+        '403':
+          description: The caller is neither the owner nor the counter of this count
+        '404':
+          description: The count does not exist in this business
+
+  /inventory/audit-count-images/{imageId}:
+    get:
+      tags: [F07 Stock Audit]
+      summary: Get one evidence photo of an audit count
+      description: "Permission: inventory.read"
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: imageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The photo with a short-lived signed link
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditCountImage'
+        '403':
+          description: The caller is neither the owner nor the counter who took the photo
+        '404':
+          description: The photo does not exist in this business
+
+  /inventory/audits/{id}/items/{itemId}/history:
+    get:
+      tags: [F07 Stock Audit]
+      summary: Get the history of one audit row
+      description: >
+        Permission: inventory.read. Only the business owner may read it: the history holds what
+        both counters found, so a staff member must not see it.
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      responses:
+        '200':
+          description: The records of this row, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditItemHistory'
+        '403':
+          description: The caller is not the owner of this business
+        '404':
+          description: The row does not exist in this business
+
   /inventory/audits/{id}/items/{itemId}/submit:
     post:
       tags: [F07 Stock Audit]
@@ -774,6 +1119,31 @@ paths:
       responses:
         '200':
           description: Item rejected
+
+  /inventory/audits/{id}/items/{itemId}/recount:
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Send a disputed row back to both counters
+      description: >-
+        "Permission: inventory.audit.approve_item. Used when the two counters disagree: the row goes
+        back to both of them for another count and the old numbers are cleared."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+        - $ref: '#/components/parameters/auditItemId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: The row was sent back for another count
+        '409':
+          description: The row does not have two counters, or they already agree
   
   /inventory/audits/{id}/approve:
     patch:
@@ -864,7 +1234,56 @@ paths:
       responses:
         '200':
           description: Lot item quarantined
-  
+
+  /inventory/variants/{variantId}/quarantine:
+    get:
+      tags: [F08 Lot Management]
+      summary: Get the quarantine of a product without a lot item
+      description: "Permission: inventory.lot.read. A product with no lot item keeps its quarantine on the variant."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: variantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The quarantine of this variant
+        '404':
+          description: The variant is not quarantined
+
+    post:
+      tags: [F08 Lot Management]
+      summary: Quarantine a product without a lot item
+      description: "Permission: inventory.scrap.create. Quarantines the variant itself."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - name: variantId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+                note:
+                  type: string
+                  maxLength: 500
+      responses:
+        '200':
+          description: Variant quarantined
+
   /inventory/scrap-orders:
     post:
       tags: [F08 Scrap Management]

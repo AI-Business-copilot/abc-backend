@@ -451,6 +451,104 @@ export class LotService {
   }
 
   /**
+   * Staff pull a quantity of one product off the shelf, for a product that has no lot item.
+   * The quarantined quantity is recorded on the variant, the same way the lot flow records it on
+   * the lot item, so the goods can then be scrapped.
+   */
+  async quarantineVariant(
+    businessId: string,
+    variantId: string,
+    userId: string,
+    body: { quantity?: unknown; note?: unknown },
+  ): Promise<any> {
+    const quantity = Number(body.quantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new HttpError(400, 'quantity must be a whole number greater than 0.');
+    }
+
+    const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : null;
+    if (note && note.length > 500) {
+      throw new HttpError(400, 'note must be 500 characters or fewer.');
+    }
+
+    return prisma.$transaction(async (tx) => {
+      const variant = await tx.productVariant.findUnique({ where: { id: variantId } });
+      if (!variant || variant.businessId !== businessId) {
+        throw new HttpError(404, 'Variant not found');
+      }
+
+      await assertVariantNotLockedForAudit(tx, businessId, variantId);
+
+      const pending = await tx.scrapOrder.count({
+        where: { businessId, variantId, lotItemId: null, status: 'PENDING' },
+      });
+      if (pending > 0) {
+        throw new HttpError(
+          409,
+          'This SKU has a scrap order waiting for review. Resolve it before changing the quarantine.',
+        );
+      }
+
+      const balances = await tx.inventoryBalance.aggregate({
+        where: { businessId, variantId, lotItemId: null },
+        _sum: { quantityOnHand: true, damagedQuantity: true },
+      });
+      const available = (balances._sum.quantityOnHand ?? 0) + (balances._sum.damagedQuantity ?? 0);
+
+      if (quantity > available) {
+        throw new HttpError(
+          409,
+          `Quarantine quantity ${quantity} is more than the ${available} unit(s) of this SKU.`,
+        );
+      }
+
+      // One quarantine row per variant: a second quarantine replaces the first.
+      return tx.variantQuarantine.upsert({
+        where: { businessId_variantId: { businessId, variantId } },
+        create: {
+          businessId,
+          variantId,
+          quarantineQty: quantity,
+          quarantinedAt: new Date(),
+          quarantinedBy: userId,
+          quarantineNote: note,
+        },
+        update: {
+          quarantineQty: quantity,
+          quarantinedAt: new Date(),
+          quarantinedBy: userId,
+          quarantineNote: note,
+          updatedAt: new Date(),
+        },
+        include: {
+          variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
+        },
+      });
+    });
+  }
+
+  /** The variant-level quarantine of a SKU, or null when it is not quarantined. */
+  async getVariantQuarantine(businessId: string, variantId: string) {
+    const quarantine = await prisma.variantQuarantine.findFirst({
+      where: { businessId, variantId },
+      include: {
+        variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
+      },
+    });
+    if (!quarantine) return null;
+    return {
+      id: quarantine.id,
+      variantId: quarantine.variantId,
+      sku: quarantine.variant.sku,
+      productName: quarantine.variant.template.name,
+      quarantineQty: quarantine.quarantineQty,
+      quarantinedAt: quarantine.quarantinedAt,
+      quarantinedBy: quarantine.quarantinedBy,
+      quarantineNote: quarantine.quarantineNote,
+    };
+  }
+
+  /**
    * Find all UNUSABLE lot items that should trigger notifications
    */
   async getUnusableLots(businessId: string): Promise<LotItemWithStatus[]> {
