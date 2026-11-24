@@ -40,6 +40,7 @@ const orderInclude = {
       lot: { select: { id: true, lotNumber: true } },
     },
   },
+  business: { select: { industryType: true } },
   createdByUser: userSelect,
   approvedByUser: userSelect,
   rejectedByUser: userSelect,

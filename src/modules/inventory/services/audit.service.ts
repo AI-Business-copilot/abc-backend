@@ -1080,6 +1080,7 @@ class AuditService {
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
       include: {
+        business: { select: { industryType: true } },
         approvedByUser: { select: { fullName: true, email: true } },
         createdByUser: { select: { id: true, fullName: true, email: true } },
         stockAuditItems: {
@@ -1107,6 +1108,7 @@ class AuditService {
       isLockedForAudit: audit.isLockedForAudit,
       countStartAt: audit.countStartAt,
       completedAt: audit.completedAt,
+      industryType: audit.business?.industryType || null,
       approvedBy: audit.approvedByUser?.fullName || audit.approvedByUser?.email || null,
       createdBy: person(audit.createdByUser),
       itemCount: audit.stockAuditItems.length,
@@ -2069,6 +2071,7 @@ class AuditService {
 
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
+      select: { status: true, business: { select: { industryType: true } } },
     });
 
     if (!audit) {
@@ -2105,6 +2108,7 @@ class AuditService {
     ]);
 
     return {
+      industryType: audit.business?.industryType || null,
       items: items.map((item) => formatAuditItem(item, viewer.id, viewerIsOwner)),
       pagination: {
         page,
@@ -2122,7 +2126,7 @@ class AuditService {
 
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, business: { select: { industryType: true } } },
     });
 
     if (!audit) {
@@ -2143,7 +2147,8 @@ class AuditService {
       throw new HttpError(404, "Không tìm thấy dòng kiểm kê.");
     }
 
-    return formatAuditItem(item, viewer.id, viewerIsOwner);
+    const formattedItem = formatAuditItem(item, viewer.id, viewerIsOwner);
+    return { ...formattedItem, industryType: audit.business?.industryType || null };
   }
 
   /**
