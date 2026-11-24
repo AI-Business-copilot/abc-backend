@@ -55,8 +55,7 @@ model Business {
   auditCountImages        StockAuditItemCountImage[]  @relation("stock_audit_item_count_images_business_id")
   auditItemHistories      StockAuditItemHistory[]     @relation("stock_audit_item_histories_business_id")
   variantQuarantines      VariantQuarantine[]         @relation("variant_quarantines_business_id")
-  dailyProductMetrics     DailyProductMetric[]        @relation("daily_product_metrics_business_id")
-  forecastRuns            ForecastRun[]               @relation("forecast_runs_business_id")
+ 
   aiInsightSettings       AiInsightSettings?          @relation("ai_insight_settings_business_id")
   aiInsightRuns           AiInsightRun[]              @relation("ai_insight_runs_business_id")
   aiInsights              AiInsight[]                 @relation("ai_insights_business_id")
@@ -122,7 +121,6 @@ model User {
   auditItemHistoryCounts           StockAuditItemHistoryCount[] @relation("stock_audit_item_history_counts_counter_user_id")
   lotItemsQuarantined              ProductLotItem[]          @relation("product_lot_items_quarantined_by")
   variantQuarantinesCreated        VariantQuarantine[]       @relation("variant_quarantines_quarantined_by")
-  forecastRuns                     ForecastRun[]             @relation("forecast_runs_executed_by")
   promotionsCreated                Promotion[]               @relation("promotions_created_by")
   onlineReportImports              OnlineReportImportBatch[] @relation("online_report_batches_imported_by")
 
@@ -393,7 +391,7 @@ model ProductVariant {
   stockAuditItems        StockAuditItem[]            @relation("stock_audit_items_variant_id")
   scrapOrders            ScrapOrder[]                @relation("scrap_orders_variant_id")
   variantQuarantines     VariantQuarantine[]         @relation("variant_quarantines_variant_id")
-  dailyProductMetrics    DailyProductMetric[]        @relation("daily_product_metrics_variant_id")
+ 
   channelDailyMetrics    ChannelDailyProductMetric[] @relation("channel_daily_metrics_variant_id")
   aiInsights             AiInsight[]                 @relation("ai_insights_variant_id")
   aiForecast             AiForecast?                 @relation("ai_forecasts_variant_id")
