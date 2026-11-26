@@ -34,9 +34,22 @@ export async function allocateStock(tx: Prisma.TransactionClient, businessId: st
   const today = new Date(new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10));
   const balances = await tx.inventoryBalance.findMany({
     where: { businessId, variantId, ...(variant.template.hasLotTracking
-      ? { lotItem: { is: { businessId, variantId, expirationDate: { gte: today } } } }
+      // A quarantined lot item holds goods that must not be sold. The quarantine does not lower
+      // the balance, so the lot status is what keeps the goods off the shelf.
+      ? { lotItem: { is: { businessId, variantId, expirationDate: { gte: today }, status: { not: "QUARANTINED" } } } }
       : { lotItemId: null }) }, include: { lotItem: true },
   });
+  if (!variant.template.hasLotTracking) {
+    // A product with no lot keeps its quarantine on the variant, so the whole SKU is blocked while
+    // the quarantined goods wait to be scrapped.
+    const quarantined = await tx.variantQuarantine.findFirst({
+      where: { businessId, variantId, quarantineQty: { gt: 0 } },
+      select: { id: true },
+    });
+    if (quarantined) {
+      throw new HttpError(409, `SKU ${variant.sku} has quarantined goods that must be scrapped before it can be sold.`);
+    }
+  }
   balances.sort((a, b) => (a.lotItem?.expirationDate.getTime() ?? 0) - (b.lotItem?.expirationDate.getTime() ?? 0) || a.id.localeCompare(b.id));
   let remaining = requested;
   const allocations = [];

@@ -15,6 +15,13 @@ const IMAGE_2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const staffActor = { userId: STAFF, role: "STAFF" };
 const ownerActor = { userId: OWNER, role: "OWNER" };
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0x01]);
+// The three dossier fields every scrap order carries. The reason is written from the cause code,
+// so staff never state it.
+const dossier = {
+  causeCode: "EXPIRED",
+  disposalMethod: "INCINERATION",
+  disposalLocation: "Khu xử lý Quận 1",
+};
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
 const webp = Buffer.concat([
   Buffer.from("RIFF", "ascii"),
@@ -157,6 +164,13 @@ const db = {
       calls.push(["ledgerCreate", args]);
     },
   },
+  user: {
+    // The approval reads the two council members: the approver and the creator of the order.
+    findMany: async () => [
+      { id: OWNER, fullName: "Lê Thị C" },
+      { id: STAFF, fullName: "Nguyễn Văn A" },
+    ],
+  },
   $queryRaw: async () => {
     calls.push(["queryRaw"]);
     return [state.locked];
@@ -234,31 +248,31 @@ test("evidence photos must be one to ten real JPEG, PNG or WebP images", () => {
 
 test("only a staff member can open a scrap order for a quarantined lot", async () => {
   await rejects(
-    () => service.createScrapOrder(BUSINESS, ownerActor, { lotItemId: LOT_ITEM, scrapReason: "Hỏng" }, [{ buffer: jpeg }]),
+    () => service.createScrapOrder(BUSINESS, ownerActor, { lotItemId: LOT_ITEM, ...dossier }, [{ buffer: jpeg }]),
     403,
   );
 
   await rejects(
-    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, scrapReason: " " }, [{ buffer: jpeg }]),
+    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, ...dossier, causeCode: "SPOILED" }, [{ buffer: jpeg }]),
     400,
   );
 
   state.lotItem = { ...state.lotItem, status: "UNUSABLE" };
   await rejects(
-    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, scrapReason: "Hỏng" }, [{ buffer: jpeg }]),
+    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, ...dossier }, [{ buffer: jpeg }]),
     409,
   );
 
   state.lotItem = null;
   await rejects(
-    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, scrapReason: "Hỏng" }, [{ buffer: jpeg }]),
+    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, ...dossier }, [{ buffer: jpeg }]),
     404,
   );
 });
 
 test("scrap creation checks the quantity, the source and the available stock", async () => {
   const files = [{ buffer: jpeg }];
-  const base = { lotItemId: LOT_ITEM, scrapReason: "Hỏng" };
+  const base = { lotItemId: LOT_ITEM, ...dossier };
 
   await rejects(() => service.createScrapOrder(BUSINESS, staffActor, { ...base, scrapQty: 4 }, files), 409);
   await rejects(() => service.createScrapOrder(BUSINESS, staffActor, { ...base, scrapQty: 0 }, files), 400);
@@ -293,7 +307,7 @@ test("a scrap order stores its photos, the quarantined quantity and a running co
   const created = await service.createScrapOrder(
     BUSINESS,
     staffActor,
-    { lotItemId: LOT_ITEM, scrapReason: "  Hộp móp  " },
+    { lotItemId: LOT_ITEM, ...dossier },
     [{ buffer: jpeg }, { buffer: png }],
   );
 
@@ -301,7 +315,9 @@ test("a scrap order stores its photos, the quarantined quantity and a running co
   assert.equal(data.businessId, BUSINESS);
   assert.equal(data.variantId, VARIANT);
   assert.equal(data.scrapQty, 3, "the quarantined quantity is the default");
-  assert.equal(data.scrapReason, "Hộp móp");
+  assert.equal(data.causeCode, "EXPIRED");
+  // The reason follows the cause code, so the two can never disagree.
+  assert.equal(data.scrapReason, "Hết hạn sử dụng");
   assert.equal(data.scrapSource, "SELLABLE_STOCK");
   assert.equal(data.status, "PENDING");
   assert.equal(data.createdBy, STAFF);
@@ -475,7 +491,7 @@ test("a SKU locked for a stock audit cannot be quarantined, scrapped or have a s
 
   state.lotItem = { ...state.lotItem, variant: { ...state.lotItem.variant, isLockedForAudit: true } };
   await rejects(
-    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, scrapReason: "Hỏng" }, [{ buffer: jpeg }]),
+    () => service.createScrapOrder(BUSINESS, staffActor, { lotItemId: LOT_ITEM, ...dossier }, [{ buffer: jpeg }]),
     409,
   );
   assert.equal(uploads.length, 0, "no photo is uploaded for a locked SKU");

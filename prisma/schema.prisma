@@ -1035,6 +1035,8 @@ model StockAudit {
   id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   businessId       String    @map("business_id") @db.Uuid
   auditCode        String    @map("audit_code") @db.VarChar(50)
+  /// The owner's note on the audit, written when the audit is created.
+  note             String?   @map("note") @db.Text
   /// Set when the counting starts, not when the draft is created.
   countStartAt     DateTime? @map("count_start_at") @db.Timestamptz(6)
   completedAt      DateTime? @map("completed_at") @db.Timestamptz(6)
@@ -1231,6 +1233,8 @@ model ScrapOrder {
   totalLossValue      Decimal?  @default(dbgenerated()) @map("total_loss_value") @db.Decimal(14, 2)
   /// SQL CHECK (scrap_source IN ('DAMAGED_STOCK', 'SELLABLE_STOCK')); can ap dung bang SQL rieng.
   scrapSource         String    @default("DAMAGED_STOCK") @map("scrap_source") @db.VarChar(30)
+  /// The plain-text reason of the loss. The server writes it from the cause code, so the two
+  /// can never disagree; staff never state it themselves.
   scrapReason         String    @map("scrap_reason") @db.VarChar(255)
   /// SQL CHECK (status IN ('PENDING', 'COMPLETED', 'REJECTED', 'CANCELLED')); CANCELLED is kept for old rows.
   status              String    @default("PENDING") @db.VarChar(30)
@@ -1247,6 +1251,21 @@ model ScrapOrder {
   cancelledBy         String?   @map("cancelled_by") @db.Uuid
   cancelledAt         DateTime? @map("cancelled_at") @db.Timestamptz(6)
   cancelledNote       String?   @map("cancelled_note") @db.VarChar(500)
+  /// The cause of the loss as stated in the disposal dossier (Thông tư 78/2014).
+  /// SQL CHECK (cause_code IN ('EXPIRED', 'DAMAGED_TRANSIT', 'QUALITY_FAIL', 'OLD_STOCK')).
+  causeCode           String?   @map("cause_code") @db.VarChar(50)
+  /// Reimbursement received from an insurer or a third party. Only the part of the loss that was
+  /// not compensated may be deducted for corporate income tax (Thông tư 96/2015 sửa đổi TT 78/2014).
+  compensatedAmount   Decimal?  @default(0) @map("compensated_amount") @db.Decimal(12, 2)
+  /// The day the goods were physically destroyed. Written when the disposal minutes are confirmed.
+  disposalDate        DateTime? @map("disposal_date") @db.Timestamptz(6)
+  /// How the goods were destroyed.
+  /// SQL CHECK (disposal_method IN ('INCINERATION', 'BURIAL', 'CHEMICAL', 'CONTRACTOR')).
+  disposalMethod      String?   @map("disposal_method") @db.VarChar(100)
+  /// Where the goods were destroyed. Required when the method is CONTRACTOR.
+  disposalLocation    String?   @map("disposal_location") @db.VarChar(255)
+  /// The members of the disposal council, separated by commas. At least two are needed.
+  witnessNames        String?   @map("witness_names") @db.VarChar(500)
 
   business        Business          @relation("scrap_orders_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   variant         ProductVariant    @relation("scrap_orders_variant_id", fields: [variantId], references: [id], onDelete: Restrict, onUpdate: NoAction)
@@ -1293,6 +1312,9 @@ model ScrapOrderImage {
   mimeType     String    @map("mime_type") @db.VarChar(50)
   sizeBytes    Int       @map("size_bytes")
   note         String?   @db.VarChar(500)
+  /// What the file is: an evidence photo, an insurance claim or a liability notice.
+  /// SQL CHECK (document_type IN ('PHOTO', 'INSURANCE_CLAIM', 'LIABILITY_NOTICE')).
+  documentType String?   @map("document_type") @db.VarChar(50)
   uploadedBy   String    @map("uploaded_by") @db.Uuid
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
@@ -1604,6 +1626,9 @@ enum StockTransactionType {
   STOCK_ADJUSTMENT_IN
   STOCK_ADJUSTMENT_OUT
   SCRAP_DISPOSAL
+  /// Written when the physical disposal is confirmed. It changes no stock: the quantity was
+  /// already written off by the SCRAP_DISPOSAL row when the order was approved.
+  SCRAP_PHYSICALLY_DISPOSED
 
   @@map("stock_transaction_type")
 }

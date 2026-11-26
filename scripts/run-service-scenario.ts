@@ -370,7 +370,9 @@ async function main() {
       variantId: variant.id,
       scrapQty: 5,
       scrapSource: "SELLABLE_STOCK", // Xuất trừ khỏi tồn kho
-      scrapReason: "Hàng rách vỡ ẩm mốc không thể khắc phục",
+      causeCode: "DAMAGED_TRANSIT",
+      disposalMethod: "CONTRACTOR",
+      disposalLocation: "Khu xử lý môi trường Quận 1",
     },
     [{ buffer: SAMPLE_IMAGE_BUFFER }],
   );

@@ -20,6 +20,8 @@ const tx = {
     create: async ({ data }) => state.customer = { id: oid, ...data },
   },
   productVariant: { findFirst: async ({ where }) => where.businessId === bid && where.id === vid ? state.variant : null },
+  // A SKU with quarantined goods cannot be sold, so the checkout asks for the quarantine first.
+  variantQuarantine: { findFirst: async () => state.variantQuarantine ?? null },
   inventoryBalance: {
     findMany: async ({ where }) => { seen.push(['stock', where]); return state.balances.filter(b => where.lotItemId === null ? b.lotItemId === null : b.lotItem && b.lotItem.expirationDate >= where.lotItem.is.expirationDate.gte); },
     update: async ({ where, data }) => Object.assign(state.balances.find(b => b.id === where.id), data),
@@ -61,7 +63,7 @@ const pay = (extra = {}, business = bid) => service.complete(business, 'auth', o
 const status = code => e => e.statusCode === code;
 beforeEach(() => {
   failLedger = false; conflicts = 0; attempts = 0; seen = [];
-  state = { shift: { id: sid }, customer: null, variant: { id: vid, sku: 'SKU', isActive: true, isLockedForAudit: false, basePrice: D(50), costPrice: D(20), template: { id: '66666666-6666-4666-8666-666666666666', name: 'Product', categoryId: null, hasLotTracking: false } }, balances: [{ id: 'balance', lotItemId: null, quantityOnHand: 10, damagedQuantity: 2, lotItem: null }], ledger: [], cashTransactions: [], promotions: [], categories: [], redemptions: [], order: null };
+  state = { shift: { id: sid }, customer: null, variantQuarantine: null, variant: { id: vid, sku: 'SKU', isActive: true, isLockedForAudit: false, basePrice: D(50), costPrice: D(20), template: { id: '66666666-6666-4666-8666-666666666666', name: 'Product', categoryId: null, hasLotTracking: false } }, balances: [{ id: 'balance', lotItemId: null, quantityOnHand: 10, damagedQuantity: 2, lotItem: null }], ledger: [], cashTransactions: [], promotions: [], categories: [], redemptions: [], order: null };
 });
 
 test('draft checks stock and server price, without payment, reservation or stock change', async () => {
