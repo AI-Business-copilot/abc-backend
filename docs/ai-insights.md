@@ -1,6 +1,6 @@
 # Cảnh báo tồn kho (AI giai đoạn 1 – rule-based)
 
-Menu: **Trợ lý kinh doanh → Cảnh báo tồn kho** (`/app/insights`). Các rule chạy bằng Node/PostgreSQL; dự báo do Python tính, không dùng LLM. Chỉ dùng dữ liệu POS; báo cáo Shopee không tham gia (xem `online-reports-shopee.md`).
+Menu: **Trợ lý kinh doanh → Cảnh báo tồn kho** (`/app/insights`). Các rule chạy bằng Node/PostgreSQL; dự báo do Python tính, không dùng LLM. Chỉ dùng dữ liệu POS.
 
 ## Luồng
 
@@ -10,6 +10,8 @@ Menu: **Trợ lý kinh doanh → Cảnh báo tồn kho** (`/app/insights`). Các
 4. Chạy các luật thuần (`rules/*.ts`, không truy cập DB) rồi lưu kết quả vào `ai_insights`.
 
 Tồn có thể bán = `quantity_on_hand − damaged_quantity`, không tính lô QUARANTINED, SCRAPPED, UNUSABLE hoặc đã quá hạn. Số bán = `max(0, units_sold − units_returned)` theo ngày.
+
+Việc tạo lần chạy và công bố sử dụng cùng khóa theo cửa hàng. Cảnh báo, dự báo, gợi ý, lịch sử và trạng thái `SUCCEEDED` được ghi trong một giao dịch; lần chạy cũ bị thay thế không được công bố. Lỗi khi ghi sẽ hoàn tác giao dịch và đánh dấu lần chạy thất bại. Quy tắc này không phục hồi được snapshot cũ từ các bảng kết quả có thể thay đổi.
 
 ## Các luật (mặc định)
 
@@ -37,6 +39,7 @@ Mỗi cảnh báo có `fingerprint = loại:variant:lô`, nên mỗi lần chạ
 | Method | Đường dẫn | Quyền |
 |---|---|---|
 | GET | `/`, `/summary`, `/settings`, `/:id` | `analytics.read` |
+| GET | `/inventory-outlook` | `analytics.read` |
 | POST | `/run` | `ai_insights.manage` |
 | PUT | `/settings` | `ai_insights.manage` |
 | PATCH | `/:id` (`status`, `snoozeDays`) | `ai_insights.manage` |
@@ -194,4 +197,58 @@ phải đánh giá đầy đủ chuỗi migration hay hướng dẫn sửa datab
 
 - Đánh giá 7/14/28 ngày bắt đầu ngay sau thời điểm phát hành trong ngày; dự báo ngày đầy đủ mới bắt đầu ngày thứ hai sau `asOf` và yêu cầu lần chạy hoàn tất trước mốc đó.
 - Mùa vụ và đánh giá mô hình ML bằng dữ liệu cửa hàng thực tế.
+
+# Hiệu quả sản phẩm (AI-BC03)
+
+Menu **Trợ lý kinh doanh → Hiệu quả sản phẩm** (`/app/product-performance`) phân tích POS trong quá khứ, không dùng ML hay forecast. `GET /api/business-data/product-performance` yêu cầu cả `analytics.read` và `finance.read`; cửa hàng được xác định từ phiên đăng nhập.
+
+API nhận `from`, `to` (`YYYY-MM-DD`, tính cả hai đầu, tối đa 183 ngày), `search` (tên hoặc SKU), `sort` (`revenue`, `profit`, `units`), `page` và `pageSize` (tối đa 50). Tùy chọn `all=true` trả toàn bộ kết quả phù hợp trong một snapshot, không phân trang. Kỳ trước có cùng số ngày, liền trước kỳ đã chọn. Tổng hai kỳ tính trên toàn bộ sản phẩm trước khi tìm kiếm và phân trang; xếp hạng theo kỳ hiện tại. Tên sản phẩm và SKU là thông tin hiện tại. Mặc định giao diện chọn bảy ngày hoàn chỉnh gần nhất.
+
+Hai kỳ được đọc trực tiếp từ đơn và phiếu trả hoàn tất trong một snapshot PostgreSQL, không ghi dữ liệu hay phụ thuộc bảng chỉ số đã tổng hợp. Giao diện tải toàn bộ kết quả một lần cho kỳ đã chọn; tìm kiếm, sắp xếp và phân trang xử lý trên snapshot đó, không tải lại POS. Bấm “Xem phân tích” để lấy snapshot mới; dữ liệu có thể thay đổi giữa các lần tải. Ngày ghi nhận là **ngày tạo** chứng từ theo `Asia/Ho_Chi_Minh`, không phải thời điểm hoàn tất. Chọn ngày hiện tại có thể cho kết quả chưa hoàn chỉnh.
+
+Doanh thu thuần = doanh thu gộp − giảm giá dòng − hoàn tiền; giá vốn thuần = giá vốn bán − giá vốn hoàn lại hợp lệ; lợi nhuận gộp = doanh thu thuần − giá vốn thuần. Biên lợi nhuận chỉ tính khi doanh thu thuần dương. Phần trăm thay đổi chỉ tính khi giá trị kỳ trước dương. Số bán và trả hiển thị riêng; phiếu trả được tính trong kỳ tạo phiếu, kể cả khi đơn bán thuộc kỳ khác. Không cộng số đơn từng SKU để tính đơn duy nhất.
+
+Hàng trả chỉ hoàn giá vốn nếu có thể nhập kho và có liên kết hợp lệ đến dòng đơn hoàn tất cùng cửa hàng. Cảnh báo khi loại dòng có sản phẩm không hợp lệ hoặc có dòng trả đủ điều kiện nhưng thiếu liên kết giá vốn. Kết quả không bao gồm chi phí vận hành và không phải lợi nhuận ròng; các kiểm tra không chứng minh dữ liệu nguồn đầy đủ. SKU `DEMO-` hiển thị nhãn dữ liệu giả lập, không chứng minh hiệu quả thực tế.
+
+Vì nguồn được đọc và tổng hợp lại cho mỗi lần tải, còn `all=true` truyền toàn bộ sản phẩm và biến thể về trình duyệt, cần kiểm tra hiệu năng và bộ nhớ theo dữ liệu cửa hàng trước khi mở rộng quy mô; không nên hiểu giới hạn 183 ngày là giới hạn số sản phẩm hoặc giao dịch.
+
+# Nhận định tồn kho (AI-BC05)
+
+Menu **Trợ lý kinh doanh → Nhận định tồn kho** (`/app/inventory-outlook`) và `GET /api/ai-insights/inventory-outlook` yêu cầu `analytics.read`. Chức năng chỉ đọc, dùng POS và kết quả phân tích tồn kho hiện có; không chạy lại phân tích, không tạo PO hoặc đổi trạng thái. API không trả giá vốn, giá bán, thành tiền, giá trị rủi ro hay JSON nguồn nguyên vẹn; các chỉ số được chọn theo danh sách trường cho phép.
+
+API nhận `search` (tên/SKU, tối đa 100 ký tự), `type` (loại cảnh báo, `REPLENISHMENT`, `DRAFT_ORDER`), `priority`, `page` và `pageSize` (tối đa 100). Các cảnh báo `OPEN`/`ACKNOWLEDGED`, gợi ý `PENDING` và `ORDERED` gắn PO `DRAFT` được đọc cùng lần chạy trong snapshot `RepeatableRead`. Gom theo SKU, giữ từng cảnh báo và lô; sắp xếp theo mức hiện hành nặng nhất (`CRITICAL` → `HIGH` → `MEDIUM` → `LOW`), rồi tên, SKU, ID; sau đó mới lọc và phân trang. Tổng và các mức là số SKU duy nhất trước lọc. Các tín hiệu cũ và đơn nháp vẫn hiển thị nhưng không tạo mức ưu tiên hiện hành. Đơn nháp không phải đơn đã đặt, hàng đang về hay đề xuất mới.
+
+Lần phân tích gần nhất phải thành công và được công bố nguyên tử theo cơ chế mới; lần chạy trước khi có cơ chế này phải chạy lại. Nếu chưa chạy, đang chạy, thất bại hay thiếu bằng chứng công bố, API không trả danh sách rỗng như một kết quả thành công. Tín hiệu rule quá 36 giờ hoặc từ lần chạy khác được đánh dấu cũ. Tín hiệu phụ thuộc dự báo và gợi ý nhập chỉ hiện hành khi dự báo sẵn sàng, dữ liệu đến hết hôm qua và thuộc lần chạy mới nhất. Nếu Python không khả dụng, cảnh báo hết hàng hoặc gợi ý được giữ từ lần trước không trở thành mới chỉ vì rule khác vừa chạy. Dự đoán hết hạn có thể dùng dự báo hoặc trung bình 30 ngày; nguồn được thể hiện riêng.
+
+Mỗi nguồn hiển thị ngày dữ liệu bán POS và thời điểm hoàn tất phân tích tương ứng. Tồn và lô được đọc trong quá trình phân tích, không phải dữ liệu thời gian thực; thời điểm hoàn tất không phải bằng chứng thời điểm commit chính xác. Cảnh báo thiếu lịch sử, tồn không rõ, đơn quá hạn và dữ liệu/mô hình giả lập được giữ lại; không có cảnh báo trong danh sách không chứng minh không có rủi ro. API đọc toàn bộ SKU liên quan trước phân trang, vì vậy cần đánh giá hiệu năng và giới hạn bộ nhớ với cửa hàng lớn.
+
+Giao diện dùng màu và nhãn mức độ tương tự trang Cảnh báo tồn kho; mỗi mã hàng hiển thị mức cao nhất của thông tin còn mới. Chi tiết giải thích lý do và hướng xử lý để chủ cửa hàng cân nhắc, kèm số liệu tùy chọn. Thời gian nhập ước tính không đồng nghĩa đã có đơn đặt hàng, và dự báo có thể khác thực tế; kiểm tra tồn và các lô trước khi xử lý.
+
+# Giải thích biến động (AI-BC02)
+
+Menu **Trợ lý kinh doanh → Giải thích biến động** (`/app/business-movement`) và `GET /api/business-data/business-movement?from=YYYY-MM-DD&to=YYYY-MM-DD` yêu cầu cả `analytics.read` và `finance.read`; cửa hàng lấy từ phiên. Chức năng chỉ đọc, dùng POS lịch sử, không dùng LLM hay dự báo. Kỳ trước liền kề, có cùng số ngày; tối đa 183 ngày/kỳ, không chọn ngày tương lai. Mặc định là bảy ngày hoàn chỉnh gần nhất; chọn hôm nay có cảnh báo kỳ chưa hoàn chỉnh.
+
+API tái sử dụng một snapshot BC03 với toàn bộ sản phẩm và biến thể, cùng tổng, cảnh báo và thời điểm đọc. Tìm kiếm, chọn chỉ số và phân trang xử lý trên snapshot; bấm “Xem phân tích” để tải lại. Tên và SKU là thông tin hiện tại. Các quy tắc chứng từ, giá vốn, cảnh báo dữ liệu và giới hạn độ đầy đủ giống BC03 ở trên.
+
+Đóng góp của sản phẩm hoặc SKU là giá trị kỳ này trừ kỳ trước. Hai nhóm tăng/giảm sắp theo độ lớn tuyệt đối, hiển thị năm sản phẩm đầu và tổng các sản phẩm còn lại; tổng các đóng góp bằng thay đổi toàn cửa hàng. Nếu các sản phẩm tăng và giảm bù trừ, cả hai nhóm vẫn được thể hiện. Phần trăm thay đổi không tính khi kỳ trước không dương.
+
+Khoản mục được phân rã theo công thức: thay đổi doanh thu thuần = thay đổi tiền hàng − thay đổi giảm giá dòng − thay đổi hoàn tiền; thay đổi lợi nhuận gộp = thay đổi doanh thu thuần − thay đổi giá vốn thuần. Đóng góp của giảm giá, hoàn tiền và giá vốn có dấu ngược với thay đổi của chính khoản mục. Đây là hai cách nhìn cùng số liệu, không cộng phân rã khoản mục với đóng góp sản phẩm, và không chứng minh nguyên nhân. Chưa phân rã ảnh hưởng giá, sản lượng hay cơ cấu. Lợi nhuận gộp không phải lợi nhuận ròng.
+
+Toàn bộ sản phẩm và biến thể được truyền về trình duyệt; cần đo hiệu năng và bộ nhớ với cửa hàng lớn trước khi mở rộng quy mô.
+
+# Mô phỏng lợi nhuận (AI-WS06)
+
+Menu **Trợ lý kinh doanh → Mô phỏng lợi nhuận** (`/app/profit-simulation`) so sánh một SKU giữa kịch bản cơ sở và một kịch bản thay đổi trong 7, 14 hoặc 28 ngày từ ngày mai theo giờ Việt Nam. Kịch bản chỉ nằm trong bộ nhớ trang, mất khi tải lại; không sửa giá, tồn kho, đơn hàng hay lưu kịch bản. Không dùng LLM hoặc mô hình lợi nhuận riêng.
+
+Các API `GET /api/business-data/profit-simulation/variants`, `GET /api/business-data/profit-simulation/basis?variantId=...`, `POST /api/business-data/profit-simulation/calculate` yêu cầu cả `analytics.read` và `finance.read`; cửa hàng lấy từ phiên. Tìm SKU hỗ trợ `search`, `page` và `pageSize` (mặc định 25, tối đa 50); trả `hasMore` để duyệt tiếp, giao diện dùng 8 dòng/trang. Các trang được đọc riêng nên danh sách có thể thay đổi giữa các lần tải. Bộ chọn thu gọn sau khi chọn SKU và có thể mở lại mà không mất kịch bản đang chỉnh. API cơ sở đọc giá tham khảo hiện tại, lần chạy và forecast trong snapshot `RepeatableRead`. Giá vốn 0 có thể là giá chưa cấu hình; người dùng phải kiểm tra giả định. API tính toán chỉ đọc SKU trong cửa hàng, xác nhận kỳ bắt đầu ngày mai và không ghi dữ liệu.
+
+Số lượng bán có thể nhập tay hoặc lấy tổng dự báo ngày đầy đủ `next-day-v1`. Chỉ dùng khi lần chạy gần nhất thành công, công bố đầy đủ, forecast READY, dữ liệu đến hết hôm qua, SKU thuộc đúng lần chạy, trạng thái OK và dự báo được công bố trước kỳ. Dự báo không sẵn sàng không được thay bằng 0; vẫn có thể nhập tay. Dự báo là số bán kỳ vọng trước trả hàng, không đảm bảo đủ hàng hay độ chính xác thực tế. Dự báo thập phân được làm tròn hai chữ số khi đưa vào giả định; thay đổi giá không tự thay đổi số lượng. Nhãn dữ liệu/mô hình giả lập và nguồn dự báo được thể hiện riêng.
+
+Giới hạn cho mỗi kịch bản: số lượng 0–1.000.000; giá bán và giá vốn 0–10.000.000.000; giảm giá 0–100%; chi phí vận hành cả kỳ 0–1.000.000.000.000. Giá trị là chuỗi thập phân không âm, tối đa hai chữ số lẻ. Để trống chi phí nghĩa là chưa có giả định, không phải 0.
+
+Tính bằng Decimal: tiền hàng = lượng × giá; giảm giá = lượng × giá × tỷ lệ / 100; giá vốn = lượng × giá vốn/đơn vị. Làm tròn từng khoản tiền đến hai chữ số theo HALF_UP; doanh thu sau giảm giá = tiền hàng − giảm giá; lợi nhuận gộp = doanh thu sau giảm giá − giá vốn. Kết quả sau chi phí chỉ tính khi đã nhập chi phí; chênh lệch sau chi phí chỉ tính nếu cả hai kịch bản đều có chi phí. Tỷ lệ thay đổi chỉ tính khi giá trị cơ sở dương.
+
+Đây là mô phỏng theo giả định, không bao gồm trả hàng, thuế hay chi phí chưa nhập; kết quả sau chi phí không phải lợi nhuận ròng. Forecast và giá tại thời điểm đọc không bảo đảm còn phù hợp khi người dùng ra quyết định.
+
+Giao diện ưu tiên chênh lệch lợi nhuận gộp và thông báo lãi/lỗ của kịch bản thay đổi; bảng thành phần và công thức có thể mở xem thêm. Các số tiền đang nhập có dòng định dạng theo tiền Việt để kiểm tra, nhưng dữ liệu nhập vẫn dùng dấu chấm cho phần thập phân, không dùng dấu phân cách hàng nghìn.
 

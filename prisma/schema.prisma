@@ -65,7 +65,6 @@ model Business {
   promotions              Promotion[]                 @relation("promotions_business_id")
   promotionTargets        PromotionTarget[]           @relation("promotion_targets_business_id")
   promotionRedemptions    PromotionRedemption[]       @relation("promotion_redemptions_business_id")
-  onlineReportBatches     OnlineReportImportBatch[]   @relation("online_report_batches_business_id")
   channelDailyMetrics     ChannelDailyProductMetric[] @relation("channel_daily_metrics_business_id")
 
   @@map("businesses")
@@ -122,7 +121,6 @@ model User {
   lotItemsQuarantined              ProductLotItem[]          @relation("product_lot_items_quarantined_by")
   variantQuarantinesCreated        VariantQuarantine[]       @relation("variant_quarantines_quarantined_by")
   promotionsCreated                Promotion[]               @relation("promotions_created_by")
-  onlineReportImports              OnlineReportImportBatch[] @relation("online_report_batches_imported_by")
 
   @@map("users")
 }
@@ -1519,55 +1517,6 @@ model AiReplenishmentItem {
   @@unique([businessId, variantId], map: "uq_ai_replenishment_variant")
   @@index([businessId, status, urgency], map: "idx_ai_replenishment_status")
   @@map("ai_replenishment_items")
-}
-
-model OnlineReportImportBatch {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId       String    @map("business_id") @db.Uuid
-  importedBy       String    @map("imported_by") @db.Uuid
-  platform         String    @db.VarChar(20)
-  fileHash         String    @map("file_hash") @db.Char(64)
-  reportFrom       DateTime? @map("report_from") @db.Date
-  reportTo         DateTime? @map("report_to") @db.Date
-  sourceRowCount   Int       @map("source_row_count")
-  importedRowCount Int       @map("imported_row_count")
-  summary          Json?     @db.JsonB
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  business       Business             @relation("online_report_batches_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  importedByUser User                 @relation("online_report_batches_imported_by", fields: [importedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  records        OnlineReportRecord[] @relation("online_report_records_batch_id")
-
-  @@unique([businessId, id], map: "uq_online_report_batches_business_id")
-  @@unique([businessId, platform, fileHash], map: "uq_online_report_batches_file")
-  @@index([businessId, createdAt], map: "idx_online_report_batches_business_created")
-  @@map("online_report_import_batches")
-}
-
-model OnlineReportRecord {
-  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  businessId            String    @map("business_id") @db.Uuid
-  batchId               String    @map("batch_id") @db.Uuid
-  platform              String    @db.VarChar(20)
-  recordType            String    @map("record_type") @db.VarChar(32)
-  sourceKey             String    @map("source_key") @db.Char(64)
-  sourceSheet           String    @map("source_sheet") @db.VarChar(80)
-  sourceRow             Int       @map("source_row")
-  externalOrderId       String?   @map("external_order_id") @db.VarChar(100)
-  externalProductId     String?   @map("external_product_id") @db.VarChar(100)
-  productName           String?   @map("product_name") @db.Text
-  transactionDate       DateTime? @map("transaction_date") @db.Date
-  settlementDate        DateTime? @map("settlement_date") @db.Date
-  financialData         Json?     @map("financial_data") @db.JsonB
-  unmappedFinancialData Json?     @map("unmapped_financial_data") @db.JsonB
-  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  batch OnlineReportImportBatch @relation("online_report_records_batch_id", fields: [businessId, batchId], references: [businessId, id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@unique([businessId, platform, sourceKey], map: "uq_online_report_records_source")
-  @@index([businessId, platform, transactionDate], map: "idx_online_report_records_business_date")
-  @@index([businessId, batchId], map: "idx_online_report_records_batch")
-  @@map("online_report_records")
 }
 
 model ChannelDailyProductMetric {

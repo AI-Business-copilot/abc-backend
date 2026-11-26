@@ -2,11 +2,11 @@
 
 The business data foundation turns POS operations into normalized, tenant-scoped daily product metrics for later AI analysis. The product scope is offline/POS store management; this data is the primary source for AI features.
 
-Shopee revenue-report import is a separate, supplementary feature and is documented in [online-reports-shopee.md](online-reports-shopee.md). It is not part of this module and is never merged into POS metrics.
+The discontinued online-report import is no longer available. Migration `20261126232000_remove_online_report_tables` drops its two legacy tables and permanently deletes their imported data. Historical migrations remain unchanged.
 
 ## Migration and access
 
-Apply migrations `20261108100000_channel_data_foundation` and `20261108103000_quarantine_unmapped_finance_fields` before use. They are not applied automatically.
+Apply the project migrations in order before use. They are not applied automatically. The `channel_daily_product_metrics` table remains in use for POS metrics.
 
 - POS aggregation requires `business_data.manage` (granted to the business Owner by the migration).
 - AI-ready data requires both `analytics.read` and `finance.read`.

@@ -6,6 +6,7 @@ import { requireSupabaseIdentity } from "../../shared/auth/supabase-auth.middlew
 import { aiInsightsService } from "./ai-insights.service";
 import { replenishmentService } from "../ai-forecast/replenishment.service";
 import { forecastHistory } from "../ai-forecast/forecast-history.service";
+import { inventoryOutlook } from "./inventory-outlook.service";
 
 const router = Router();
 router.use(requireSupabaseIdentity, requireBusinessScope);
@@ -14,6 +15,10 @@ const businessId = (locals: Record<string, unknown>) => String(locals.businessId
 
 router.get("/summary", requirePermission("analytics.read"), async (_req, res) => {
   res.json(await aiInsightsService.summary(businessId(res.locals)));
+});
+
+router.get("/inventory-outlook", requirePermission("analytics.read"), async (req, res) => {
+  res.json(await inventoryOutlook(businessId(res.locals), req.query));
 });
 
 router.get("/settings", requirePermission("analytics.read"), async (_req, res) => {
