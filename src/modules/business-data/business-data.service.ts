@@ -114,10 +114,117 @@ export function buildPosMetricRows(
 }
 
 export class BusinessDataService {
+  async readPosSource(tx: Prisma.TransactionClient, businessId: string, from: string, to: string) {
+    const start = businessDayStart(from);
+    const end = businessDayStart(nextDay(to));
+    const [sales, returns, ordersProcessed, returnsProcessed, anomalies] = await Promise.all([
+      tx.$queryRaw<PosSalesAggregate[]>`
+        SELECT
+          (o."created_at" AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS "metricDate",
+          oi."variant_id" AS "variantId",
+          SUM(oi."quantity")::int AS "unitsSold",
+          COUNT(DISTINCT o."id")::int AS "orderCount",
+          COALESCE(SUM(oi."subtotal"), 0)::numeric(14,2) AS "grossSales",
+          COALESCE(SUM(oi."discount_amount"), 0)::numeric(14,2) AS "discountAmount",
+          COALESCE(SUM(oi."unit_cost" * oi."quantity"), 0)::numeric(14,2) AS "cogs"
+        FROM "orders" o
+        JOIN "order_items" oi ON oi."order_id" = o."id"
+        JOIN "product_variants" v
+          ON v."id" = oi."variant_id" AND v."business_id" = o."business_id"
+        WHERE o."business_id" = ${businessId}::uuid
+          AND o."status" = 'COMPLETED'
+          AND o."created_at" >= ${start}
+          AND o."created_at" < ${end}
+        GROUP BY "metricDate", oi."variant_id"
+      `,
+      tx.$queryRaw<PosReturnAggregate[]>`
+        SELECT
+          (r."created_at" AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS "metricDate",
+          ri."variant_id" AS "variantId",
+          SUM(ri."return_qty")::int AS "unitsReturned",
+          COALESCE(SUM(ri."refund_amount"), 0)::numeric(14,2) AS "refundAmount",
+          COALESCE(SUM(
+            CASE
+              WHEN ri."item_condition" = 'RESTOCKABLE' AND source_order."id" IS NOT NULL
+                THEN oi."unit_cost" * ri."return_qty"
+              ELSE 0
+            END
+          ), 0)::numeric(14,2) AS "returnedCogs"
+        FROM "customer_returns" r
+        JOIN "customer_return_items" ri ON ri."return_id" = r."id"
+        JOIN "product_variants" v
+          ON v."id" = ri."variant_id" AND v."business_id" = r."business_id"
+        LEFT JOIN "order_items" oi
+          ON oi."id" = ri."order_item_id" AND oi."variant_id" = ri."variant_id"
+        LEFT JOIN "orders" source_order
+          ON source_order."id" = oi."order_id"
+          AND source_order."business_id" = r."business_id"
+          AND source_order."status" = 'COMPLETED'
+        WHERE r."business_id" = ${businessId}::uuid
+          AND r."status" = 'COMPLETED'
+          AND r."created_at" >= ${start}
+          AND r."created_at" < ${end}
+        GROUP BY "metricDate", ri."variant_id"
+      `,
+      tx.order.count({
+        where: { businessId, status: "COMPLETED", createdAt: { gte: start, lt: end } },
+      }),
+      tx.customerReturn.count({
+        where: { businessId, status: "COMPLETED", createdAt: { gte: start, lt: end } },
+      }),
+      tx.$queryRaw<PosSourceAnomalies[]>`
+        SELECT
+          (
+            SELECT COUNT(*)::int
+            FROM "orders" o
+            JOIN "order_items" oi ON oi."order_id" = o."id"
+            LEFT JOIN "product_variants" v
+              ON v."id" = oi."variant_id" AND v."business_id" = o."business_id"
+            WHERE o."business_id" = ${businessId}::uuid
+              AND o."status" = 'COMPLETED'
+              AND o."created_at" >= ${start}
+              AND o."created_at" < ${end}
+              AND v."id" IS NULL
+          ) AS "invalidSaleItems",
+          (
+            SELECT COUNT(*)::int
+            FROM "customer_returns" r
+            JOIN "customer_return_items" ri ON ri."return_id" = r."id"
+            LEFT JOIN "product_variants" v
+              ON v."id" = ri."variant_id" AND v."business_id" = r."business_id"
+            WHERE r."business_id" = ${businessId}::uuid
+              AND r."status" = 'COMPLETED'
+              AND r."created_at" >= ${start}
+              AND r."created_at" < ${end}
+              AND v."id" IS NULL
+          ) AS "invalidReturnItems",
+          (
+            SELECT COUNT(*)::int
+            FROM "customer_returns" r
+            JOIN "customer_return_items" ri ON ri."return_id" = r."id"
+            LEFT JOIN "order_items" oi
+              ON oi."id" = ri."order_item_id" AND oi."variant_id" = ri."variant_id"
+            LEFT JOIN "orders" source_order
+              ON source_order."id" = oi."order_id"
+              AND source_order."business_id" = r."business_id"
+              AND source_order."status" = 'COMPLETED'
+            WHERE r."business_id" = ${businessId}::uuid
+              AND r."status" = 'COMPLETED'
+              AND r."created_at" >= ${start}
+              AND r."created_at" < ${end}
+              AND ri."order_item_id" IS NOT NULL
+              AND source_order."id" IS NULL
+          ) AS "invalidReturnOrderLinks"
+      `,
+    ]);
+    const rows = buildPosMetricRows(businessId, sales, returns);
+    const sourceAnomalies = anomalies[0];
+    if (!sourceAnomalies) throw new Error("Unable to read POS source anomalies.");
+    return { rows, ordersProcessed, returnsProcessed, sourceAnomalies };
+  }
+
   async rebuildPosMetrics(businessId: string, fromValue: unknown, toValue: unknown) {
     const range = dateRange(fromValue, toValue);
-    const start = businessDayStart(range.from);
-    const end = businessDayStart(nextDay(range.to));
     const startDate = metricDate(range.from);
     const endDate = metricDate(nextDay(range.to));
 
@@ -125,113 +232,8 @@ export class BusinessDataService {
       await tx.$queryRaw`
         SELECT pg_advisory_xact_lock(hashtext(${businessId}), hashtext('pos-metric-rebuild')) IS NULL AS "locked"
       `;
-
-      const [sales, returns, ordersProcessed, returnsProcessed, anomalies] = await Promise.all([
-        tx.$queryRaw<PosSalesAggregate[]>`
-          SELECT
-            (o."created_at" AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS "metricDate",
-            oi."variant_id" AS "variantId",
-            SUM(oi."quantity")::int AS "unitsSold",
-            COUNT(DISTINCT o."id")::int AS "orderCount",
-            COALESCE(SUM(oi."subtotal"), 0)::numeric(14,2) AS "grossSales",
-            COALESCE(SUM(oi."discount_amount"), 0)::numeric(14,2) AS "discountAmount",
-            COALESCE(SUM(oi."unit_cost" * oi."quantity"), 0)::numeric(14,2) AS "cogs"
-          FROM "orders" o
-          JOIN "order_items" oi ON oi."order_id" = o."id"
-          JOIN "product_variants" v
-            ON v."id" = oi."variant_id" AND v."business_id" = o."business_id"
-          WHERE o."business_id" = ${businessId}::uuid
-            AND o."status" = 'COMPLETED'
-            AND o."created_at" >= ${start}
-            AND o."created_at" < ${end}
-          GROUP BY "metricDate", oi."variant_id"
-        `,
-        tx.$queryRaw<PosReturnAggregate[]>`
-          SELECT
-            (r."created_at" AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS "metricDate",
-            ri."variant_id" AS "variantId",
-            SUM(ri."return_qty")::int AS "unitsReturned",
-            COALESCE(SUM(ri."refund_amount"), 0)::numeric(14,2) AS "refundAmount",
-            COALESCE(SUM(
-              CASE
-                WHEN ri."item_condition" = 'RESTOCKABLE' AND source_order."id" IS NOT NULL
-                  THEN oi."unit_cost" * ri."return_qty"
-                ELSE 0
-              END
-            ), 0)::numeric(14,2) AS "returnedCogs"
-          FROM "customer_returns" r
-          JOIN "customer_return_items" ri ON ri."return_id" = r."id"
-          JOIN "product_variants" v
-            ON v."id" = ri."variant_id" AND v."business_id" = r."business_id"
-          LEFT JOIN "order_items" oi
-            ON oi."id" = ri."order_item_id" AND oi."variant_id" = ri."variant_id"
-          LEFT JOIN "orders" source_order
-            ON source_order."id" = oi."order_id"
-            AND source_order."business_id" = r."business_id"
-            AND source_order."status" = 'COMPLETED'
-          WHERE r."business_id" = ${businessId}::uuid
-            AND r."status" = 'COMPLETED'
-            AND r."created_at" >= ${start}
-            AND r."created_at" < ${end}
-          GROUP BY "metricDate", ri."variant_id"
-        `,
-        tx.order.count({
-          where: { businessId, status: "COMPLETED", createdAt: { gte: start, lt: end } },
-        }),
-        tx.customerReturn.count({
-          where: { businessId, status: "COMPLETED", createdAt: { gte: start, lt: end } },
-        }),
-        tx.$queryRaw<PosSourceAnomalies[]>`
-          SELECT
-            (
-              SELECT COUNT(*)::int
-              FROM "orders" o
-              JOIN "order_items" oi ON oi."order_id" = o."id"
-              LEFT JOIN "product_variants" v
-                ON v."id" = oi."variant_id" AND v."business_id" = o."business_id"
-              WHERE o."business_id" = ${businessId}::uuid
-                AND o."status" = 'COMPLETED'
-                AND o."created_at" >= ${start}
-                AND o."created_at" < ${end}
-                AND v."id" IS NULL
-            ) AS "invalidSaleItems",
-            (
-              SELECT COUNT(*)::int
-              FROM "customer_returns" r
-              JOIN "customer_return_items" ri ON ri."return_id" = r."id"
-              LEFT JOIN "product_variants" v
-                ON v."id" = ri."variant_id" AND v."business_id" = r."business_id"
-              WHERE r."business_id" = ${businessId}::uuid
-                AND r."status" = 'COMPLETED'
-                AND r."created_at" >= ${start}
-                AND r."created_at" < ${end}
-                AND v."id" IS NULL
-            ) AS "invalidReturnItems",
-            (
-              SELECT COUNT(*)::int
-              FROM "customer_returns" r
-              JOIN "customer_return_items" ri ON ri."return_id" = r."id"
-              LEFT JOIN "order_items" oi
-                ON oi."id" = ri."order_item_id" AND oi."variant_id" = ri."variant_id"
-              LEFT JOIN "orders" source_order
-                ON source_order."id" = oi."order_id"
-                AND source_order."business_id" = r."business_id"
-                AND source_order."status" = 'COMPLETED'
-              WHERE r."business_id" = ${businessId}::uuid
-                AND r."status" = 'COMPLETED'
-                AND r."created_at" >= ${start}
-                AND r."created_at" < ${end}
-                AND ri."order_item_id" IS NOT NULL
-                AND source_order."id" IS NULL
-            ) AS "invalidReturnOrderLinks"
-        `,
-      ]);
-      const rows = buildPosMetricRows(businessId, sales, returns);
-      const sourceAnomalies = anomalies[0] ?? {
-        invalidSaleItems: 0,
-        invalidReturnItems: 0,
-        invalidReturnOrderLinks: 0,
-      };
+      const { rows, ordersProcessed, returnsProcessed, sourceAnomalies } =
+        await this.readPosSource(tx, businessId, range.from, range.to);
 
       await tx.channelDailyProductMetric.deleteMany({
         where: {

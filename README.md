@@ -65,7 +65,7 @@ The custom-RBAC migration is `20261106174000_business_custom_rbac` and must be a
 
 See [the POS business-data contract, API, and migration requirements](docs/business-data-foundation.md).
 
-The core scope is offline/POS store management. Importing Shopee revenue reports is a separate, supplementary, optional feature (financial view only; no order or inventory sync) and can be removed independently; see [docs/online-reports-shopee.md](docs/online-reports-shopee.md).
+The product scope is offline/POS store management.
 
 ## Inventory insights (rule-based)
 

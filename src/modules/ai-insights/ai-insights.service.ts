@@ -20,7 +20,7 @@ import {
 
 const RUN_COOLDOWN_MS = 60_000;
 const STALE_RUN_MS = 15 * 60_000;
-const STALE_DATA_HOURS = 36;
+export const STALE_DATA_HOURS = 36;
 
 function pick<T extends string>(value: unknown, allowed: readonly T[], field: string): T | undefined {
   if (value === undefined || value === "") return undefined;
@@ -168,23 +168,28 @@ export class AiInsightsService {
   }
 
   async run(businessId: string, triggerType: "MANUAL" | "SCHEDULED", userId: string | null) {
-    const recent = await prisma.aiInsightRun.findFirst({ where: { businessId }, orderBy: { startedAt: "desc" } });
-    if (recent) {
-      const age = Date.now() - recent.startedAt.getTime();
-      if (recent.status === "RUNNING" && age < STALE_RUN_MS) throw new HttpError(409, "An analysis is already running.");
-      if (triggerType === "MANUAL" && age < RUN_COOLDOWN_MS) throw new HttpError(429, "Please wait a minute before analyzing again.");
-    }
-
     const today = await businessToday();
     const asOf = addDays(today, -1);
-    const run = await prisma.aiInsightRun.create({
-      data: {
-        businessId,
-        triggerType,
-        status: "RUNNING",
-        dataAsOf: new Date(`${asOf}T00:00:00.000Z`),
-        triggeredBy: userId,
-      },
+    const run = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${businessId}), hashtext('ai-insights-persist')) IS NULL AS "locked"`;
+      const recent = await tx.aiInsightRun.findFirst({ where: { businessId }, orderBy: [{ startedAt: "desc" }, { id: "desc" }] });
+      if (recent) {
+        const age = Date.now() - recent.startedAt.getTime();
+        if (recent.status === "RUNNING" && age < STALE_RUN_MS) throw new HttpError(409, "An analysis is already running.");
+        if (triggerType === "MANUAL" && age < RUN_COOLDOWN_MS) throw new HttpError(429, "Please wait a minute before analyzing again.");
+      }
+      const [{ now }] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AS "now"`;
+      const startedAt = new Date(Math.max(now.getTime(), recent ? recent.startedAt.getTime() + 1 : 0));
+      return tx.aiInsightRun.create({
+        data: {
+          businessId,
+          triggerType,
+          status: "RUNNING",
+          startedAt,
+          dataAsOf: new Date(`${asOf}T00:00:00.000Z`),
+          triggeredBy: userId,
+        },
+      });
     });
 
     try {
@@ -204,34 +209,18 @@ export class AiInsightsService {
         code: "FORECAST_UNAVAILABLE",
         message: "Dịch vụ dự báo tạm thời không khả dụng. Cảnh báo và gợi ý nhập dựa trên dự báo trước đó chưa được cập nhật.",
       });
-      const outcome = await this.persist(businessId, run.id, analysis.findings, today, async (tx) => ({
+      const summary = await this.persist(businessId, run.id, {
+        ...analysis, hasSyntheticSku: snapshot.variants.some((variant) => variant.sku.startsWith("DEMO-")),
+      }, settings, today, async (tx) => ({
         ...(forecastAvailable ? {
           forecasts: await persistForecasts(tx, businessId, run.id, snapshot),
           replenishment: await persistReplenishment(tx, businessId, run.id, analysis.replenishment, today),
         } : {}),
       }), forecastAvailable);
-
-      const summary = {
-        variantsAnalyzed: analysis.variantsAnalyzed,
-        findings: analysis.findings.length,
-        ...outcome,
-        forecastStatus: forecastAvailable ? "READY" : "UNAVAILABLE",
-        capital: analysis.capital,
-        settings,
-      };
-      await prisma.aiInsightRun.update({
-        where: { id: run.id },
-        data: {
-          status: "SUCCEEDED",
-          finishedAt: new Date(),
-          summary: summary as unknown as Prisma.InputJsonValue,
-          warnings: analysis.warnings as unknown as Prisma.InputJsonValue,
-        },
-      });
       return { runId: run.id, ...summary, warnings: analysis.warnings };
     } catch (error) {
-      await prisma.aiInsightRun.update({
-        where: { id: run.id },
+      await prisma.aiInsightRun.updateMany({
+        where: { id: run.id, businessId, status: "RUNNING" },
         data: { status: "FAILED", finishedAt: new Date(), error: error instanceof Error ? error.message.slice(0, 1000) : "Unknown error" },
       });
       throw error;
@@ -241,7 +230,8 @@ export class AiInsightsService {
   private async persist(
     businessId: string,
     runId: string,
-    findings: ReturnType<typeof analyze>["findings"],
+    analysis: ReturnType<typeof analyze> & { hasSyntheticSku: boolean },
+    settings: InsightSettings,
     today: string,
     extra: (tx: Prisma.TransactionClient) => Promise<Record<string, unknown>>,
     forecastAvailable: boolean,
@@ -251,6 +241,10 @@ export class AiInsightsService {
         await tx.$queryRaw`
           SELECT pg_advisory_xact_lock(hashtext(${businessId}), hashtext('ai-insights-persist')) IS NULL AS "locked"
         `;
+        const latest = await tx.aiInsightRun.findFirst({ where: { businessId }, orderBy: [{ startedAt: "desc" }, { id: "desc" }] });
+        if (!latest || latest.id !== runId || latest.status !== "RUNNING") {
+          throw new HttpError(409, "This analysis has been superseded. Run the analysis again.");
+        }
         const existing = await tx.aiInsight.findMany({ where: { businessId } });
         const byFingerprint = new Map(existing.map((row) => [row.fingerprint, row]));
         const seen = new Set<string>();
@@ -260,7 +254,7 @@ export class AiInsightsService {
         let reopened = 0;
 
         const toCreate: Prisma.AiInsightCreateManyInput[] = [];
-        for (const finding of findings) {
+        for (const finding of analysis.findings) {
           seen.add(finding.fingerprint);
           const common = {
             severity: finding.severity,
@@ -307,7 +301,27 @@ export class AiInsightsService {
         if (staleIds.length) {
           await tx.aiInsight.updateMany({ where: { id: { in: staleIds } }, data: { status: "RESOLVED", resolvedAt: now } });
         }
-        return { created, updated, reopened, resolved: staleIds.length, ...(await extra(tx)) };
+        const outcome = { created, updated, reopened, resolved: staleIds.length, ...(await extra(tx)) };
+        const summary = {
+          variantsAnalyzed: analysis.variantsAnalyzed,
+          findings: analysis.findings.length,
+          hasSyntheticSku: analysis.hasSyntheticSku,
+          ...outcome,
+          publicationVersion: 1,
+          forecastStatus: forecastAvailable ? "READY" : "UNAVAILABLE",
+          capital: analysis.capital,
+          settings,
+        };
+        await tx.aiInsightRun.update({
+          where: { id: runId },
+          data: {
+            status: "SUCCEEDED",
+            finishedAt: new Date(),
+            summary: summary as unknown as Prisma.InputJsonValue,
+            warnings: analysis.warnings as unknown as Prisma.InputJsonValue,
+          },
+        });
+        return summary;
       },
       { timeout: 120_000, maxWait: 10_000 },
     );
