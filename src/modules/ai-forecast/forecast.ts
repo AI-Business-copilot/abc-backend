@@ -16,6 +16,10 @@ export interface ForecastComparison {
   bias: number | null;
 }
 
+export type NextDayForecast =
+  | { status: "OK"; policy: "next-day-v1"; totals: ForecastTotals }
+  | { status: "UNAVAILABLE"; reason: "MODEL_NOT_CONFIGURED" | "SERVICE_NOT_SUPPORTED" };
+
 export interface ForecastResult {
   status: "OK" | "INSUFFICIENT_DATA";
   seriesDays: number;
@@ -28,6 +32,7 @@ export interface ForecastResult {
   /** Segment totals distributed uniformly within days 1–7, 8–14 and 15–28. */
   dailyRates: number[];
   totals: ForecastTotals;
+  nextDayForecast: NextDayForecast | null;
   wape: number | null;
   bias: number | null;
   confidence: Confidence | null;

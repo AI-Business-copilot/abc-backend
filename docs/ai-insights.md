@@ -106,7 +106,13 @@ Nếu Python không cấu hình, lỗi hoặc quá thời gian, lần chạy v�
 
 Lịch sử hiển thị tối đa 20 lần mới nhất cho sản phẩm. Sau khi một kỳ kết thúc, hệ thống tính lại số bán POS trước trừ trả từ đơn hoàn tất và chênh lệch tuyệt đối so với dự báo đã lưu; dữ liệu gốc thay đổi thì đối chiếu cập nhật, bản dự báo không đổi. Ledger và tồn vật lý được kiểm tra để ghi nhận ngày hết hàng hoặc không rõ. Chỉ xem lại tối đa 730 ngày và thông báo khi dữ liệu nằm ngoài phạm vi.
 
-Dự báo thường tạo sau 00:00 của ngày đầu, vì vậy phép so sánh theo ngày nguyên vẹn có thể bao gồm số bán trước khi tạo dự báo. Các kỳ này được đánh dấu `PARTIAL_START`, không dùng chênh lệch đó làm điểm đánh giá đáng tin cậy. Nếu có ngày hết hàng hoặc không rõ, báo thêm điều kiện tương ứng; bán POS không phải nhu cầu ẩn. Tồn cuối ngày không chứng minh còn hàng suốt ngày hay phát hiện hàng không bán được.
+Dự báo thường hoàn tất sau 00:00 của ngày đầu, vì vậy phép so sánh theo ngày nguyên vẹn có thể bao gồm số bán trước khi dự báo có thể sử dụng. Các kỳ này được đánh dấu `PARTIAL_START`, không dùng chênh lệch đó làm điểm đánh giá đáng tin cậy. Khi xét thời điểm, dùng thời điểm muộn hơn giữa lúc ghi lịch sử và lúc phân tích hoàn tất; nếu thiếu thời điểm hoàn tất thì không coi là so sánh được, và báo `PUBLICATION_UNKNOWN` khi không có điều kiện kho ưu tiên hơn. Thời điểm hoàn tất là mốc ứng dụng ghi nhận, không phải bằng chứng chính xác thời điểm commit hoặc người dùng nhận kết quả.
+
+Bên cạnh các tổng 7/14/28 ngày cũ, báo riêng hai đoạn đã có trong dự báo: ngày 8–14 (`d14 − d7`) và 15–28 (`d28 − d14`), so với số bán đúng những ngày đó. Nếu dự báo hoàn tất trước khi đoạn bắt đầu và các điều kiện kho đạt, đoạn có thể được đối chiếu mà không tính ngày đầu đã trôi qua. Đây là hai đoạn có độ trễ 7 và 14 ngày, không phải dự báo 7/14 ngày bắt đầu ngay sau khi phát hành. Không ngoại suy thêm ngày hoặc tự chia tổng cũ để tạo kỳ 28 ngày trọn vẹn.
+
+Với artifact Python mới, hệ thống lưu thêm dự báo riêng cho 7/14/28 ngày bắt đầu từ ngày thứ hai sau `asOf` (thường là ngày mai), dùng đúng phương pháp đã chọn cho dự báo vận hành. LightGBM có ba model riêng cho các đoạn ngày 2–8, 9–15 và 16–29; phương pháp đơn giản tiếp tục dùng tốc độ không đổi. Dự báo này không thay thế dự báo 1–28 ngày dùng cho đề xuất nhập. Phép đối chiếu yêu cầu lần phân tích hoàn tất trước thời điểm bắt đầu kỳ; khi hoàn tất trễ, thiếu mốc hoàn tất, có ngày hết hàng hoặc tồn không rõ thì không đánh dấu là so sánh được. Bản dự báo cũ không được tính lại và có trạng thái không có dữ liệu. Kiểm thử trên dữ liệu giả lập không chứng minh tính chính xác cho cửa hàng thật.
+
+Nếu có ngày hết hàng hoặc không rõ, báo thêm điều kiện tương ứng; bán POS không phải nhu cầu ẩn. Tồn cuối ngày không chứng minh còn hàng suốt ngày hay phát hiện hàng không bán được. Các mốc/đoạn từ cùng dự báo có thể liên quan nhau và không phải các mẫu độc lập.
 
 ## Dữ liệu demo
 
@@ -129,8 +135,63 @@ $env:AI_FORECAST_CREATE_TEMP_BUSINESS = "1"
 node --test tests\ai-forecast.postgres-concurrency.test.cjs
 ```
 
+Kiểm thử luồng phân tích → dự báo Python → lịch sử → PO nháp có ghi và
+**không hoàn tác** dữ liệu; chỉ chạy trên một database PostgreSQL dùng một lần
+`forecast_integration` tại `127.0.0.1`. Database phải chỉ có một cửa hàng
+`SUSPENDED` tên bắt đầu `FORECAST-ISOLATED-TEST-`, nhân viên đang hoạt động và
+bộ demo mới với SKU có tiền tố demo. Cần một service Python riêng tại
+`127.0.0.1` với artifact và token riêng. Test từ chối các điều kiện không khớp
+và yêu cầu chưa có lần phân tích hay PO nháp; các kiểm tra này không thay thế
+việc xác nhận database thực sự cô lập. Không bật trên database dùng chung.
+
+Sau khi tự cấu hình `DATABASE_URL`, `DIRECT_URL`, `FORECAST_RESEARCH_URL`,
+`FORECAST_RESEARCH_TOKEN` cho các service thử nghiệm và đặt ba biến fixture ở
+trên, chạy:
+
+```powershell
+$env:AI_FORECAST_ISOLATED_FLOW = "1"
+node --test tests\ai-forecast.postgres-flow.test.cjs
+```
+
+Sau kiểm thử, hủy database thử nghiệm theo quy trình của môi trường đó. Kiểm
+thử này gọi service backend trực tiếp, không xác nhận giao diện browser hay
+xác thực HTTP. Lần kiểm thử ngày 2026-11-25 dùng PostgreSQL 17 tạm, schema từ
+`prisma db push` và trigger lịch sử từ migration tương ứng: không chạy toàn bộ
+chuỗi migration hoặc xác minh mọi constraint/RLS của môi trường triển khai.
+
+### Chạy tự động trên Windows
+
+Runner sau tạo PostgreSQL và Python riêng trên localhost, dùng mật khẩu, token
+và fixture giả lập mới; không dùng database hoặc service Python đang chạy:
+
+```powershell
+.\scripts\test-ai-forecast-isolated.ps1 -PostgresBin "C:\path\to\pgsql\bin"
+```
+
+Chạy từ thư mục backend. Cần binary PostgreSQL 17, OpenSSL (mặc định
+`C:\Program Files\Git\usr\bin\openssl.exe`, có thể chỉ định `-OpenSsl`),
+dependencies backend đã cài, Python tại `abc-ml\.venv\Scripts\python.exe` và
+artifact `abc-ml\artifacts\run-next-day-42`. Backend yêu cầu Node >= 24 và
+npm >= 11 theo manifest; lần kiểm thử trên máy này dùng Node 22.16/npm 10.9,
+nên không xác nhận tương thích đầy đủ với phiên bản yêu cầu.
+
+Runner tạo database một lần trong thư mục tạm có ACL, bật TLS cho PostgreSQL,
+ghi dữ liệu demo và chạy bảy kiểm thử PostgreSQL/backend. Khi kết thúc hoặc gặp
+lỗi, runner dừng các tiến trình đã tạo, đợi cổng đóng, xóa thư mục tạm và khôi
+phục biến môi trường. Nếu không xác minh được việc dừng, runner báo lỗi và giữ
+thư mục để xử lý thủ công; không xóa hoặc dừng service khác theo tên. Cổng
+localhost được chọn động nên vẫn có khả năng xung đột với tiến trình khác.
+
+Database chạy từ `prisma db push`, chỉ bổ sung trigger bất biến của lịch sử;
+không thay thế kiểm thử migration, RLS hay tất cả constraint SQL. Một probe
+riêng trên PostgreSQL 17 tạo stub `auth.users`, chạy thành công migration đầu
+`20261022144500_auth_rbac_invitations`, nhưng migration tiếp theo
+`20261029015517_add_lot_status` lỗi vì chưa có bảng `product_lots`. Đây là
+bằng chứng thiếu baseline trong tình huống database trống với stub đó, không
+phải đánh giá đầy đủ chuỗi migration hay hướng dẫn sửa database sản xuất.
+
 ## Chưa làm
 
-- Đánh giá không thiên lệch cho dự báo phát hành sau khi ngày đầu bắt đầu; hiện chỉ hiển thị đối chiếu có cảnh báo.
+- Đánh giá 7/14/28 ngày bắt đầu ngay sau thời điểm phát hành trong ngày; dự báo ngày đầy đủ mới bắt đầu ngày thứ hai sau `asOf` và yêu cầu lần chạy hoàn tất trước mốc đó.
 - Mùa vụ và đánh giá mô hình ML bằng dữ liệu cửa hàng thực tế.
 

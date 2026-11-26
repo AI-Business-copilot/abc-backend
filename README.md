@@ -71,6 +71,22 @@ The core scope is offline/POS store management. Importing Shopee revenue reports
 
 Daily rule-based inventory alerts built on the POS data (low stock, slow-moving, declining sales, overstock, expiration risk, inventory capital); see [docs/ai-insights.md](docs/ai-insights.md).
 
+### Synthetic demo data
+
+The AI insights demo seed creates synthetic clothing and cosmetics sales for
+demonstration only; it is not evidence of real-world forecast accuracy. Run it
+only against a dedicated demo business, never a business containing operational
+data. The business UUID must be passed explicitly, and a full re-seed requires
+the reset confirmation:
+
+```powershell
+npm run seed:ai-demo -- <DEMO_BUSINESS_UUID> --confirm-demo-reset
+```
+
+The seed refuses to choose a business automatically. It also checks that
+previously seeded records have no non-demo links before removing data with the
+configured demo prefix.
+
 ## Initial API
 
 - `GET /api/auth/me` — validate the Supabase access token, synchronize the app profile, and return membership/permissions or indicate onboarding is required.

@@ -21,23 +21,26 @@ async function fixture() {
 test("PostgreSQL: compare all forecast horizons against seeded POS and roll back", { skip: !enabled }, async () => {
   const variant = await fixture();
   const today = await businessToday();
-  const asOf = addDays(today, -29);
+  const asOf = addDays(today, -30);
   const id = randomUUID();
   await assert.rejects(prisma.$transaction(async (tx) => {
     const run = await tx.aiInsightRun.create({
-      data: { businessId, triggerType: "MANUAL", status: "SUCCEEDED", dataAsOf: new Date(`${asOf}T00:00:00Z`) },
+      data: { businessId, triggerType: "MANUAL", status: "SUCCEEDED", dataAsOf: new Date(`${asOf}T00:00:00Z`),
+        finishedAt: new Date(`${addDays(asOf, 1)}T03:01:00Z`) },
     });
     await tx.aiForecastHistory.create({
       data: {
         id, businessId, variantId: variant.id, runId: run.id, asOf: new Date(`${asOf}T00:00:00Z`),
         issuedAt: new Date(`${addDays(asOf, 1)}T03:00:00Z`),
-        result: { status: "OK", model: "MEAN_28", modelVersion: "integration-test", totals: { d7: 7, d14: 14, d28: 28 } },
+        result: { status: "OK", model: "MEAN_28", modelVersion: "integration-test", totals: { d7: 7, d14: 14, d28: 28 },
+          nextDayForecast: { status: "OK", policy: "next-day-v1", totals: { d7: 8, d14: 15, d28: 29 } } },
       },
     });
     const history = await forecastHistoryInTransaction(tx, businessId, variant.id, today);
     const item = history.items.find((row) => row.id === id);
     assert.ok(item);
-    for (const evaluation of item.evaluations) {
+    assert.equal(item.nextDayEvaluation.status, "OK");
+    for (const evaluation of [...item.evaluations, ...item.segmentEvaluations, ...item.nextDayEvaluation.evaluations]) {
       const actual = await tx.$queryRaw`
         SELECT COALESCE(SUM(i.quantity), 0)::int AS units
         FROM orders o JOIN order_items i ON i.order_id = o.id
@@ -45,13 +48,75 @@ test("PostgreSQL: compare all forecast horizons against seeded POS and roll back
           AND (o.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN ${evaluation.start}::date AND ${evaluation.end}::date
       `;
       assert.equal(evaluation.actual, actual[0].units);
-      assert.ok(evaluation.partialStart);
+      assert.equal(evaluation.partialStart, evaluation.start === addDays(asOf, 1));
     }
     await tx.aiInsightRun.update({ where: { id: run.id }, data: { status: "FAILED" } });
     assert.ok(!(await forecastHistoryInTransaction(tx, businessId, variant.id, today)).items.some((row) => row.id === id));
     throw rollback;
   }, { timeout: 60_000 }), (error) => error === rollback);
   assert.equal(await prisma.aiForecastHistory.count({ where: { id } }), 0);
+});
+
+test("PostgreSQL: history distinguishes publication, stockout, unknown stock and pending windows", { skip: !enabled }, async () => {
+  const today = await businessToday();
+  const asOf = addDays(today, -30);
+  const id = randomUUID();
+  const variantId = randomUUID();
+  await assert.rejects(prisma.$transaction(async (tx) => {
+    const template = await tx.productTemplate.create({
+      data: { businessId, name: `Forecast test ${id}` },
+    });
+    await tx.productVariant.create({
+      data: { id: variantId, businessId, templateId: template.id, sku: `TEST-${id}`, basePrice: 1, costPrice: 1 },
+    });
+    const balance = await tx.inventoryBalance.create({ data: { businessId, variantId, quantityOnHand: 10 } });
+    await tx.inventoryLedger.create({
+      data: { businessId, variantId, transactionType: "OPENING_STOCK", quantityChanged: 10, balanceAfter: 10,
+        unitCost: 1, totalCostValue: 10, referenceDocType: "TEST", referenceDocId: randomUUID(),
+        createdAt: new Date(`${addDays(asOf, -1)}T05:00:00Z`) },
+    });
+    const finishedAt = new Date(`${addDays(asOf, 1)}T03:01:00Z`);
+    const run = await tx.aiInsightRun.create({
+      data: { businessId, triggerType: "MANUAL", status: "SUCCEEDED", dataAsOf: new Date(`${asOf}T00:00:00Z`), finishedAt },
+    });
+    await tx.aiForecastHistory.create({
+      data: { id, businessId, variantId, runId: run.id, asOf: new Date(`${asOf}T00:00:00Z`),
+        issuedAt: new Date(`${addDays(asOf, 1)}T03:00:00Z`),
+        result: { status: "OK", totals: { d7: 7, d14: 14, d28: 28 },
+          nextDayForecast: { status: "OK", policy: "next-day-v1", totals: { d7: 8, d14: 15, d28: 29 } } } },
+    });
+    const get = async (date) => {
+      const item = (await forecastHistoryInTransaction(tx, businessId, variantId, date)).items.find((row) => row.id === id);
+      assert.ok(item);
+      return item;
+    };
+    const clean = await get(today);
+    assert.deepEqual(clean.evaluations.map((row) => row.status), Array(3).fill("PARTIAL_START"));
+    assert.deepEqual(clean.nextDayEvaluation.evaluations.map((row) => row.status), Array(3).fill("COMPARABLE"));
+    assert.deepEqual(clean.nextDayEvaluation.evaluations.map((row) => row.actual), [0, 0, 0]);
+    const incomplete = await get(addDays(asOf, 10));
+    assert.deepEqual(incomplete.nextDayEvaluation.evaluations.map((row) => row.status), ["COMPARABLE", "PENDING", "PENDING"]);
+
+    await tx.aiInsightRun.update({ where: { id: run.id }, data: { finishedAt: null } });
+    const unpublished = await get(today);
+    assert.deepEqual(unpublished.nextDayEvaluation.evaluations.map((row) => row.status), Array(3).fill("PUBLICATION_UNKNOWN"));
+    await tx.aiInsightRun.update({ where: { id: run.id }, data: { finishedAt } });
+
+    await tx.inventoryLedger.create({
+      data: { businessId, variantId, transactionType: "STOCK_ADJUSTMENT_OUT", quantityChanged: -10, balanceAfter: 0,
+        unitCost: 1, totalCostValue: 10, referenceDocType: "TEST", referenceDocId: randomUUID(),
+        createdAt: new Date(`${addDays(asOf, 8)}T05:00:00Z`) },
+    });
+    await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantityOnHand: 0 } });
+    const stockout = await get(today);
+    assert.deepEqual(stockout.evaluations.map((row) => row.status), ["PARTIAL_START", "STOCKOUT", "STOCKOUT"]);
+    assert.deepEqual(stockout.nextDayEvaluation.evaluations.map((row) => row.status), Array(3).fill("STOCKOUT"));
+    await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantityOnHand: 1 } });
+    const unknown = await get(today);
+    assert.deepEqual(unknown.nextDayEvaluation.evaluations.map((row) => row.status), Array(3).fill("UNKNOWN_STOCK"));
+    throw rollback;
+  }, { timeout: 60_000 }), (error) => error === rollback);
+  assert.equal(await prisma.productVariant.count({ where: { id: variantId } }), 0);
 });
 
 test("PostgreSQL: include only outstanding open POs and roll back", { skip: !enabled }, async () => {
