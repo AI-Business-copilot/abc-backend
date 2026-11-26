@@ -2,13 +2,14 @@
  * Seeds a clothing + cosmetics catalogue with 60 days of backdated POS orders
  * so the "Cảnh báo tồn kho" page has findings of every kind.
  *
- * Usage: npm run seed:ai-demo -- [businessId]
- * Re-running removes previous demo data only if no additional business documents are linked.
+ * Usage: npm run seed:ai-demo -- <demoBusinessId> --confirm-demo-reset
+ * Re-running removes previous demo data for that business only after the explicit reset confirmation.
  */
 import dotenv from "dotenv";
 dotenv.config();
 import { PrismaClient, Prisma } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { buildDemoLedgerPlan } from "./ai-demo-ledger-plan";
 
 function buildConnectionString(raw?: string) {
   if (!raw) return raw;
@@ -441,7 +442,7 @@ async function seedMovements(businessId: string) {
         countStartAt: auditTime, completedAt: auditTime, isLockedForAudit: false, status: "DONE",
         createdBy: shift.userId, approvedBy: shift.userId,
         stockAuditItems: { create: [{ variantId: variant.id, snapshotQty: level, countedQty: level - 1, itemStatus: "APPROVED",
-          lotMode: "EXISTING", createdBy: shift.userId, approvedBy: shift.userId, approvedAt: auditTime }] } },
+          createdBy: shift.userId, approvedBy: shift.userId, approvedAt: auditTime }] } },
     });
     await move(-1, "STOCK_ADJUSTMENT_OUT", "STOCK_AUDIT", audit.id, auditTime);
 
@@ -459,18 +460,30 @@ async function seedMovements(businessId: string) {
 }
 
 async function main() {
-  const businessId =
-    process.argv[2] ||
-    (await prisma.productTemplate.findFirst({ select: { businessId: true } }))?.businessId;
-  if (!businessId) throw new Error("Không tìm thấy cửa hàng. Truyền businessId làm tham số.");
+  const businessId = process.argv[2];
+  if (!businessId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(businessId)) {
+    throw new Error("Truyền businessId UUID của cửa hàng demo riêng làm tham số; không tự chọn cửa hàng.");
+  }
+  const resumeSuppliersMode = process.argv.includes("--resume-suppliers");
+  const addMovementsMode = process.argv.includes("--add-movements");
+  const confirmReset = process.argv.includes("--confirm-demo-reset");
+  if (resumeSuppliersMode && addMovementsMode) {
+    throw new Error("Chỉ chọn một trong --resume-suppliers hoặc --add-movements.");
+  }
+  if (confirmReset && (resumeSuppliersMode || addMovementsMode)) {
+    throw new Error("--confirm-demo-reset chỉ dùng cho lần seed đầy đủ.");
+  }
+  if (!resumeSuppliersMode && !addMovementsMode && !confirmReset) {
+    throw new Error("Seed đầy đủ sẽ xóa dữ liệu cùng prefix; thêm --confirm-demo-reset để xác nhận.");
+  }
   console.log("Cửa hàng:", businessId);
 
-  if (process.argv.includes("--resume-suppliers")) {
+  if (resumeSuppliersMode) {
     await resumeSuppliers(businessId);
     console.log("Đã hoàn tất bộ demo và chuyển đơn bán sang ca demo riêng.");
     return;
   }
-  if (process.argv.includes("--add-movements")) {
+  if (addMovementsMode) {
     await seedMovements(businessId);
     return;
   }
@@ -575,22 +588,34 @@ async function main() {
         });
       }
 
-      // Past sales are attributed to the latest-expiring lot, which is still in stock
-      const soldFromLot = lotItems.length ? lotItems[lotItems.length - 1].id : null;
-      const totalSales = Array.from({ length: 60 }, (_, i) => v.sales(i + 1)).reduce((sum, qty) => sum + qty, 0);
-      const finalStock = v.lots ? v.lots.reduce((sum, lot) => sum + lot.qty, 0) : v.stock ?? 0;
-      let ledgerBalance = 0;
-      const openingLots = lotItems.length ? lotItems : [{ id: null, qty: finalStock }];
-      for (const [index, lot] of openingLots.entries()) {
-        const qty = lot.qty + (index === openingLots.length - 1 ? totalSales : 0);
-        if (!qty) continue;
-        ledgerBalance += qty;
+      const inventoryLots = lotItems.length
+        ? lotItems.map((lot) => ({ lotItemId: lot.id, quantityOnHand: lot.qty }))
+        : [{ lotItemId: null, quantityOnHand: v.stock ?? 0 }];
+      const saleDays = Array.from({ length: 60 }, (_, index) => {
+        const daysAgo = index + 1;
+        return { daysAgo, quantity: v.sales(daysAgo) };
+      }).filter((sale) => sale.quantity > 0);
+      const ledgerPlan = buildDemoLedgerPlan(inventoryLots, saleDays);
+      const saleLedgerByDay = new Map(
+        ledgerPlan
+          .filter((entry) => entry.transactionType === "POS_SALE")
+          .map((entry) => [entry.daysAgo, entry] as const),
+      );
+      for (const entry of ledgerPlan.filter((item) => item.transactionType === "OPENING_STOCK")) {
         await prisma.inventoryLedger.create({
           data: {
-            businessId, variantId: variant.id, lotItemId: lot.id, transactionType: "OPENING_STOCK",
-            quantityChanged: qty, balanceAfter: ledgerBalance, unitCost: new Prisma.Decimal(v.cost),
-            totalCostValue: new Prisma.Decimal(v.cost * qty), referenceDocType: "DEMO_AI_OPENING",
-            referenceDocId: variant.id, createdBy: shift.userId, createdAt: daysAgoDate(60),
+            businessId,
+            variantId: variant.id,
+            lotItemId: entry.lotItemId,
+            transactionType: entry.transactionType,
+            quantityChanged: entry.quantityChanged,
+            balanceAfter: entry.balanceAfter,
+            unitCost: new Prisma.Decimal(v.cost),
+            totalCostValue: new Prisma.Decimal(v.cost * entry.quantityChanged),
+            referenceDocType: "DEMO_AI_OPENING",
+            referenceDocId: variant.id,
+            createdBy: shift.userId,
+            createdAt: daysAgoDate(entry.daysAgo),
           },
         });
       }
@@ -599,6 +624,10 @@ async function main() {
       for (let d = 60; d >= 1; d--) {
         const qty = v.sales(d);
         if (qty <= 0) continue;
+        const ledgerEntry = saleLedgerByDay.get(d);
+        if (!ledgerEntry || ledgerEntry.quantityChanged !== -qty) {
+          throw new Error(`Lịch sử ledger không khớp doanh số của ${sku} ngày ${d}.`);
+        }
         const gross = v.price * qty;
         const cogs = v.cost * qty;
         const order = await prisma.order.create({
@@ -617,7 +646,7 @@ async function main() {
               create: [
                 {
                   variantId: variant.id,
-                  lotItemId: soldFromLot,
+                  lotItemId: ledgerEntry.lotItemId,
                   quantity: qty,
                   unitPrice: new Prisma.Decimal(v.price),
                   unitCost: new Prisma.Decimal(v.cost),
@@ -636,18 +665,23 @@ async function main() {
             createdAt: daysAgoDate(d),
           },
         });
-        ledgerBalance -= qty;
         await prisma.inventoryLedger.create({
           data: {
-            businessId, variantId: variant.id, lotItemId: soldFromLot, transactionType: "POS_SALE",
-            quantityChanged: -qty, balanceAfter: ledgerBalance, unitCost: new Prisma.Decimal(v.cost),
+            businessId, variantId: variant.id, lotItemId: ledgerEntry.lotItemId, transactionType: "POS_SALE",
+            quantityChanged: ledgerEntry.quantityChanged, balanceAfter: ledgerEntry.balanceAfter, unitCost: new Prisma.Decimal(v.cost),
             totalCostValue: new Prisma.Decimal(-cogs), referenceDocType: "ORDER", referenceDocId: order.id,
             createdBy: shift.userId, createdAt: daysAgoDate(d),
           },
         });
         orderCount++;
       }
-      if (ledgerBalance !== finalStock) throw new Error(`Lịch sử kho không khớp tồn cuối của ${sku}.`);
+      const plannedFinalStock = inventoryLots.reduce((total, lot) => total + lot.quantityOnHand, 0);
+      const initialLedgerStock = ledgerPlan
+        .filter((entry) => entry.transactionType === "OPENING_STOCK")
+        .reduce((total, entry) => total + entry.quantityChanged, 0);
+      if (initialLedgerStock - saleDays.reduce((total, sale) => total + sale.quantity, 0) !== plannedFinalStock) {
+        throw new Error(`Lịch sử kho không khớp tồn cuối của ${sku}.`);
+      }
       console.log(`+ ${sku}: ${orderCount} đơn - kỳ vọng: ${v.expect}`);
     }
   }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { HttpError } from "../../shared/http/http-error";
 import { addDays } from "../ai-insights/snapshot/build-snapshot";
 import type { InsightSettings, Snapshot } from "../ai-insights/types";
-import type { Confidence, ForecastComparison, ForecastModelName, ForecastResult, ForecastTotals } from "./forecast";
+import type { Confidence, ForecastComparison, ForecastModelName, ForecastResult, ForecastTotals, NextDayForecast } from "./forecast";
 
 const MODELS: ForecastModelName[] = ["MEAN_28", "SES", "CROSTON_SBA", "LIGHTGBM"];
 const fail = (): never => { throw new HttpError(502, "Dịch vụ dự báo trả dữ liệu không hợp lệ."); };
@@ -21,6 +21,16 @@ const totals = (value: unknown): ForecastTotals => {
   if (result.d7 > result.d14 || result.d14 > result.d28) return fail();
   return result;
 };
+
+function parseNextDayForecast(value: unknown, model: ForecastModelName): NextDayForecast {
+  if (value === undefined) return { status: "UNAVAILABLE", reason: "SERVICE_NOT_SUPPORTED" };
+  const row = object(value);
+  if (row.status === "UNAVAILABLE" && row.reason === "MODEL_NOT_CONFIGURED") {
+    return { status: "UNAVAILABLE", reason: "MODEL_NOT_CONFIGURED" };
+  }
+  if (row.status !== "OK" || row.policy !== "next-day-v1" || row.model !== model) return fail();
+  return { status: "OK", policy: "next-day-v1", totals: totals(row.totals) };
+}
 
 function endpoint() {
   const raw = process.env.FORECAST_RESEARCH_URL;
@@ -49,7 +59,7 @@ export function parseForecastResponse(value: unknown, requestId: string, asOf: s
       if (row.reason !== "SHORT_HISTORY" && row.reason !== "CENSORED_HISTORY") return fail();
       output.set(row.variant_id, {
         status: "INSUFFICIENT_DATA", seriesDays, reason: row.reason, model: null, modelVersion, datasetKind: "synthetic",
-        dailyRate: 0, dailySigma: 0, dailyRates: [], totals: { d7: 0, d14: 0, d28: 0 },
+        dailyRate: 0, dailySigma: 0, dailyRates: [], totals: { d7: 0, d14: 0, d28: 0 }, nextDayForecast: null,
         wape: null, bias: null, confidence: null, activeShare: 0, stockoutShare: 0, comparison: [],
       });
       continue;
@@ -86,7 +96,8 @@ export function parseForecastResponse(value: unknown, requestId: string, asOf: s
       status: "OK", seriesDays, reason: null, model, modelVersion, datasetKind: "synthetic",
       dailyRate: predicted.d28 / 28, dailySigma: nonnegative(row.daily_sigma),
       dailyRates: [...Array(7).fill(first / 7), ...Array(7).fill(second / 7), ...Array(14).fill(third / 14)],
-      totals: predicted, wape: nullableNumber(row.wape, true), bias: nullableNumber(row.bias),
+      totals: predicted, nextDayForecast: parseNextDayForecast(row.next_day_forecast, model),
+      wape: nullableNumber(row.wape, true), bias: nullableNumber(row.bias),
       confidence: confidence as Confidence | null, activeShare, stockoutShare, comparison,
     });
   }

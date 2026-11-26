@@ -22,6 +22,26 @@ test("validates response and distributes each forecast segment across its own da
   assert.deepEqual(result.dailyRates, [...Array(7).fill(1), ...Array(7).fill(2), ...Array(14).fill(3)]);
   assert.equal(result.dailySigma, 2);
   assert.equal(result.confidence, null);
+  assert.deepEqual(result.nextDayForecast, { status: "UNAVAILABLE", reason: "SERVICE_NOT_SUPPORTED" });
+});
+
+test("validates separate next-day forecasts without changing operational totals", () => {
+  const payload = response();
+  payload.results[0].next_day_forecast = { status: "OK", policy: "next-day-v1", model: "MEAN_28",
+    totals: { d7: 8, d14: 22, d28: 64 } };
+  const result = parseForecastResponse(payload, "r", "2025-01-28", new Map([["v", 28]])).get("v");
+  assert.deepEqual(result.totals, { d7: 7, d14: 21, d28: 63 });
+  assert.deepEqual(result.nextDayForecast, { status: "OK", policy: "next-day-v1", totals: { d7: 8, d14: 22, d28: 64 } });
+  payload.results[0].next_day_forecast.model = "LIGHTGBM";
+  assert.throws(() => parseForecastResponse(payload, "r", "2025-01-28", new Map([["v", 28]])), /không hợp lệ/);
+  payload.results[0].next_day_forecast.model = "MEAN_28";
+  payload.results[0].next_day_forecast.totals.d28 = 1;
+  assert.throws(() => parseForecastResponse(payload, "r", "2025-01-28", new Map([["v", 28]])), /không hợp lệ/);
+  payload.results[0].next_day_forecast.totals.d28 = 64;
+  payload.results[0].next_day_forecast.policy = "unknown";
+  assert.throws(() => parseForecastResponse(payload, "r", "2025-01-28", new Map([["v", 28]])), /không hợp lệ/);
+  payload.results[0].next_day_forecast = { status: "UNAVAILABLE", reason: "MODEL_NOT_CONFIGURED" };
+  assert.equal(parseForecastResponse(payload, "r", "2025-01-28", new Map([["v", 28]])).get("v").nextDayForecast.reason, "MODEL_NOT_CONFIGURED");
 });
 
 test("rejects mismatched identifiers, incomplete comparisons and inconsistent totals", () => {
