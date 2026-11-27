@@ -58,7 +58,7 @@ export async function activeNotifications(scope: NotificationScope, now = new Da
     title: task.rejectedAt ? "Mục kiểm kê cần đếm lại" : "Bạn có mục kiểm kê được giao",
     message: `Sản phẩm ${task.variant.sku} đang chờ bạn kiểm đếm.`,
     href: `/inventory/audit/${task.auditId}/items/${task.id}`,
-    occurredAt: (task.rejectedAt ?? task.audit.countStartAt).toISOString(),
+    occurredAt: (task.rejectedAt ?? task.audit.countStartAt ?? new Date(0)).toISOString(),
   });
   return notifications.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt) || a.id.localeCompare(b.id));
 }

@@ -38,6 +38,12 @@ type CreateAuditBody = {
   note?: unknown;
   /** Rows created by the owner: employee + variant + lot. */
   items?: unknown;
+  /** What the audit covers: FULL_STORE, CATEGORY or SHELF. */
+  scopeType?: unknown;
+  /** The category the audit covers. Only used when scopeType is CATEGORY. */
+  categoryId?: unknown;
+  /** The shelf position the audit covers. Only used when scopeType is SHELF. */
+  shelfCellId?: unknown;
 };
 
 type AssignItemsBody = {
@@ -163,6 +169,15 @@ const AUDIT_ITEM_SELECT = {
       expirationDate: true,
       manufacturingDate: true,
       lot: { select: { id: true, lotNumber: true } },
+      // Where the goods physically sit, so the counters know which shelf they have to walk to.
+      shelfCell: {
+        select: {
+          id: true,
+          level: true,
+          slot: true,
+          shelf: { select: { id: true, code: true, name: true } },
+        },
+      },
     },
   },
   assignedToUser: { select: { id: true, fullName: true, email: true } },
@@ -295,6 +310,18 @@ function formatAuditItem(item: AuditItemRow, viewerId?: string | null, viewerIsO
     /** What the system currently has on the lot item, to show next to a correction. */
     lotExpirationDate: item.lotItem?.expirationDate ?? null,
     lotManufacturingDate: item.lotItem?.manufacturingDate ?? null,
+    /**
+     * Where the lot physically sits: "Ke A2 - Tang 3 - O 04". The counters need it to find the
+     * goods, so it comes with every row of the count.
+     */
+    shelfCell: item.lotItem?.shelfCell
+      ? {
+          id: item.lotItem.shelfCell.id,
+          level: item.lotItem.shelfCell.level,
+          slot: item.lotItem.shelfCell.slot,
+          shelf: item.lotItem.shelfCell.shelf,
+        }
+      : null,
     /** True when the employee changed an existing lot item's dates. */
     datesCorrected: Boolean(item.lotItemId && (item.newLotExpirationDate || item.newLotManufacturingDate)),
     snapshotQty: item.snapshotQty,
@@ -470,9 +497,10 @@ async function getSnapshotQty(db: DbClient, businessId: string, variantId: strin
 }
 
 type NormalizedRow = {
-  assignedToUserId: string;
+  /** Null only for a row the scope generated: the owner assigns the counters later. */
+  assignedToUserId: string | null;
   /** The second employee. Every row is counted by two people. */
-  secondCounterUserId: string;
+  secondCounterUserId: string | null;
   variantId: string;
   lotItemId: string;
 };
@@ -523,6 +551,11 @@ async function normalizeAndValidateRows(
   businessId: string,
   rawItems: unknown,
   existing: Array<{ variantId: string; lotItemId: string | null }> = [],
+  /**
+   * True for the rows a scope generated: nobody has been assigned to them yet, because the
+   * owner picks the counters afterwards. Rows the owner typed still need two counters.
+   */
+  allowUnassigned = false,
 ): Promise<NormalizedRow[]> {
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
     throw new HttpError(400, "Cần ít nhất một dòng kiểm kê (nhân viên + SKU + lô).");
@@ -535,15 +568,15 @@ async function normalizeAndValidateRows(
     const variantId = typeof raw?.variantId === "string" ? raw.variantId.trim() : "";
     const lotItemId =
       typeof raw?.lotItemId === "string" && raw.lotItemId.trim() ? raw.lotItemId.trim() : null;
-    if (!assignedToUserId) {
+    if (!assignedToUserId && !allowUnassigned) {
       throw new HttpError(400, `Dòng ${index + 1}: chưa chọn nhân viên.`);
     }
     // Every row is counted twice: the owner always names a second person.
-    if (!secondCounterUserId) {
+    if (!secondCounterUserId && !allowUnassigned) {
       throw new HttpError(400, `Dòng ${index + 1}: chưa chọn người kiểm kê thứ hai.`);
     }
     // The second counter is a different person: two people counting the same row is the point.
-    if (secondCounterUserId === assignedToUserId) {
+    if (secondCounterUserId && assignedToUserId && secondCounterUserId === assignedToUserId) {
       throw new HttpError(
         400,
         `Dòng ${index + 1}: người kiểm kê thứ hai phải khác người được giao.`,
@@ -557,12 +590,17 @@ async function normalizeAndValidateRows(
       throw new HttpError(400, `Dòng ${index + 1}: bắt buộc chọn lô có sẵn.`);
     }
 
-    return { assignedToUserId, secondCounterUserId, variantId, lotItemId };
+    return {
+      assignedToUserId: assignedToUserId || null,
+      secondCounterUserId: secondCounterUserId || null,
+      variantId,
+      lotItemId,
+    };
   });
 
   await assertAssigneesAreStaff(db, businessId, [
-    ...rows.map((r) => r.assignedToUserId),
-    ...rows.map((r) => r.secondCounterUserId),
+    ...rows.map((r) => r.assignedToUserId).filter((id): id is string => Boolean(id)),
+    ...rows.map((r) => r.secondCounterUserId).filter((id): id is string => Boolean(id)),
   ]);
 
   const variantIds = [...new Set(rows.map((r) => r.variantId))];
@@ -636,6 +674,138 @@ async function normalizeAndValidateRows(
   return rows;
 }
 
+/**
+ * The rows an audit covers, generated from its scope.
+ *
+ * The scope columns existed but nothing ever wrote them, so "Theo ke" and "Theo danh muc" were
+ * dead options and the owner had to type every row by hand. Now the scope decides the rows:
+ * the lots that physically sit on a shelf position, or the lots of a category.
+ *
+ * The rows come without counters. Nobody can be named here, because the owner does not know yet
+ * which employees will count; they assign them on the audit detail page. That is why the rows
+ * are allowed to have no assignee.
+ */
+async function buildRowsFromScope(
+  db: DbClient,
+  businessId: string,
+  scopeType: "CATEGORY" | "SHELF",
+  scope: { categoryIds?: string[]; shelfCellId?: string | null },
+): Promise<NormalizedRow[]> {
+  const where: Prisma.ProductLotItemWhereInput =
+    scopeType === "SHELF"
+      ? { businessId, shelfCellId: scope.shelfCellId! }
+      : {
+          businessId,
+          variant: { template: { categoryId: { in: scope.categoryIds ?? [] } } },
+        };
+
+  const items = await db.productLotItem.findMany({
+    where: {
+      ...where,
+      // A scrapped lot has no stock left to count.
+      status: { not: "SCRAPPED" },
+      // A lot locked by another audit cannot be counted twice at the same time.
+      isLockedForAudit: false,
+      // Only the lots that still have stock on hand are worth counting.
+      inventoryBalances: { some: { businessId, quantityOnHand: { gt: 0 } } },
+    },
+    select: { id: true, variantId: true },
+    orderBy: { expirationDate: "asc" },
+  });
+
+  if (items.length === 0) {
+    return [];
+  }
+
+  // A lot whose scrap decision is still open stays out of the audit, the same as for a row the
+  // owner typed by hand.
+  const blocked = await findLotsWithOpenScrapOrder(
+    db,
+    businessId,
+    items.map((item) => item.id),
+  );
+
+  return items
+    .filter((item) => !blocked.has(item.id))
+    .map((item) => ({
+      assignedToUserId: null,
+      secondCounterUserId: null,
+      variantId: item.variantId,
+      lotItemId: item.id,
+    }));
+}
+
+/**
+ * Read the scope off the request and check it.
+ *
+ * The scope decides which rows the audit covers, so a scope that points at nothing is refused
+ * here instead of producing an audit with no rows.
+ */
+async function resolveAuditScope(
+  db: DbClient,
+  businessId: string,
+  body: CreateAuditBody,
+): Promise<{
+  scopeType: "FULL_STORE" | "CATEGORY" | "SHELF";
+  categoryId: string | null;
+  shelfCellId: string | null;
+}> {
+  const requested = String(body.scopeType ?? "FULL_STORE").trim().toUpperCase();
+  if (requested !== "FULL_STORE" && requested !== "CATEGORY" && requested !== "SHELF") {
+    throw new HttpError(400, "Phạm vi kiểm kê không hợp lệ.");
+  }
+
+  if (requested === "FULL_STORE") {
+    return { scopeType: "FULL_STORE", categoryId: null, shelfCellId: null };
+  }
+
+  if (requested === "SHELF") {
+    const shelfCellId = typeof body.shelfCellId === "string" ? body.shelfCellId.trim() : "";
+    if (!shelfCellId) {
+      throw new HttpError(400, "Hãy chọn ô kệ cần kiểm kê.");
+    }
+    const cell = await db.inventoryShelfCell.findFirst({
+      where: { id: shelfCellId, businessId },
+      select: { id: true },
+    });
+    if (!cell) {
+      throw new HttpError(404, "Không tìm thấy ô kệ đã chọn.");
+    }
+    return { scopeType: "SHELF", categoryId: null, shelfCellId };
+  }
+
+  const categoryId = typeof body.categoryId === "string" ? body.categoryId.trim() : "";
+  if (!categoryId) {
+    throw new HttpError(400, "Hãy chọn danh mục cần kiểm kê.");
+  }
+  const category = await db.category.findFirst({
+    where: { id: categoryId, businessId },
+    select: { id: true },
+  });
+  if (!category) {
+    throw new HttpError(404, "Không tìm thấy danh mục đã chọn.");
+  }
+
+  return { scopeType: "CATEGORY", categoryId, shelfCellId: null };
+}
+
+/**
+ * The category ids a scope covers: the category itself plus its children.
+ *
+ * The category tree is two levels deep, so a parent category covers its children too.
+ */
+async function resolveCategoryIds(
+  db: DbClient,
+  businessId: string,
+  categoryId: string,
+): Promise<string[]> {
+  const children = await db.category.findMany({
+    where: { businessId, parentId: categoryId },
+    select: { id: true },
+  });
+  return [categoryId, ...children.map((child) => child.id)];
+}
+
 /** Build the data for new audit item rows: lot number autofilled, snapshot read from the balance. */
 async function buildItemData(
   db: DbClient,
@@ -690,12 +860,31 @@ class AuditService {
       throw new HttpError(409, `Mã kiểm kê "${auditCode}" đã tồn tại trong cửa hàng này.`);
     }
 
+    // The scope decides which rows the audit covers. It was written to the database but never
+    // read, so "Theo ke" and "Theo danh muc" were dead options.
+    const scope = await resolveAuditScope(prisma, businessId, body);
+
     // Items are added in a separate step from the audit detail page, so they are optional here.
     // When rows are provided (employee + variant + optional lot), they are validated and created too.
     const hasRows = Array.isArray(body.items) && body.items.length > 0;
-    const rows = hasRows
+    let rows = hasRows
       ? await normalizeAndValidateRows(prisma, businessId, body.items)
       : [];
+
+    // A scoped audit gets its rows from the stock itself: the lots on the shelf position, or the
+    // lots of the category. The rows come without counters, because the owner assigns them on
+    // the audit detail page.
+    if (!hasRows && scope.scopeType !== "FULL_STORE") {
+      rows =
+        scope.scopeType === "SHELF"
+          ? await buildRowsFromScope(prisma, businessId, "SHELF", {
+              shelfCellId: scope.shelfCellId,
+            })
+          : await buildRowsFromScope(prisma, businessId, "CATEGORY", {
+              categoryIds: await resolveCategoryIds(prisma, businessId, scope.categoryId!),
+            });
+    }
+
     const affectedVariantIds = [...new Set(rows.map((r) => r.variantId))];
 
     // Create the audit and the owner-defined rows in one transaction. A draft locks nothing:
@@ -713,6 +902,9 @@ class AuditService {
           countStartAt: null,
           createdBy: user.id,
           note,
+          scopeType: scope.scopeType,
+          categoryId: scope.categoryId,
+          shelfCellId: scope.shelfCellId,
         },
         select: {
           id: true,
@@ -789,6 +981,19 @@ class AuditService {
 
     if (audit.stockAuditItems.length === 0) {
       throw new HttpError(400, "Đợt kiểm kê chưa có dòng nào. Hãy thêm dòng rồi bắt đầu.");
+    }
+
+    // Every row is counted by two people, so a row without counters cannot be counted. The rows
+    // a scope generated have none: the owner assigns them on the audit detail page, and the
+    // counting only starts once every row has its two people.
+    const unassigned = audit.stockAuditItems.filter(
+      (item) => !item.assignedToUserId || !item.secondCounterUserId,
+    );
+    if (unassigned.length > 0) {
+      throw new HttpError(
+        400,
+        `Còn ${unassigned.length} dòng chưa gán đủ 2 người kiểm kê. Hãy gán nhân viên cho các dòng này rồi bắt đầu.`,
+      );
     }
 
     // The draft may have been sitting for a while: the lot may have been scrapped, or a scrap
@@ -1058,6 +1263,8 @@ class AuditService {
         include: {
           approvedByUser: { select: { fullName: true, email: true } },
           stockAuditItems: { select: { id: true } },
+          category: { select: { id: true, name: true } },
+          shelfCell: { select: { id: true, level: true, slot: true, shelf: { select: { code: true } } } },
         },
         // A draft has no start date yet, so it sorts by its code instead of by a null date.
         orderBy: [{ countStartAt: { sort: "desc", nulls: "last" } }, { auditCode: "desc" }],
@@ -1079,6 +1286,10 @@ class AuditService {
         completedAt: audit.completedAt,
         note: audit.note,
         approvedBy: audit.approvedByUser?.fullName || audit.approvedByUser?.email || null,
+        categoryName: audit.category?.name ?? null,
+        shelfLabel: audit.shelfCell
+          ? `Kệ ${audit.shelfCell.shelf.code} - Tầng ${audit.shelfCell.level} - Ô ${audit.shelfCell.slot}`
+          : null,
       })),
       pagination: {
         page,
@@ -1099,6 +1310,8 @@ class AuditService {
         business: { select: { industryType: true } },
         approvedByUser: { select: { fullName: true, email: true } },
         createdByUser: { select: { id: true, fullName: true, email: true } },
+        category: { select: { id: true, name: true } },
+        shelfCell: { select: { id: true, level: true, slot: true, shelf: { select: { code: true } } } },
         stockAuditItems: {
           select: AUDIT_ITEM_SELECT,
           orderBy: { id: "asc" },
@@ -1129,6 +1342,10 @@ class AuditService {
       approvedBy: audit.approvedByUser?.fullName || audit.approvedByUser?.email || null,
       createdBy: person(audit.createdByUser),
       itemCount: audit.stockAuditItems.length,
+      categoryName: audit.category?.name ?? null,
+      shelfLabel: audit.shelfCell
+        ? `Kệ ${audit.shelfCell.shelf.code} - Tầng ${audit.shelfCell.level} - Ô ${audit.shelfCell.slot}`
+        : null,
       items: audit.stockAuditItems.map((item) => formatAuditItem(item, viewer.id, viewerIsOwner)),
     };
   }

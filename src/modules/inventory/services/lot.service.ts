@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { HttpError } from "../../../shared/http/http-error";
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { LotStatusService } from "./lot-status.service";
+import { shelfService } from "./shelf.service";
 import { assertVariantNotLockedForAudit } from "./scrap-access";
 
 type LotStatusName = "HEALTHY" | "WARNING" | "UNUSABLE" | "QUARANTINED" | "SCRAPPED";
@@ -14,7 +15,15 @@ const ALL_LOT_STATUSES: LotStatusName[] = ["HEALTHY", "WARNING", "UNUSABLE", "QU
 export interface LotItemVariant {
   id: string;
   sku: string;
-  template: { name: string };
+  template: { id: string; name: string; imageUrl: string | null };
+}
+
+/** Where a lot item physically sits: "Ke A2 - Tang 3 - O 04". */
+export interface LotItemShelfCell {
+  id: string;
+  level: number;
+  slot: number;
+  shelf: { id: string; code: string; name: string | null };
 }
 
 /** Raw row shape shared by every query that returns a lot item with its status inputs. */
@@ -28,6 +37,7 @@ interface LotItemRow {
   quarantinedAt: Date | null;
   lot: { id: string; lotNumber: string };
   variant: LotItemVariant;
+  shelfCell: LotItemShelfCell | null;
   inventoryBalances: Array<{ quantityOnHand: number; damagedQuantity: number }>;
   scrapOrders: Array<{ id: string; scrapCode: string; status: string }>;
 }
@@ -47,6 +57,8 @@ export interface LotItemWithStatus {
   quarantineQty: number | null;
   quarantinedAt: Date | null;
   variant: LotItemVariant;
+  /** The shelf and position the lot sits on, or null when it has no location yet. */
+  shelfCell: LotItemShelfCell | null;
   onHand: number;
   damaged: number;
   /**
@@ -76,8 +88,28 @@ export interface ExpiringLotBatch {
   items: LotItemWithStatus[];
 }
 
+/** One SKU of a product, with the lot items it holds inside the expiry list. */
+export interface ExpiringProductSku {
+  id: string;
+  sku: string;
+  /** The lot items of this SKU, soonest expiry first. */
+  lots: LotItemWithStatus[];
+}
+
+/**
+ * One product in the expiry list, with its SKUs and their lots. The tree reads top-down:
+ * the staff sees the product first, then the SKU, then the lot that is running out.
+ */
+export interface ExpiringProductGroup {
+  /** Product template id. */
+  id: string;
+  name: string;
+  imageUrl: string | null;
+  skus: ExpiringProductSku[];
+}
+
 export interface ExpiringLotsResult {
-  lots: LotItemWithStatus[] | ExpiringLotBatch[];
+  lots: LotItemWithStatus[] | ExpiringLotBatch[] | ExpiringProductGroup[];
   total: number;
   summary: Record<string, number>;
 }
@@ -112,6 +144,7 @@ export class LotService {
       quarantineQty: item.quarantineQty,
       quarantinedAt: item.quarantinedAt,
       variant: item.variant,
+      shelfCell: item.shelfCell,
       onHand: item.inventoryBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0),
       damaged: item.inventoryBalances.reduce((sum, balance) => sum + balance.damagedQuantity, 0),
       scrapOrder,
@@ -131,7 +164,18 @@ export class LotService {
       quarantineQty: true,
       quarantinedAt: true,
       lot: { select: { id: true, lotNumber: true } },
-      variant: { select: { id: true, sku: true, template: { select: { name: true } } } },
+      variant: {
+        select: { id: true, sku: true, template: { select: { id: true, name: true, imageUrl: true } } },
+      },
+      // The shelf and position the lot sits on, so the staff see where the goods are.
+      shelfCell: {
+        select: {
+          id: true,
+          level: true,
+          slot: true,
+          shelf: { select: { id: true, code: true, name: true } },
+        },
+      },
       inventoryBalances: { select: { quantityOnHand: true, damagedQuantity: true } },
       // The newest scrap order of the lot, in any status: it is the audit trail, and only a
       // PENDING one blocks a new order.
@@ -292,12 +336,17 @@ export class LotService {
   private async loadExpiringItems(
     businessId: string,
     status?: LotStatusName,
+    shelfCellId?: string,
   ): Promise<{ matching: LotItemWithStatus[]; summary: Record<string, number> }> {
     const wanted: LotStatusName[] = status ? [status] : DEFAULT_EXPIRING_STATUSES;
 
     const rows = await prisma.productLotItem.findMany({
       // Only lot-tracked variants have meaningful expiry dates.
-      where: { businessId, variant: { template: { hasLotTracking: true } } },
+      where: {
+        businessId,
+        variant: { template: { hasLotTracking: true } },
+        ...(shelfCellId ? { shelfCellId } : {}),
+      },
       select: this.itemSelect(),
       orderBy: { expirationDate: "asc" },
     });
@@ -326,6 +375,7 @@ export class LotService {
    * Get lot items by status for expiry monitoring
    * Filters by calculated or database status.
    * Pass groupBy "lot" to page over batches instead of items: one row per lot number, each holding its variants.
+   * Pass groupBy "product" to page over products instead: one entry per product, with its SKUs and their lots.
    */
   async getExpiringLots(
     businessId: string,
@@ -334,6 +384,8 @@ export class LotService {
       groupBy?: string;
       skip?: number;
       take?: number;
+      /** Only the lots that sit on this shelf position. */
+      shelfCellId?: string;
     },
   ): Promise<ExpiringLotsResult> {
     if (filters?.status && !ALL_LOT_STATUSES.includes(filters.status)) {
@@ -342,7 +394,19 @@ export class LotService {
 
     const take = filters?.take || 20;
     const skip = filters?.skip || 0;
-    const { matching, summary } = await this.loadExpiringItems(businessId, filters?.status);
+    const { matching, summary } = await this.loadExpiringItems(
+      businessId,
+      filters?.status,
+      filters?.shelfCellId,
+    );
+
+    if (filters?.groupBy === "product") {
+      return {
+        lots: this.groupByProduct(matching).slice(skip, skip + take),
+        total: this.countProducts(matching),
+        summary,
+      };
+    }
 
     if (filters?.groupBy !== "lot") {
       return {
@@ -375,6 +439,103 @@ export class LotService {
       total: grouped.length,
       summary,
     };
+  }
+
+  /** How many distinct products the matching lot items belong to. */
+  private countProducts(items: LotItemWithStatus[]): number {
+    return new Set(items.map((item) => item.variant.template.id)).size;
+  }
+
+  /**
+   * Group the lot items into product > SKU > lot. Items arrive sorted by expiry, so every
+   * product keeps the order of its soonest-expiring lot, and every SKU keeps the order of its
+   * own lots.
+   */
+  private groupByProduct(items: LotItemWithStatus[]): ExpiringProductGroup[] {
+    const products = new Map<string, ExpiringProductGroup>();
+    const skus = new Map<string, ExpiringProductSku>();
+
+    for (const item of items) {
+      const template = item.variant.template;
+      let product = products.get(template.id);
+      if (!product) {
+        product = { id: template.id, name: template.name, imageUrl: template.imageUrl, skus: [] };
+        products.set(template.id, product);
+      }
+
+      const skuKey = `${template.id}:${item.variant.id}`;
+      let sku = skus.get(skuKey);
+      if (!sku) {
+        sku = { id: item.variant.id, sku: item.variant.sku, lots: [] };
+        skus.set(skuKey, sku);
+        product.skus.push(sku);
+      }
+
+      sku.lots.push(item);
+    }
+
+    return [...products.values()];
+  }
+
+  /**
+   * Put a lot item on a shelf: "Ke A2 - Tang 3 - O 04".
+   *
+   * The staff pick a shelf, a level and a slot, never a cell id, so the cell is created when it
+   * does not exist yet. The shelf has to belong to the same business.
+   */
+  async assignShelf(
+    businessId: string,
+    lotItemId: string,
+    body: { shelfId?: unknown; level?: unknown; slot?: unknown },
+  ): Promise<{ id: string; shelfCell: LotItemShelfCell | null }> {
+    const shelfId = typeof body.shelfId === "string" ? body.shelfId.trim() : "";
+    if (!shelfId) {
+      throw new HttpError(400, "Chon ke de gan vi tri.");
+    }
+
+    const level = Number(body.level);
+    if (!Number.isInteger(level) || level < 1) {
+      throw new HttpError(400, "Tang phai la so nguyen tu 1 tro len.");
+    }
+    const slot = Number(body.slot);
+    if (!Number.isInteger(slot) || slot < 1) {
+      throw new HttpError(400, "O phai la so nguyen tu 1 tro len.");
+    }
+
+    const shelf = await prisma.inventoryShelf.findFirst({
+      where: { id: shelfId, businessId },
+      select: { id: true, code: true, name: true },
+    });
+    if (!shelf) {
+      throw new HttpError(404, "Khong tim thay ke.");
+    }
+
+    return prisma.$transaction(async (tx) => {
+      const item = await tx.productLotItem.findFirst({
+        where: { id: lotItemId, businessId },
+        select: { id: true },
+      });
+      if (!item) {
+        throw new HttpError(404, "Khong tim thay lo hang.");
+      }
+
+      const cell = await shelfService.assignCell(tx, businessId, shelfId, level, slot);
+
+      await tx.productLotItem.update({
+        where: { id: lotItemId },
+        data: { shelfCellId: cell.id },
+      });
+
+      return {
+        id: lotItemId,
+        shelfCell: {
+          id: cell.id,
+          level: cell.level,
+          slot: cell.slot,
+          shelf: { id: shelf.id, code: shelf.code, name: shelf.name },
+        },
+      };
+    });
   }
 
   /**
