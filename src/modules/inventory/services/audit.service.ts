@@ -363,6 +363,17 @@ function parseOptionalDate(value: unknown, label: string): Date | null {
   return date;
 }
 
+/** The owner's note on the audit. An empty value means no note. */
+function parseNote(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const note = value.trim();
+  if (!note) return null;
+  if (note.length > 1000) {
+    throw new HttpError(400, "Ghi chú không được dài quá 1000 ký tự.");
+  }
+  return note;
+}
+
 /**
  * For an existing lot: compare the dates sent by the employee with the lot's dates.
  * Returns only the values that differ (null = keep the lot's value), so a correction is stored on the
@@ -667,6 +678,7 @@ class AuditService {
     // The code is generated for the caller; an explicitly provided code is still accepted.
     const providedCode = typeof body.auditCode === "string" ? body.auditCode.trim() : "";
     const auditType = "RE_AUDIT";
+    const note = parseNote(body.note);
 
     const auditCode = providedCode || (await nextAuditCode(businessId));
 
@@ -700,6 +712,7 @@ class AuditService {
           // The count has not started: the date is written when the owner starts the audit.
           countStartAt: null,
           createdBy: user.id,
+          note,
         },
         select: {
           id: true,
@@ -709,6 +722,7 @@ class AuditService {
           status: true,
           isLockedForAudit: true,
           countStartAt: true,
+          note: true,
         },
       });
 
@@ -732,6 +746,7 @@ class AuditService {
       status: audit.status,
       isLockedForAudit: audit.isLockedForAudit,
       countStartAt: audit.countStartAt,
+      note: audit.note,
       itemCount: rows.length,
       affectedVariantCount: affectedVariantIds.length,
     };
@@ -1062,6 +1077,7 @@ class AuditService {
         isLockedForAudit: audit.isLockedForAudit,
         countStartAt: audit.countStartAt,
         completedAt: audit.completedAt,
+        note: audit.note,
         approvedBy: audit.approvedByUser?.fullName || audit.approvedByUser?.email || null,
       })),
       pagination: {
@@ -1108,6 +1124,7 @@ class AuditService {
       isLockedForAudit: audit.isLockedForAudit,
       countStartAt: audit.countStartAt,
       completedAt: audit.completedAt,
+      note: audit.note,
       industryType: audit.business?.industryType || null,
       approvedBy: audit.approvedByUser?.fullName || audit.approvedByUser?.email || null,
       createdBy: person(audit.createdByUser),

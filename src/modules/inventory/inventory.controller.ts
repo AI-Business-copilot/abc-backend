@@ -629,6 +629,50 @@ export class InventoryController {
     }
   }
 
+  // F08: the disposal dossier the tax rules ask for (Thông tư 78/2014, amended by Thông tư 96/2015).
+
+  /** Staff or owner, while the order is still PENDING. */
+  async recordScrapDossier(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await scrapService.recordDisposalDossier(
+        businessId,
+        actorOf(res),
+        String(req.params.id),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  /** Owner only, on an approved order: the goods were physically destroyed on this day. */
+  async confirmScrapDisposal(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await scrapService.confirmPhysicalDisposal(
+        businessId,
+        actorOf(res),
+        String(req.params.id),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  /** The dossier as JSON. The frontend turns it into the printable PDF. */
+  async getScrapDossierReport(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(await scrapService.generateDossierReport(businessId, String(req.params.id)));
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
   // F08: scrap order evidence images
 
   async listScrapImages(req: Request, res: Response) {

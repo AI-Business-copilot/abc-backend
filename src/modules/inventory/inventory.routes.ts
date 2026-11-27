@@ -101,6 +101,11 @@ router.patch("/scrap-orders/:id/reject", requirePermission("inventory.scrap.appr
 router.patch("/scrap-orders/:id/cancel", requirePermission("inventory.scrap.approve"), controller.cancelScrapOrder.bind(controller));
 router.get("/scrap-statistics", requirePermission("inventory.lot.read"), controller.getScrapStatistics.bind(controller));
 
+// F08: the disposal dossier for the tax file (Thông tư 78/2014, amended by Thông tư 96/2015).
+router.patch("/scrap-orders/:id/dossier", requirePermission("inventory.scrap.create"), controller.recordScrapDossier.bind(controller));
+router.patch("/scrap-orders/:id/confirm-disposal", requirePermission("inventory.scrap.approve"), controller.confirmScrapDisposal.bind(controller));
+router.get("/scrap-orders/:id/dossier-report", requirePermission("inventory.lot.read"), controller.getScrapDossierReport.bind(controller));
+
 // F08: scrap order evidence images. View only; images are created with the scrap order and cannot be changed afterward.
 router.get("/scrap-orders/:id/images", requirePermission("inventory.lot.read"), controller.listScrapImages.bind(controller));
 router.get("/scrap-order-images/:imageId", requirePermission("inventory.lot.read"), controller.getScrapImage.bind(controller));

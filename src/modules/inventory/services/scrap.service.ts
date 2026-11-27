@@ -5,6 +5,14 @@ import { Prisma } from "@prisma/client";
 import { HttpError } from "../../../shared/http/http-error";
 import { prisma } from "../../../shared/infrastructure/database/prisma.client";
 import { deleteObjects, uploadObject } from "../../../shared/infrastructure/storage/supabase-storage";
+import {
+  DISPOSAL_METHODS,
+  MIN_DISPOSAL_WITNESSES,
+  SCRAP_CAUSE_CODES,
+  scrapCauseCodeLabel,
+  type DisposalMethod,
+  type ScrapCauseCode,
+} from "../scrap.types";
 import { LotStatusService } from "./lot-status.service";
 import { ScrapImageService, type ScrapImageDto } from "./scrap-image.service";
 import {
@@ -69,15 +77,84 @@ function parseQuantity(value: unknown, label: string): number {
   return quantity;
 }
 
-function parseReason(value: unknown): string {
+/**
+ * The plain-text reason of the loss, written from the cause code. The cause code is the only
+ * thing staff state, so the reason is never asked for: the label of the code is what the
+ * order carries, and it keeps the historical `scrap_reason` column filled for the old readers.
+ */
+function reasonFromCauseCode(causeCode: ScrapCauseCode): string {
+  return scrapCauseCodeLabel[causeCode];
+}
+
+/** The cause of the loss, one of the four codes the dossier accepts. */
+function parseCauseCode(value: unknown): ScrapCauseCode {
+  const code = String(value ?? "");
+  if (!(SCRAP_CAUSE_CODES as readonly string[]).includes(code)) {
+    throw new HttpError(400, `causeCode must be one of ${SCRAP_CAUSE_CODES.join(", ")}.`);
+  }
+  return code as ScrapCauseCode;
+}
+
+/** How the goods are destroyed. */
+function parseDisposalMethod(value: unknown): DisposalMethod {
+  const method = String(value ?? "");
+  if (!(DISPOSAL_METHODS as readonly string[]).includes(method)) {
+    throw new HttpError(400, `disposalMethod must be one of ${DISPOSAL_METHODS.join(", ")}.`);
+  }
+  return method as DisposalMethod;
+}
+
+/** Where the goods are destroyed. A contractor needs an address, so the location is required there. */
+function parseDisposalLocation(value: unknown): string {
+  const location = String(value ?? "").trim();
+  if (!location) {
+    throw new HttpError(400, "disposalLocation is required.");
+  }
+  if (location.length > 255) {
+    throw new HttpError(400, "disposalLocation must be 255 characters or fewer.");
+  }
+  return location;
+}
+
+/** The council members, separated by commas. The tax dossier needs at least two of them. */
+function parseWitnessNames(value: unknown): string[] {
   if (typeof value !== "string" || !value.trim()) {
-    throw new HttpError(400, "scrapReason is required.");
+    throw new HttpError(400, "witnessNames must list the council members, separated by commas.");
   }
-  const reason = value.trim();
-  if (reason.length > 255) {
-    throw new HttpError(400, "scrapReason must be 255 characters or fewer.");
+  const names = value
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (names.length < MIN_DISPOSAL_WITNESSES) {
+    throw new HttpError(400, `witnessNames must list at least ${MIN_DISPOSAL_WITNESSES} council members.`);
   }
-  return reason;
+  if (names.join(", ").length > 500) {
+    throw new HttpError(400, "witnessNames must be 500 characters or fewer.");
+  }
+  return names;
+}
+
+/** The amount recovered from an insurer or a third party. It cannot be negative. */
+function parseCompensatedAmount(value: unknown): Prisma.Decimal {
+  const amount = new Prisma.Decimal(String(value ?? 0));
+  if (amount.isNegative() || !amount.isFinite()) {
+    throw new HttpError(400, "compensatedAmount must be zero or more.");
+  }
+  return amount;
+}
+
+/** A day that has already passed. The dossier cannot claim a disposal that did not happen yet. */
+function parseDisposalDate(value: unknown): Date {
+  const date = value instanceof Date ? value : new Date(String(value ?? ""));
+  if (Number.isNaN(date.getTime())) {
+    throw new HttpError(400, "disposalDate must be a valid date.");
+  }
+  const endOfToday = new Date();
+  endOfToday.setHours(23, 59, 59, 999);
+  if (date.getTime() > endOfToday.getTime()) {
+    throw new HttpError(400, "disposalDate cannot be in the future.");
+  }
+  return date;
 }
 
 export class ScrapService {
@@ -114,6 +191,8 @@ export class ScrapService {
    * must be no other PENDING scrap order for that target. A rejected or cancelled order does not
    * block a new one: the stock stays quarantined and any staff member can file a fresh order.
    * Needs 1 to 10 evidence photos, which are saved with the order and cannot be changed afterward.
+   * The cause, the disposal method and the disposal location are required: the tax dossier asks
+   * for them, and the order cannot be approved without them.
    */
   async createScrapOrder(
     businessId: string,
@@ -123,12 +202,26 @@ export class ScrapService {
       variantId?: unknown;
       scrapQty?: unknown;
       scrapSource?: unknown;
-      scrapReason?: unknown;
+      causeCode?: unknown;
+      disposalMethod?: unknown;
+      disposalLocation?: unknown;
     },
     files: { buffer: Buffer }[] | undefined,
   ) {
     assertStaff(actor);
-    const scrapReason = parseReason(data.scrapReason);
+    if (data.causeCode === undefined || data.causeCode === null || data.causeCode === "") {
+      throw new HttpError(400, "Vui lòng chọn nguyên nhân hủy hàng.");
+    }
+    if (data.disposalMethod === undefined || data.disposalMethod === null || data.disposalMethod === "") {
+      throw new HttpError(400, "Vui lòng chọn phương thức tiêu hủy.");
+    }
+    if (data.disposalLocation === undefined || data.disposalLocation === null || String(data.disposalLocation).trim() === "") {
+      throw new HttpError(400, "Vui lòng nhập địa điểm tiêu hủy.");
+    }
+    const causeCode = parseCauseCode(data.causeCode);
+    const scrapReason = reasonFromCauseCode(causeCode);
+    const disposalMethod = parseDisposalMethod(data.disposalMethod);
+    const disposalLocation = parseDisposalLocation(data.disposalLocation);
     const images = imageService.prepareImages(files);
 
     // The target is a lot item when one is given, otherwise the variant itself.
@@ -274,6 +367,9 @@ export class ScrapService {
               unitCost,
               scrapSource,
               scrapReason,
+              causeCode,
+              disposalMethod,
+              disposalLocation,
               status: "PENDING",
               createdBy: actor.userId,
               images: {
@@ -364,17 +460,22 @@ export class ScrapService {
     businessId: string,
     actor: ScrapActor,
     scrapOrderId: string,
-    data: { scrapQty?: unknown; scrapReason?: unknown },
+    data: { scrapQty?: unknown; causeCode?: unknown },
   ) {
     assertStaff(actor);
     assertUuid(scrapOrderId, "Scrap order");
 
     const update: Prisma.ScrapOrderUpdateInput = {};
-    if (data.scrapReason !== undefined) update.scrapReason = parseReason(data.scrapReason);
+    if (data.causeCode !== undefined) {
+      const causeCode = parseCauseCode(data.causeCode);
+      update.causeCode = causeCode;
+      // The reason follows the cause, so the two can never disagree.
+      update.scrapReason = reasonFromCauseCode(causeCode);
+    }
     const newQty = data.scrapQty !== undefined ? parseQuantity(data.scrapQty, "scrapQty") : undefined;
     if (newQty !== undefined) update.scrapQty = newQty;
     if (Object.keys(update).length === 0) {
-      throw new HttpError(400, "Send scrapQty or scrapReason to update.");
+      throw new HttpError(400, "Send scrapQty or causeCode to update.");
     }
 
     return prisma.$transaction(async (tx) => {
@@ -597,6 +698,20 @@ export class ScrapService {
         }
       }
 
+      // The disposal council is the approver (who leads it) and the staff member who wrote the
+      // minutes. Both names are needed, because the dossier asks for at least two council members.
+      const councilUsers = await tx.user.findMany({
+        where: { id: { in: [actor.userId, order.createdBy] } },
+        select: { id: true, fullName: true },
+      });
+      const approverName = councilUsers.find((member) => member.id === actor.userId)?.fullName.trim() ?? "";
+      const creatorName = councilUsers.find((member) => member.id === order.createdBy)?.fullName.trim() ?? "";
+      // The approver leads the council, so their name comes first.
+      const councilNames = [approverName, creatorName].filter(Boolean);
+      if (councilNames.length < MIN_DISPOSAL_WITNESSES) {
+        throw new HttpError(409, "Không tìm đủ thành viên hội đồng tiêu hủy để lập biên bản.");
+      }
+
       const completed = await tx.scrapOrder.update({
         where: { id: scrapOrderId },
         data: {
@@ -605,6 +720,7 @@ export class ScrapService {
           approvedAt: new Date(),
           // In this database total_loss_value is a plain column (not generated), so the loss is stored here.
           totalLossValue: totalCost,
+          witnessNames: councilNames.join(", "),
         },
         include: orderInclude,
       });
@@ -732,5 +848,305 @@ export class ScrapService {
         SELLABLE_STOCK: sourceCount("SELLABLE_STOCK"),
       },
     };
+  }
+
+  /**
+   * Staff or owner, while the order is still PENDING. Records the parts of the disposal dossier
+   * that the tax rules ask for: the cause of the loss, the amount recovered from an insurer or a
+   * third party, and how and where the goods will be destroyed together with the council members.
+   * Every field is optional, so a dossier can be filled in over several steps.
+   */
+  async recordDisposalDossier(
+    businessId: string,
+    actor: ScrapActor,
+    scrapOrderId: string,
+    data: {
+      causeCode?: unknown;
+      compensatedAmount?: unknown;
+      disposalDate?: unknown;
+      disposalMethod?: unknown;
+      disposalLocation?: unknown;
+      witnessNames?: unknown;
+    },
+  ) {
+    if (!actor.userId || !actor.role) {
+      throw new HttpError(403, "Only a member of this business can do this.");
+    }
+    assertUuid(scrapOrderId, "Scrap order");
+
+    const update: Prisma.ScrapOrderUpdateInput = {};
+    let compensated: Prisma.Decimal | null = null;
+
+    if (data.causeCode !== undefined && data.causeCode !== null && data.causeCode !== "") {
+      const causeCode = parseCauseCode(data.causeCode);
+      update.causeCode = causeCode;
+      // The reason follows the cause, so the two can never disagree.
+      update.scrapReason = reasonFromCauseCode(causeCode);
+    }
+    if (data.disposalMethod !== undefined && data.disposalMethod !== null && data.disposalMethod !== "") {
+      update.disposalMethod = parseDisposalMethod(data.disposalMethod);
+    }
+    if (data.disposalLocation !== undefined && data.disposalLocation !== null) {
+      const location = String(data.disposalLocation).trim();
+      if (location.length > 255) {
+        throw new HttpError(400, "disposalLocation must be 255 characters or fewer.");
+      }
+      update.disposalLocation = location || null;
+    }
+    if (data.witnessNames !== undefined && data.witnessNames !== null && data.witnessNames !== "") {
+      update.witnessNames = parseWitnessNames(data.witnessNames).join(", ");
+    }
+    if (data.compensatedAmount !== undefined && data.compensatedAmount !== null) {
+      compensated = parseCompensatedAmount(data.compensatedAmount);
+      update.compensatedAmount = compensated;
+    }
+    if (data.disposalDate !== undefined && data.disposalDate !== null && data.disposalDate !== "") {
+      update.disposalDate = parseDisposalDate(data.disposalDate);
+    }
+
+    if (Object.keys(update).length === 0) {
+      throw new HttpError(400, "Send at least one dossier field to record.");
+    }
+
+    return prisma.$transaction(async (tx) => {
+      const locked = await lockScrapOrder(tx, businessId, scrapOrderId);
+      if (locked.status !== "PENDING") {
+        throw new HttpError(409, `Phiếu hủy đang ${scrapStatusLabel(locked.status)} không thể được bổ sung hồ sơ.`);
+      }
+
+      // A contractor needs an address, so the location is checked against the method that is
+      // stored now or that this request brings.
+      const method = update.disposalMethod ?? (await this.currentDisposalMethod(tx, businessId, scrapOrderId));
+      const location = update.disposalLocation ?? (await this.currentDisposalLocation(tx, businessId, scrapOrderId));
+      if (method === "CONTRACTOR" && !location) {
+        throw new HttpError(400, "disposalLocation is required when the goods are destroyed by a contractor.");
+      }
+
+      // The recovered amount can never be larger than the loss it comes from.
+      const order = await tx.scrapOrder.findFirstOrThrow({
+        where: { id: scrapOrderId, businessId },
+        select: { scrapQty: true, unitCost: true },
+      });
+      const loss = new Prisma.Decimal(order.unitCost).mul(order.scrapQty);
+      const current = compensated ?? (await this.currentCompensatedAmount(tx, businessId, scrapOrderId));
+      if (current.gt(loss)) {
+        throw new HttpError(400, "compensatedAmount cannot be more than the loss it comes from.");
+      }
+
+      const updated = await tx.scrapOrder.update({ where: { id: scrapOrderId }, data: update, include: orderInclude });
+      return formatScrapOrder(updated);
+    });
+  }
+
+  /**
+   * Owner only, on an approved order. Records the day the goods were physically destroyed, which
+   * completes the disposal minutes (bước 5). The quantity was already written off when the order
+   * was approved, so this only writes an audit row in the ledger.
+   */
+  async confirmPhysicalDisposal(
+    businessId: string,
+    actor: ScrapActor,
+    scrapOrderId: string,
+    body: { disposalDate?: unknown },
+  ) {
+    assertOwner(actor);
+    assertUuid(scrapOrderId, "Scrap order");
+
+    const disposalDate = body.disposalDate === undefined || body.disposalDate === null || body.disposalDate === ""
+      ? new Date()
+      : parseDisposalDate(body.disposalDate);
+
+    return prisma.$transaction(async (tx) => {
+      const locked = await lockScrapOrder(tx, businessId, scrapOrderId);
+      if (locked.status !== "COMPLETED") {
+        throw new HttpError(
+          409,
+          `Phiếu hủy đang ${scrapStatusLabel(locked.status)} chưa được duyệt nên chưa thể xác nhận tiêu hủy.`,
+        );
+      }
+
+      const order = await tx.scrapOrder.findFirstOrThrow({ where: { id: scrapOrderId, businessId } });
+      if (order.disposalDate) {
+        throw new HttpError(409, "This scrap order was already confirmed as disposed of.");
+      }
+
+      // The write-off row the approval created, so the audit trail points back at it.
+      const disposalEntry = await tx.inventoryLedger.findFirst({
+        where: { businessId, referenceDocType: "SCRAP_ORDER", referenceDocId: scrapOrderId },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, balanceAfter: true },
+      });
+
+      const variantTotal = await tx.inventoryBalance.aggregate({
+        where: { businessId, variantId: order.variantId },
+        _sum: { quantityOnHand: true },
+      });
+
+      await tx.inventoryLedger.create({
+        data: {
+          businessId,
+          variantId: order.variantId,
+          lotItemId: order.lotItemId,
+          transactionType: "SCRAP_PHYSICALLY_DISPOSED",
+          // The stock was already written off, so this row moves no quantity.
+          quantityChanged: 0,
+          balanceAfter: variantTotal._sum.quantityOnHand ?? 0,
+          unitCost: order.unitCost,
+          totalCostValue: new Prisma.Decimal(0),
+          referenceDocType: "SCRAP_ORDER",
+          referenceDocId: scrapOrderId,
+          createdBy: actor.userId,
+        },
+      });
+
+      const updated = await tx.scrapOrder.update({
+        where: { id: scrapOrderId },
+        data: { disposalDate },
+        include: orderInclude,
+      });
+
+      return {
+        scrapOrder: formatScrapOrder(updated),
+        disposalDate,
+        disposalLedgerId: disposalEntry?.id ?? null,
+      };
+    });
+  }
+
+  /**
+   * The dossier as the tax rules ask for it: the six steps of the disposal procedure, the bảng kê
+   * xuất nhập tồn built from the ledger, and the amounts that decide what may be deducted.
+   */
+  async generateDossierReport(businessId: string, scrapOrderId: string) {
+    assertUuid(scrapOrderId, "Scrap order");
+
+    const order = await prisma.scrapOrder.findFirst({
+      where: { id: scrapOrderId, businessId },
+      include: {
+        ...orderInclude,
+        business: { select: { name: true, address: true, industryType: true } },
+      },
+    });
+    if (!order) {
+      throw new HttpError(404, "Scrap order not found");
+    }
+    if (order.status !== "COMPLETED") {
+      throw new HttpError(
+        409,
+        `Hồ sơ tiêu hủy chỉ được lập cho phiếu đã duyệt. Phiếu này đang ${scrapStatusLabel(order.status)}.`,
+      );
+    }
+
+    // The bảng kê xuất nhập tồn: every movement of this lot item (or of this SKU when the product
+    // has no lot) up to the day of the disposal.
+    const ledger = await prisma.inventoryLedger.findMany({
+      where: {
+        businessId,
+        variantId: order.variantId,
+        ...(order.lotItemId ? { lotItemId: order.lotItemId } : { lotItemId: null }),
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        createdAt: true,
+        transactionType: true,
+        quantityChanged: true,
+        unitCost: true,
+        totalCostValue: true,
+        referenceDocType: true,
+        referenceDocId: true,
+      },
+    });
+
+    const witnesses = (order.witnessNames ?? "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+
+    const totalLossValue = Number(order.totalLossValue ?? 0);
+    const compensatedAmount = Number(order.compensatedAmount ?? 0);
+
+    return {
+      scrapCode: order.scrapCode,
+      businessName: order.business?.name ?? "",
+      businessAddress: order.business?.address ?? null,
+      step1_council: {
+        leader: order.approvedByUser?.fullName ?? order.createdByUser?.fullName ?? "",
+        accountant: witnesses[1] ?? null,
+        createdDate: order.createdAt ? order.createdAt.toISOString() : null,
+      },
+      step2_inspection: {
+        productName: order.variant.template?.name ?? "",
+        sku: order.variant.sku,
+        lotNumber: order.lotItem?.lot.lotNumber ?? null,
+        expiryDate: order.lotItem?.expirationDate ? order.lotItem.expirationDate.toISOString() : null,
+        quantity: order.scrapQty,
+        unitCost: Number(order.unitCost),
+        totalValue: totalLossValue,
+        // The condition of the goods, not the cause of the loss: the cause is stated once, in step 3.
+        condition: order.lotItem?.status ?? "UNRECORDED",
+        createdDate: order.createdAt ? order.createdAt.toISOString() : null,
+      },
+      step3_decision: {
+        causeCode: order.causeCode as ScrapCauseCode | null,
+        disposalMethod: order.disposalMethod as DisposalMethod | null,
+        disposalLocation: order.disposalLocation,
+        approvedBy: order.approvedByUser?.fullName ?? null,
+        approvedDate: order.approvedAt ? order.approvedAt.toISOString() : null,
+        witnesses,
+      },
+      step4_execution: {
+        status: order.disposalMethod
+          ? `Đã ghi nhận phương thức tiêu hủy: ${order.disposalMethod}`
+          : "Chưa ghi nhận",
+      },
+      step5_disposal: {
+        actualDate: order.disposalDate ? order.disposalDate.toISOString() : null,
+        confirmedBy: order.approvedByUser?.fullName ?? null,
+      },
+      step6_archive_bangke: {
+        bangKeXuatNhapTon: ledger.map((entry) => ({
+          date: entry.createdAt ? entry.createdAt.toISOString() : "",
+          transactionType: entry.transactionType,
+          quantity: entry.quantityChanged,
+          unitCost: Number(entry.unitCost),
+          totalValue: Number(entry.totalCostValue),
+          note: `${entry.referenceDocType}:${entry.referenceDocId}`,
+        })),
+      },
+      tax_fields: {
+        totalLossValue,
+        compensatedAmount,
+        // Only the part of the loss that was not compensated may be deducted.
+        deductibleLoss: totalLossValue - compensatedAmount,
+        taxLegislation: "Thông tư 96/2015 sửa đổi Thông tư 78/2014/TT-BTC",
+      },
+    };
+  }
+
+  private async currentDisposalMethod(
+    db: Prisma.TransactionClient,
+    businessId: string,
+    scrapOrderId: string,
+  ): Promise<string | null> {
+    const order = await db.scrapOrder.findFirst({ where: { id: scrapOrderId, businessId }, select: { disposalMethod: true } });
+    return order?.disposalMethod ?? null;
+  }
+
+  private async currentDisposalLocation(
+    db: Prisma.TransactionClient,
+    businessId: string,
+    scrapOrderId: string,
+  ): Promise<string | null> {
+    const order = await db.scrapOrder.findFirst({ where: { id: scrapOrderId, businessId }, select: { disposalLocation: true } });
+    return order?.disposalLocation ?? null;
+  }
+
+  private async currentCompensatedAmount(
+    db: Prisma.TransactionClient,
+    businessId: string,
+    scrapOrderId: string,
+  ): Promise<Prisma.Decimal> {
+    const order = await db.scrapOrder.findFirst({ where: { id: scrapOrderId, businessId }, select: { compensatedAmount: true } });
+    return order?.compensatedAmount ?? new Prisma.Decimal(0);
   }
 }
