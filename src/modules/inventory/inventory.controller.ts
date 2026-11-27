@@ -281,6 +281,7 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await auditService.reassignAuditItem(
         businessId,
+        authUserId(req),
         String(req.params.id),
         String(req.params.itemId),
         req.body ?? {},

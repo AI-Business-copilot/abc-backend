@@ -1277,25 +1277,40 @@ paths:
     patch:
       tags: [F07 Stock Audit]
       summary: Approve audit
-      description: "Permission: inventory.audit.approve"
+      description: >-
+        "Permission: inventory.audit.approve. Owner only. Every row of the audit must be APPROVED
+        and carry a discrepancy reason. The approval applies the counted stock to the inventory and
+        unlocks the SKUs the audit was holding."
       parameters:
         - $ref: '#/components/parameters/businessIdHeader'
         - $ref: '#/components/parameters/auditId'
       responses:
         '200':
-          description: Audit approved
-  
+          description: Audit approved and applied
+        '400':
+          description: A row is not approved yet or has no discrepancy reason
+        '403':
+          description: The caller is not the owner of the business
+
   /inventory/audits/{id}/apply:
     patch:
       tags: [F07 Stock Audit]
       summary: Apply audit to inventory
-      description: "Permission: inventory.audit.apply"
+      description: >-
+        "Permission: inventory.audit.apply. Owner only. Only the rows the owner approved
+        (itemStatus = APPROVED) are written to the inventory, and every applied row must carry a
+        discrepancy reason. The SKUs the audit was holding are unlocked; a SKU another running
+        audit still holds stays locked."
       parameters:
         - $ref: '#/components/parameters/businessIdHeader'
         - $ref: '#/components/parameters/auditId'
       responses:
         '200':
           description: Audit applied
+        '409':
+          description: A row has not been approved yet
+        '403':
+          description: The caller is not the owner of the business
   
   # F08 ENDPOINTS
   /inventory/lots/expiring:

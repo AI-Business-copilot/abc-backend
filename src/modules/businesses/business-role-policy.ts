@@ -6,6 +6,9 @@ export const RESERVED_BUSINESS_ROLE_PERMISSION_CODES = new Set([
   "business.memberships.manage",
   "business.audit.read",
   "inventory.audit.approve_item",
+  "inventory.audit.create",
+  "inventory.audit.apply",
+  "inventory.audit.approve",
   "inventory.scrap.approve",
 ]);
 
