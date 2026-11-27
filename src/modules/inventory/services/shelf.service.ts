@@ -179,8 +179,8 @@ export class ShelfService {
   }
 
   /**
-   * Retire a shelf. It is not deleted: the lot items still point at its cells, and a hard delete
-   * would leave them without a location.
+   * Delete a shelf. It is only deactivated: the lot items still point at its cells, and a hard
+   * delete would leave them without a location.
    */
   async remove(businessId: string, shelfId: string): Promise<void> {
     const shelf = await prisma.inventoryShelf.findFirst({
@@ -302,10 +302,10 @@ export class ShelfService {
   }
 
   /**
-   * Retire a cell (position) on a shelf.
+   * Delete a cell (position) on a shelf.
    *
-   * It is not deleted: the lot items still point at it, so a hard delete would leave them
-   * without a location. A retired cell comes back when goods are put on it again.
+   * It is only deactivated: the lot items still point at it, so a hard delete would leave them
+   * without a location. A deleted cell comes back when goods are put on it again.
    */
   async removeCell(businessId: string, cellId: string): Promise<void> {
     const cell = await prisma.inventoryShelfCell.findFirst({
@@ -346,7 +346,7 @@ export class ShelfService {
       },
     });
     if (existing) {
-      // A cell that was retired comes back when goods are put on it again.
+      // A cell that was deleted comes back when goods are put on it again.
       if (!existing.isActive) {
         const revived = await db.inventoryShelfCell.update({
           where: { id: existing.id },

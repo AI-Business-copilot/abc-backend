@@ -1458,16 +1458,16 @@ paths:
                 $ref: '#/components/schemas/Shelf'
     delete:
       tags: [F08 Lot Management]
-      summary: Retire a shelf
+      summary: Delete a shelf
       description: >
-        "Permission: inventory.shelf.manage. The shelf is retired, not deleted: the lot items
-        still point at its cells."
+        "Permission: inventory.shelf.manage. The shelf is only deactivated, not removed: the lot
+        items still point at its cells."
       parameters:
         - $ref: '#/components/parameters/businessIdHeader'
         - $ref: '#/components/parameters/shelfId'
       responses:
         '204':
-          description: The shelf was retired
+          description: The shelf was deleted
 
   /inventory/shelves/{id}/cells:
     post:
@@ -1531,16 +1531,16 @@ paths:
                 $ref: '#/components/schemas/ShelfCell'
     delete:
       tags: [F08 Lot Management]
-      summary: Retire a position on a shelf
+      summary: Delete a position on a shelf
       description: >
-        "Permission: inventory.shelf.manage. The position is retired, not deleted: the lot items
-        still point at it, so they keep their location."
+        "Permission: inventory.shelf.manage. The position is only deactivated, not removed: the lot
+        items still point at it, so they keep their location."
       parameters:
         - $ref: '#/components/parameters/businessIdHeader'
         - $ref: '#/components/parameters/shelfCellId'
       responses:
         '204':
-          description: The position was retired
+          description: The position was deleted
 
   /inventory/lots/{lotId}/items/{itemId}/quarantine:
     post:
