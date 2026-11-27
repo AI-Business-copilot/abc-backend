@@ -17,9 +17,11 @@ const normalize = (routePath) => routePath.replace(/:([A-Za-z]+)/g, "{$1}");
 const isF07F08 = (routePath) =>
   routePath.startsWith("/audits") ||
   routePath.startsWith("/audit-count-images") ||
-  routePath === "/lots/expiring" ||
+    routePath === "/lots/expiring" ||
   /^\/lots\/\{[^}]+\}$/.test(routePath) ||
   routePath.endsWith("/quarantine") ||
+  routePath.endsWith("/shelf") ||
+  routePath.startsWith("/shelves") ||
   routePath.startsWith("/scrap-orders") ||
   routePath === "/scrap-statistics" ||
   routePath.startsWith("/scrap-order-images");

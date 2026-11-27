@@ -6,6 +6,7 @@ import { ScrapService } from "./services/scrap.service";
 import { ScrapImageService } from "./services/scrap-image.service";
 import { AuditImageService } from "./services/audit-image.service";
 import { LotStatusService } from "./services/lot-status.service";
+import { shelfService } from "./services/shelf.service";
 
 const fail = (res: Response, err: any) => {
   console.error(err);
@@ -424,6 +425,85 @@ export class InventoryController {
     }
   }
 
+  // F08: the shelves and the positions on them.
+
+  async listShelves(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      return res.json(await shelfService.list(businessId));
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async createShelf(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await shelfService.create(businessId, req.body ?? {});
+      return res.status(201).json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async updateShelf(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await shelfService.update(businessId, String(req.params.id), req.body ?? {});
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async removeShelf(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      await shelfService.remove(businessId, String(req.params.id));
+      return res.status(204).send();
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async createShelfCell(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await shelfService.createCell(
+        businessId,
+        String(req.params.id),
+        req.body ?? {},
+      );
+      return res.status(201).json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async updateShelfCell(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await shelfService.updateCell(
+        businessId,
+        String(req.params.cellId),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  async removeShelfCell(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      await shelfService.removeCell(businessId, String(req.params.cellId));
+      return res.status(204).send();
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
   // F08: Lot Tracking & Scrap Management endpoints
 
   async getLots(req: Request, res: Response) {
@@ -449,6 +529,8 @@ export class InventoryController {
       const result = await lotService.getExpiringLots(businessId, {
         status: (String(req.query.status || "").toUpperCase() as any) || undefined,
         groupBy: String(req.query.groupBy || "") || undefined,
+        // Only the lots that sit on this shelf position.
+        shelfCellId: String(req.query.shelfCellId || "") || undefined,
         skip: Math.max(0, Number(req.query.skip) || 0),
         take: Math.min(100, Math.max(1, Number(req.query.take) || 20)),
       });
@@ -490,6 +572,21 @@ export class InventoryController {
         businessId,
         String(req.params.variantId),
         String(res.locals.userId || ""),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  /** Put a lot item on a shelf. The cell is created when it does not exist yet. */
+  async assignLotItemShelf(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await lotService.assignShelf(
+        businessId,
+        String(req.params.itemId),
         req.body ?? {},
       );
       return res.json(result);

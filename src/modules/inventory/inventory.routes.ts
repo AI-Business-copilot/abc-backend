@@ -81,6 +81,23 @@ router.get("/lots/expiring", requirePermission("inventory.lot.read"), controller
 router.get("/lots/:id", requirePermission("inventory.lot.read"), controller.getLot.bind(controller));
 router.post("/lots/:lotId/items/:itemId/quarantine", requirePermission("inventory.scrap.create"), controller.quarantineLot.bind(controller));
 
+// F08: the shelves and the positions on them. Reading the shelves is part of the lot list,
+// so it needs the same permission as reading the lots.
+router.get("/shelves", requirePermission("inventory.lot.read"), controller.listShelves.bind(controller));
+router.post("/shelves", requirePermission("inventory.shelf.manage"), controller.createShelf.bind(controller));
+router.patch("/shelves/:id", requirePermission("inventory.shelf.manage"), controller.updateShelf.bind(controller));
+router.delete("/shelves/:id", requirePermission("inventory.shelf.manage"), controller.removeShelf.bind(controller));
+router.post("/shelves/:id/cells", requirePermission("inventory.shelf.manage"), controller.createShelfCell.bind(controller));
+router.patch("/shelves/cells/:cellId", requirePermission("inventory.shelf.manage"), controller.updateShelfCell.bind(controller));
+router.delete("/shelves/cells/:cellId", requirePermission("inventory.shelf.manage"), controller.removeShelfCell.bind(controller));
+
+// F08: put a lot item on a shelf. The cell is created when it does not exist yet.
+router.patch(
+  "/lots/:lotId/items/:itemId/shelf",
+  requirePermission("inventory.scrap.create"),
+  controller.assignLotItemShelf.bind(controller),
+);
+
 // F08: a product with no lot item keeps its quarantine on the variant.
 router.get("/variants/:variantId/quarantine", requirePermission("inventory.lot.read"), controller.getVariantQuarantine.bind(controller));
 router.post("/variants/:variantId/quarantine", requirePermission("inventory.scrap.create"), controller.quarantineVariant.bind(controller));

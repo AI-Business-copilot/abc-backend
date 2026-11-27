@@ -36,6 +36,8 @@ model Business {
   customers               Customer[]                  @relation("customers_business_id")
   productLots             ProductLot[]                @relation("product_lots_business_id")
   productLotItems         ProductLotItem[]            @relation("product_lot_items_business_id")
+  inventoryShelves        InventoryShelf[]            @relation("inventory_shelves_business_id")
+  inventoryShelfCells     InventoryShelfCell[]        @relation("inventory_shelf_cells_business_id")
   inventoryBalances       InventoryBalance[]          @relation("inventory_balances_business_id")
   inventoryLedger         InventoryLedger[]           @relation("inventory_ledger_business_id")
   openingStockSheets      OpeningStockSheet[]         @relation("opening_stock_sheets_business_id")
@@ -273,6 +275,7 @@ model Category {
   categoryAttributes CategoryAttribute[] @relation("category_attributes_category_id")
   productTemplates   ProductTemplate[]   @relation("product_templates_category_id")
   promotionTargets   PromotionTarget[]   @relation("promotion_targets_category_id")
+  stockAudits        StockAudit[]         @relation("stock_audits_category_id")
 
   @@unique([businessId, name], map: "uq_category_tenant_name")
   @@unique([businessId, code], map: "uq_category_tenant_code")
@@ -491,6 +494,47 @@ model Customer {
   @@map("customers")
 }
 
+/// Mot ke trong kho cua cua hang. Ma ke la ngan va duy nhat trong mot cua hang.
+model InventoryShelf {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId String    @map("business_id") @db.Uuid
+  /// Ma ke ngan, vi du "A2".
+  code       String    @db.VarChar(50)
+  /// Ten ke khi can phan biet, vi du "Ke quay ben trai".
+  name       String?   @db.VarChar(255)
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  business Business             @relation("inventory_shelves_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  cells    InventoryShelfCell[] @relation("inventory_shelf_cells_shelf_id")
+
+  @@unique([businessId, code], map: "uq_inventory_shelf_tenant_code")
+  @@map("inventory_shelves")
+}
+
+/// Mot o tren ke: vi tri cu the cua mot SKU trong kho.
+model InventoryShelfCell {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  businessId String    @map("business_id") @db.Uuid
+  shelfId    String    @map("shelf_id") @db.Uuid
+  /// Tang cua o ke, vd 3.
+  level      Int       @map("level")
+  /// So o tren tang, vd 4.
+  slot       Int       @map("slot")
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  business Business         @relation("inventory_shelf_cells_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  shelf    InventoryShelf   @relation("inventory_shelf_cells_shelf_id", fields: [shelfId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  items    ProductLotItem[] @relation("product_lot_items_shelf_cell_id")
+  audits   StockAudit[]     @relation("stock_audits_shelf_cell_id")
+
+  @@unique([shelfId, level, slot], map: "uq_inventory_shelf_cell_position")
+  @@index([businessId], map: "idx_inventory_shelf_cells_business")
+  @@map("inventory_shelf_cells")
+}
+
 /// Batch header. The batch code only; dates, status and quarantine live on ProductLotItem, one row per variant.
 model ProductLot {
   id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -523,12 +567,15 @@ model ProductLotItem {
   quarantinedAt     DateTime? @map("quarantined_at") @db.Timestamptz(6)
   quarantinedBy     String?   @map("quarantined_by") @db.Uuid
   quarantineNote    String?   @map("quarantine_note") @db.VarChar(500)
+  /// O ke dang chua lo hang nay. Khi gan vi tri, o ke duoc tao tu dong neu chua co.
+  shelfCellId       String?   @map("shelf_cell_id") @db.Uuid
   createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
 
   quarantinedByUser    User?                 @relation("product_lot_items_quarantined_by", fields: [quarantinedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   business             Business              @relation("product_lot_items_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   lot                  ProductLot            @relation("product_lot_items_lot_id", fields: [lotId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   variant              ProductVariant        @relation("product_lot_items_variant_id", fields: [variantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  shelfCell            InventoryShelfCell?   @relation("product_lot_items_shelf_cell_id", fields: [shelfCellId], references: [id], onDelete: SetNull, onUpdate: NoAction)
   inventoryBalances    InventoryBalance[]    @relation("inventory_balances_lot_item_id")
   inventoryLedger      InventoryLedger[]     @relation("inventory_ledger_lot_item_id")
   openingStockItems    OpeningStockItem[]    @relation("opening_stock_items_lot_item_id")
@@ -545,6 +592,7 @@ model ProductLotItem {
   @@index([businessId, expirationDate], map: "idx_product_lot_items_expiration_date")
   @@index([businessId, variantId], map: "idx_product_lot_items_business_variant")
   @@index([lotId], map: "idx_product_lot_items_lot")
+  @@index([businessId, shelfCellId], map: "idx_product_lot_items_business_shelf_cell")
   @@map("product_lot_items")
 }
 
@@ -1048,11 +1096,17 @@ model StockAudit {
   status           String    @default("DRAFT") @db.VarChar(30)
   approvedBy       String?   @map("approved_by") @db.Uuid
   createdBy        String?   @map("created_by") @db.Uuid
+  /// O ke ma dot kiem ke nay phu sang. Chi dung khi scope_type la SHELF.
+  shelfCellId      String?   @map("shelf_cell_id") @db.Uuid
+  /// Danh muc ma dot kiem ke nay phu sang. Chi dung khi scope_type la CATEGORY.
+  categoryId       String?   @map("category_id") @db.Uuid
 
   business        Business         @relation("stock_audits_business_id", fields: [businessId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   approvedByUser  User?            @relation("stock_audits_approved_by", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   createdByUser   User?            @relation("stock_audits_created_by", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: NoAction)
   stockAuditItems StockAuditItem[] @relation("stock_audit_items_audit_id")
+  shelfCell       InventoryShelfCell? @relation("stock_audits_shelf_cell_id", fields: [shelfCellId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  category        Category?        @relation("stock_audits_category_id", fields: [categoryId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@unique([businessId, auditCode], map: "uq_audit_tenant_code")
   @@map("stock_audits")
