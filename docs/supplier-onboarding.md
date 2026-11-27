@@ -29,6 +29,7 @@ Mở **Nhà cung cấp → Sản phẩm → Nhập Excel / CSV**. Tài khoản c
 - SKU mới: tạo sản phẩm/biến thể rồi liên kết NCC. Giá bán và giá vốn ban đầu 0; tồn kho vẫn 0. Cần thiết lập giá bán trước khi bán. Không tạo phiếu nhập kho hay công nợ từ file báo giá.
 - Trùng SKU trong cùng file, giá sai, SKU đã ngừng hoặc tên sản phẩm xung đột thiết lập sẽ chặn toàn bộ file.
 - Xem trước không ghi dữ liệu. Nhập chính thức chạy trong một transaction, kiểm tra lại file và trạng thái danh mục bằng digest; thay đổi sau xem trước sẽ yêu cầu xem lại. Nhập lại file với cùng SKU cập nhật liên kết hiện có, không tạo sản phẩm lặp.
+- Khi xác nhận, backend tạo các mẫu sản phẩm còn thiếu và SKU mới theo lô, rồi thêm/cập nhật toàn bộ liên kết NCC bằng một lệnh PostgreSQL có tham số. Các mẫu trùng tên dùng chung một hồ sơ; kết quả được ghép bằng tên/SKU thay vì thứ tự database trả về. Không ghi tuần tự từng dòng hay mở nhiều transaction song song. Nếu một bước lỗi, toàn bộ lô được hoàn tác; các thiết lập đặt mua, ưu tiên NCC và ghi chú hiện có được giữ lại.
 
 Endpoints multipart (`file`, `mapping` JSON tùy chọn; xác nhận có thêm `digest`):
 
@@ -48,4 +49,6 @@ node tests/supplier-products.test.cjs
 npm run build
 ```
 
-Các bài kiểm tra backend dùng DB/API giả lập, không thay thế kiểm thử kết nối Casso thật và cơ sở dữ liệu triển khai.
+Các bài kiểm tra backend mặc định dùng DB/API giả lập, không thay thế kiểm thử kết nối Casso thật và cơ sở dữ liệu triển khai.
+
+Kiểm thử câu lệnh ghi theo lô trên PostgreSQL thật: đặt `SUPPLIER_IMPORT_TEST_DATABASE_URL`, sau đó chạy `node tests/supplier-import.postgres.test.cjs`. Bài kiểm tra dùng bảng tạm trong một kết nối riêng và rollback khi kết thúc, không ghi vào bảng sản phẩm đang sử dụng. Kiểm tra 500 dòng, phạm vi cửa hàng, giá chính xác, giữ nguyên thiết lập NCC và hoàn tác khi dữ liệu vi phạm ràng buộc.

@@ -12,18 +12,23 @@ const { createFo3Document } = require("../src/docs/fo3.openapi.ts");
 
 test("fo3 documents exactly the implemented purchases routes and resolves schema references", () => {
   const spec = createFo3Document();
-  const source = fs.readFileSync(require.resolve("../src/modules/purchases/purchases.routes.ts"), "utf8");
+  const source = ["purchases.routes.ts", "supplier-import.routes.ts"]
+    .map(file => fs.readFileSync(require.resolve(`../src/modules/purchases/${file}`), "utf8")).join("\n");
   const implemented = [...source.matchAll(/router\.(get|post|patch|put|delete)\("([^"]+)"/g)]
     .map(([, method, path]) => `${method} /purchases${path.replace(/:id/g, "{id}").replace(/:variantId/g, "{variantId}")}`).sort();
   const documented = Object.entries(spec.paths).filter(([path]) => path.startsWith("/purchases/"))
     .flatMap(([path, methods]) => Object.keys(methods).map((method) => `${method} ${path}`)).sort();
-  assert.equal(documented.length, 25);
+  assert.equal(documented.length, 28);
   assert.deepEqual(documented, implemented);
   for (const [, name] of JSON.stringify(spec).matchAll(/"\$ref":"#\/components\/schemas\/([^"]+)"/g)) {
     assert.ok(spec.components.schemas[name], `Missing schema ${name}`);
   }
   assert.equal(spec.info.title, "fo3");
   assert.deepEqual(spec.security, [{ bearerAuth: [] }]);
+  const importSchema = spec.paths["/purchases/suppliers/{id}/products/import/confirm"].post.requestBody.content["multipart/form-data"].schema;
+  assert.deepEqual(importSchema.required, ["file", "mapping", "digest"]);
+  assert.equal(importSchema.properties.file.format, "binary");
+  assert.ok(spec.paths["/purchases/suppliers/tax-lookup"].get.parameters.some(parameter => parameter.name === "taxCode" && parameter.required));
   assert.ok(!Object.keys(spec.paths).some((path) => /^\/(products|businesses|categories)/.test(path)));
 });
 
