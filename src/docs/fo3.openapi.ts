@@ -15,6 +15,11 @@ const orderStatuses = ["DRAFT", "ORDERED", "PARTIALLY_RECEIVED", "COMPLETED", "C
 const receiptStatuses = ["RECEIVED", "CANCELLED"];
 const filters = (statuses: string[]) => [...paging, query("supplierId", uuid), query("status", { type: "string", enum: statuses }), query("from", day), query("to", day)];
 const body = (schema: string, example?: unknown) => ({ required: true, content: { "application/json": { schema: ref(schema), ...(example ? { example } : {}) } } });
+const importBody = (confirm = false) => ({ required: true, content: { "multipart/form-data": { schema: object({
+  file: { type: "string", format: "binary", description: "File .xlsx hoặc CSV UTF-8, tối đa 5 MB và 500 dòng dữ liệu." },
+  mapping: { type: "string", maxLength: 4096, description: 'JSON ánh xạ chỉ số cột từ 0, ví dụ {"sku":0,"name":1,"price":2}. Preview có thể tự dò cột.' },
+  ...(confirm ? { digest: { type: "string", pattern: "^[a-f0-9]{64}$", description: "Digest của bản preview với cùng file và mapping." } } : {}),
+}, confirm ? ["file", "mapping", "digest"] : ["file"]) } } });
 const json = (schema: Schema, description: string) => ({ description, content: { "application/json": { schema } } });
 const list = (name: string) => object({ items: { type: "array", items: ref(name) }, pagination: ref("Pagination") });
 const purchaseDescription = "Cần membership cửa hàng, inventory.read + finance.read. businessId được lấy từ membership; gửi businessId cửa hàng khác trả 403.";
@@ -54,6 +59,9 @@ const schemas: Record<string, Schema> = {
   SupplierInput: { ...object(supplierFields, ["name"]), additionalProperties: false },
   SupplierUpdate: { ...object(supplierFields), minProperties: 1, additionalProperties: false },
   Supplier: object({ id: uuid, ...supplierFields, debtAmount: { type: "string", nullable: true } }),
+  SupplierTaxLookup: object({ taxCode: text(30), name: text(255), address: { type: "string", maxLength: 5000 }, source: { type: "string" } }),
+  SupplierImportPreview: object({ headers: { type: "array", items: { type: "string" } }, mapping: { type: "object", additionalProperties: { type: "integer", minimum: 0 } }, issues: { type: "array", items: { type: "string" } }, digest: { type: "string", pattern: "^[a-f0-9]{64}$" }, valid: { type: "boolean" }, items: { type: "array", items: object({ row: { type: "integer" }, sku: { type: "string" }, name: { type: "string" }, price: money, unit: { type: "string" }, action: { type: "string", enum: ["create", "link", "update"] }, currentName: { type: "string", nullable: true }, error: { type: "string" } }) } }),
+  SupplierImportResult: object({ created: { type: "integer" }, linked: { type: "integer" }, updated: { type: "integer" }, total: { type: "integer" } }),
   SupplierProductInput: { ...object({ variantId: uuid, supplyPrice: money, supplierSku: { ...text(100), nullable: true }, supplierProductName: { ...text(255), nullable: true }, minOrderQty: quantity, orderMultiple: quantity, leadTimeDays: { type: "integer", minimum: 0, maximum: 2147483647, nullable: true }, isActive: { type: "boolean" }, isPreferred: { type: "boolean" }, note: { type: "string", nullable: true, maxLength: 5000 } }, ["variantId", "supplyPrice"]), additionalProperties: false },
   SupplierProduct: object({ id: uuid, sku: text(100), supplyPrice: { ...money, nullable: true }, catalog: { type: "object", nullable: true, additionalProperties: true }, lastPurchase: { type: "object", nullable: true, additionalProperties: true } }),
   OrderItemInput: object({ variantId: uuid, orderedQty: quantity, unitPrice: money }, ["variantId", "orderedQty", "unitPrice"]),
@@ -108,6 +116,9 @@ export function createFo3Document() {
         post: operation("fo3CreateSupplier", supplierTag, "Tạo NCC", ref("Supplier"), { status: 201, write: true, requestBody: body("SupplierInput") }),
       },
       "/purchases/suppliers/{id}": { patch: operation("fo3UpdateSupplier", supplierTag, "Sửa hồ sơ / trạng thái NCC", ref("Supplier"), { parameters: [idParameter], write: true, requestBody: body("SupplierUpdate"), description: "Không sửa công nợ qua hồ sơ. Ngừng hợp tác chặn đặt mua mới; vẫn nhận và trả tiền cho đơn cũ." }) },
+      "/purchases/suppliers/tax-lookup": { get: operation("fo3SupplierTaxLookup", supplierTag, "Tra cứu tên và địa chỉ theo mã số thuế", ref("SupplierTaxLookup"), { parameters: [query("taxCode", text(30), true)], write: true, description: "Chỉ đọc dữ liệu từ Casso IDKit, không lưu hồ sơ NCC. Cần inventory.receive và cấu hình CASSO_APP_ID/CASSO_APP_SECRET. Có thể trả 429 khi hết hạn mức." }) },
+      "/purchases/suppliers/{id}/products/import/preview": { post: operation("fo3PreviewSupplierImport", supplierTag, "Xem trước nhập danh mục NCC từ Excel/CSV", ref("SupplierImportPreview"), { parameters: [idParameter], write: true, requestBody: importBody(), description: "Cần thêm products.manage. Chưa ghi dữ liệu. NCC phải đang hợp tác; sửa ánh xạ và xem trước lại nếu có lỗi." }) },
+      "/purchases/suppliers/{id}/products/import/confirm": { post: operation("fo3ConfirmSupplierImport", supplierTag, "Xác nhận tạo/liên kết/cập nhật danh mục NCC", ref("SupplierImportResult"), { parameters: [idParameter], write: true, requestBody: importBody(true), description: "Cần thêm products.manage. Gửi cùng file, mapping và digest từ preview hợp lệ. Dữ liệu đổi trả 409, cần preview lại. Không thay tồn kho hoặc giá bán của SKU hiện có." }) },
       "/purchases/suppliers/{id}/products": {
         get: operation("fo3SupplierProducts", supplierTag, "Danh mục cung cấp hoặc hàng đã mua", { ...list("SupplierProduct"), properties: { items: { type: "array", items: ref("SupplierProduct") }, supplier: ref("Supplier"), pagination: ref("Pagination") } }, { parameters: [idParameter, ...paging, query("kind", { type: "string", enum: ["catalog", "history"], default: "catalog" }), query("isActive", { type: "string", enum: ["true", "false", "all"], default: "true" })] }),
         put: operation("fo3SaveSupplierProduct", supplierTag, "Lưu giá chào và điều kiện cung cấp", { type: "object", additionalProperties: true }, { parameters: [idParameter], write: true, requestBody: body("SupplierProductInput"), description: "Kích hoạt lại dòng cũ. Giá chào theo đơn vị tồn kho, không thay giá vốn / chứng từ. Tối đa một NCC ưu tiên hoạt động cho mỗi SKU." }),

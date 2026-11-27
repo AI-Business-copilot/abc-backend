@@ -1,5 +1,9 @@
 ﻿# F03 — Đặt mua, nhận hàng và thanh toán nhà cung cấp
 
+## Đồng bộ mobile và Swagger (23/11/2026)
+
+`abc-app` có luồng F03/F04 tương ứng với frontend hiện tại; xem [chức năng, quyền và hướng dẫn mobile](../../abc-app/README.md). Swagger F03 đã bổ sung `GET /purchases/suppliers/tax-lookup` (cần `inventory.receive`, cấu hình Casso trên server) và hai API multipart `POST /purchases/suppliers/:id/products/import/preview|confirm` (cần thêm `products.manage`). File `.xlsx`/CSV UTF-8 tối đa 5 MB/500 dòng; confirm dùng cùng file, mapping JSON và digest preview. Không thay tồn kho khi nhập danh mục. Contract test F03 kiểm tra cả router nhập file được mount trong purchases.
+
 ## Cập nhật luồng NCC theo schema suppliers / supplier_products (05/11/2026)
 
 1. Tạo hoặc sửa hồ sơ NCC: mã NCC, tên, liên hệ, email, địa chỉ, mã số thuế, ghi chú và trạng thái hợp tác. Mã và điện thoại không trùng trong cùng cửa hàng; chuỗi trống được lưu null. Không sửa công nợ qua hồ sơ.
