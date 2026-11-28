@@ -153,6 +153,12 @@ const db = {
       const code = args?.where?.auditCode;
       if (typeof code === "string") return state.auditWithCode;
       if (code && typeof code === "object") return state.lastAudit;
+      // A query that looks for another audit (an id that is not this one) finds the other
+      // audits, not the one the test is about.
+      const notThisOne = args?.where?.id?.not;
+      if (notThisOne) {
+        return state.audits.find((audit) => audit.id !== notThisOne) ?? null;
+      }
       return state.audit;
     },
     findMany: async (args) => {
@@ -199,6 +205,9 @@ const db = {
     update: async (args) => {
       calls.push(["itemUpdate", args]);
       return state.updatedItem;
+    },
+    updateMany: async (args) => {
+      calls.push(["itemUpdateMany", args]);
     },
     createMany: async (args) => {
       calls.push(["itemCreateMany", args]);
@@ -588,8 +597,8 @@ test("reassignment only moves an in-progress row to an active non-owner member",
     secondCounterUserId: STAFF_2,
   });
 
-  assert.equal(call("itemUpdate")[1].data.assignedToUserId, STAFF);
-  assert.equal(call("itemUpdate")[1].data.secondCounterUserId, STAFF_2);
+  assert.equal(call("itemUpdateMany")[1].data.assignedToUserId, STAFF);
+  assert.equal(call("itemUpdateMany")[1].data.secondCounterUserId, STAFF_2);
   assert.equal(result.id, ITEM);
 });
 

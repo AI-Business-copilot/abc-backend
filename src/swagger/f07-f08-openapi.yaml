@@ -854,6 +854,7 @@ paths:
                 scopeType:
                   type: string
                   enum: [FULL_STORE, CATEGORY, SHELF]
+                  description: "Phạm vi kiểm kê. FULL_STORE sinh dòng cho mọi lô hàng còn tồn kho và còn hạn của cửa hàng (không gồm SKU không có lô, lô đã hết hạn, lô đã hủy hoặc đang kiểm dịch). CATEGORY sinh dòng cho lô của danh mục (kèm danh mục con). SHELF sinh dòng cho lô nằm trong ô kệ đã chọn. Mọi phạm vi đều sinh dòng tự động, chủ gán 2 người kiểm kê sau."
                 note:
                   type: string
                   nullable: true
@@ -990,12 +991,52 @@ paths:
       responses:
         '201':
           description: Items assigned
-  
+    patch:
+      tags: [F07 Stock Audit]
+      summary: Reassign many items at once
+      description: "Permission: inventory.audit.create. Owner only. Gán cùng 2 người kiểm kê cho nhiều dòng trong 1 request (tối đa 500 dòng), dùng cho đợt kiểm kê toàn cửa hàng."
+      parameters:
+        - $ref: '#/components/parameters/businessIdHeader'
+        - $ref: '#/components/parameters/auditId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [itemIds, assignedToUserId, secondCounterUserId]
+              properties:
+                itemIds:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: string
+                    format: uuid
+                  description: "Các dòng kiểm kê cần gán. Chỉ dòng đang IN_PROGRESS mới gán được."
+                assignedToUserId:
+                  type: string
+                  format: uuid
+                secondCounterUserId:
+                  type: string
+                  format: uuid
+                  description: "Người kiểm kê thứ hai, phải khác người được giao."
+      responses:
+        '200':
+          description: Items reassigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assigned:
+                    type: integer
+                    description: "Số dòng đã gán."
+
   /inventory/audits/{id}/items/{itemId}/assign:
     patch:
       tags: [F07 Stock Audit]
       summary: Reassign item
-      description: "Permission: inventory.audit.create"
+      description: "Permission: inventory.audit.create. Owner only. Đổi người được giao cho một dòng kiểm kê đang IN_PROGRESS."
       parameters:
         - $ref: '#/components/parameters/businessIdHeader'
         - $ref: '#/components/parameters/auditId'
