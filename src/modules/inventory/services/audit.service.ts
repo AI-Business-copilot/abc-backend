@@ -789,6 +789,23 @@ async function normalizeAndValidateRows(
       throw new HttpError(409, `${scrapped} Lô đã bị hủy hàng thì không thể kiểm kê.`);
     }
 
+    // A quarantined lot has been pulled off the shelf, so it is not there to be counted. Its
+    // quantity is still in the balance, so counting it would produce a false difference.
+    const quarantined = rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => {
+        const item = lotItems.find((l) => l.id === row.lotItemId);
+        return item?.status === "QUARANTINED";
+      })
+      .map(
+        ({ row, index }) =>
+          `Dòng ${index + 1}: lô ${lotNumberById.get(row.lotItemId) ?? row.lotItemId} đang cách ly.`,
+      )
+      .join(" ");
+    if (quarantined) {
+      throw new HttpError(409, `${quarantined} Lô đang cách ly thì không thể kiểm kê.`);
+    }
+
     // A lot whose scrap decision is still open cannot be audited: locking the row blocks the
     // scrap approval, and the audit application would rewrite the stock the order was judged
     // against. Report the exact scrap code and status.
@@ -847,26 +864,18 @@ async function buildRowsFromScope(
           }
         : { businessId };
 
-  // A full store audit covers the whole shop, so it only counts what is still sellable: the lots
-  // that already expired have nothing left to count, and a quarantined lot is waiting for a
-  // scrap decision, so it is not on the shelf. The day is taken in Vietnam time, the same way
-  // the sale reads the expiry of a lot.
-  const today = new Date(new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10));
-
+  // Every scope counts the same things: a lot that still has stock on hand. A lot that already
+  // expired still has stock, so it is counted too.
   const items = await db.productLotItem.findMany({
     where: {
       ...where,
-      // A scrapped lot has no stock left to count.
-      status:
-        scopeType === "FULL_STORE"
-          ? { notIn: ["SCRAPPED", "QUARANTINED"] }
-          : { not: "SCRAPPED" },
+      // A scrapped lot has no stock left to count, and a quarantined lot has been pulled off the
+      // shelf, so neither can be counted.
+      status: { notIn: ["SCRAPPED", "QUARANTINED"] },
       // A lot locked by another audit cannot be counted twice at the same time.
       isLockedForAudit: false,
       // Only the lots that still have stock on hand are worth counting.
       inventoryBalances: { some: { businessId, quantityOnHand: { gt: 0 } } },
-      // The lots that already expired are left out of a full store audit.
-      ...(scopeType === "FULL_STORE" ? { expirationDate: { gte: today } } : {}),
     },
     select: { id: true, variantId: true },
     orderBy: { expirationDate: "asc" },
@@ -1050,7 +1059,7 @@ class AuditService {
       if (scope.scopeType === "FULL_STORE" && rows.length === 0) {
         throw new HttpError(
           400,
-          "Cửa hàng không còn lô hàng nào còn tồn kho và còn hạn để kiểm kê.",
+          "Cửa hàng không còn lô hàng nào còn tồn kho để kiểm kê.",
         );
       }
     }
@@ -1398,7 +1407,7 @@ class AuditService {
     const viewerIsOwner = await isBusinessOwner(prisma, businessId, viewer.id);
 
     const where: Prisma.StockAuditWhereInput = { businessId };
-    if (["DRAFT", "IN_PROGRESS", "DONE", "CANCELLED"].includes(status)) {
+    if (["DRAFT", "IN_PROGRESS", "PENDING_APPROVAL", "DONE", "CANCELLED"].includes(status)) {
       // A draft is a preparation the owner makes before counting starts, so staff never see it.
       if (status === "DRAFT" && !viewerIsOwner) {
         where.status = "__no_draft__";
