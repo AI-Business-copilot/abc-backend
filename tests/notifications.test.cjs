@@ -48,6 +48,17 @@ test('sources are restricted to the store, current assignee and active workflow'
   assert.equal(items.find(x => x.type === 'AUDIT_ASSIGNED').href, '/inventory/audit/audit-a/items/task-a');
 });
 
+test('fails explicitly when an in-progress audit task has no timestamp', async t => {
+  emptySources(t);
+  stub(t, 'stockAuditItem', 'findMany', async () => [{
+    id: 'task-a', auditId: 'audit-a', rejectedAt: null, audit: { countStartAt: null }, variant: { sku: 'SKU1' },
+  }]);
+  await assert.rejects(
+    activeNotifications(scope),
+    { message: 'In-progress stock audit task task-a has no count start time.' },
+  );
+});
+
 test('expiry escalation creates a new unread identity at warning, unusable and expired stages', async t => {
   emptySources(t);
   prisma.productLotItem.findMany.mock.mockImplementation(async () => [{ id: 'lot', expirationDate: new Date('2026-12-01'), lot: { lotNumber: 'L' }, variant: { sku: 'S', template: { name: 'P' } } }]);

@@ -154,7 +154,7 @@ export function buildInventoryOutlook(
     a.variantId.localeCompare(b.variantId));
 }
 
-export async function inventoryOutlook(businessId: string, query: Record<string, unknown>) {
+export async function inventoryOutlook(businessId: string, query: Record<string, unknown>, options?: { variantIds?: readonly string[]; all?: boolean; includeForecastComparison?: boolean }) {
   const page = positiveInt(query.page, 1, 100_000);
   const pageSize = positiveInt(query.pageSize, 25, 100);
   const search = query.search === undefined ? "" : query.search;
@@ -183,6 +183,7 @@ export async function inventoryOutlook(businessId: string, query: Record<string,
         state: !latest ? "NOT_RUN" : latest.status === "RUNNING" ? "RUNNING" : latest.status === "FAILED" ? "FAILED" : "INCOMPLETE",
         latestRun: latest ? { status: latest.status, dataAsOf: date(latest.dataAsOf), startedAt: latest.startedAt, finishedAt: latest.finishedAt } : null,
         page, pageSize, total: null, summary: null, items: null,
+        ...(options?.includeForecastComparison ? { forecastContext: null } : {}),
       };
     }
     const summary = latest.summary;
@@ -204,13 +205,32 @@ export async function inventoryOutlook(businessId: string, query: Record<string,
     const items = buildInventoryOutlook(insights, suggestions, sources, latest, ruleFresh, forecastReady);
     const byPriority = Object.fromEntries(SEVERITIES.map((level) => [level, items.filter((item) => item.priority === level).length]));
     const needle = search.trim().toLocaleLowerCase("vi");
+    const variantIds = options?.variantIds ? new Set(options.variantIds) : null;
     const filtered = items.filter((item) =>
+      (!variantIds || variantIds.has(item.variantId)) &&
       (!needle || item.sku.toLocaleLowerCase("vi").includes(needle) || item.productName.toLocaleLowerCase("vi").includes(needle)) &&
       (!priority || item.priority === priority) &&
       (!type || item.signals.some((signal) => signal.type === type) ||
         (type === "REPLENISHMENT" && item.replenishment?.status === "PENDING") ||
         (type === "DRAFT_ORDER" && item.replenishment?.status === "ORDERED")));
     const actualPage = Math.min(page, Math.max(1, Math.ceil(filtered.length / pageSize)));
+    const candidateIds = options?.includeForecastComparison
+      ? filtered.filter((item) => item.signals.some((signal) => signal.type === "OVERSTOCK" && signal.current)).map((item) => item.variantId)
+      : [];
+    const [forecasts, sales] = candidateIds.length ? await Promise.all([
+      tx.aiForecast.findMany({
+        where: { businessId, variantId: { in: candidateIds } },
+        select: { variantId: true, runId: true, asOf: true, status: true, model: true, confidence: true, result: true, updatedAt: true },
+      }),
+      tx.channelDailyProductMetric.groupBy({
+        by: ["variantId"],
+        where: {
+          businessId, channel: "POS", variantId: { in: candidateIds },
+          metricDate: { gte: new Date(`${addDays(date(latest.dataAsOf)!, -29)}T00:00:00.000Z`), lte: latest.dataAsOf },
+        },
+        _sum: { unitsSold: true },
+      }),
+    ]) : [[], []];
     return {
       state: "READY",
       latestRun: { status: latest.status, dataAsOf: date(latest.dataAsOf), startedAt: latest.startedAt, finishedAt: latest.finishedAt },
@@ -219,7 +239,9 @@ export async function inventoryOutlook(businessId: string, query: Record<string,
         ? syntheticFlag || items.some((item) => item.sku.startsWith("DEMO-"))
         : items.some((item) => item.sku.startsWith("DEMO-")) ? true : null,
       summary: { totalSku: items.length, byPriority, withoutCurrentPriority: items.filter((item) => item.priority === null).length },
-      page: actualPage, pageSize, total: filtered.length, items: filtered.slice((actualPage - 1) * pageSize, actualPage * pageSize),
+      page: actualPage, pageSize, total: filtered.length,
+      items: options?.all ? filtered : filtered.slice((actualPage - 1) * pageSize, actualPage * pageSize),
+      ...(options?.includeForecastComparison ? { forecastContext: { today, latest, forecasts, sales } } : {}),
     };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }

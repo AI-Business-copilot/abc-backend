@@ -26,6 +26,7 @@ mock("../src/modules/business-data/business-movement.service", { getBusinessMove
   return { items: [] };
 } });
 mock("../src/modules/business-data/profit-simulation.service", {
+  searchSimulationCategories: async (businessId, query) => { simulationCalls.push({ businessId, query }); return { items: [] }; },
   searchSimulationVariants: async (businessId, query) => { simulationCalls.push({ businessId, query }); return { items: [] }; },
   getSimulationBasis: async (businessId, query) => { simulationCalls.push({ businessId, query }); return {}; },
   simulateProfit: async (businessId, body) => { simulationCalls.push({ businessId, body }); return {}; },
@@ -85,7 +86,7 @@ test("simulation endpoints require both permissions and ignore client business s
   await new Promise((resolve) => server.once("listening", resolve));
   try {
     const root = `http://127.0.0.1:${server.address().port}/profit-simulation`;
-    for (const [path, method] of [["variants?businessId=other", "GET"], ["basis?businessId=other", "GET"], ["calculate", "POST"]]) {
+    for (const [path, method] of [["categories?businessId=other", "GET"], ["variants?businessId=other", "GET"], ["basis?businessId=other", "GET"], ["calculate", "POST"]]) {
       for (const permissions of ["", "analytics.read", "finance.read"]) {
         assert.equal((await fetch(`${root}/${path}`, { method, headers: { "x-test-permissions": permissions } })).status, 403);
       }
@@ -93,7 +94,7 @@ test("simulation endpoints require both permissions and ignore client business s
       assert.equal(response.status, 200);
       assert.equal(simulationCalls[simulationCalls.length - 1].businessId, "scoped-business");
     }
-    assert.equal(simulationCalls.length, 3);
+    assert.equal(simulationCalls.length, 4);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }

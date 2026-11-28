@@ -75,6 +75,22 @@ export function calculateComparison(baseline: unknown, scenario: unknown) {
 type Run = { id: string; status: string; dataAsOf: Date; finishedAt: Date | null; summary: Prisma.JsonValue };
 type Forecast = { runId: string | null; asOf: Date; status: string; model: string | null; confidence: string | null; result: Prisma.JsonValue; updatedAt: Date };
 
+export function nextDayForecastTotals(result: Prisma.JsonValue) {
+  if (!isObject(result)) throw new HttpError(500, "Dữ liệu dự báo của SKU không hợp lệ.");
+  const next = result.nextDayForecast;
+  if (next === null || next === undefined ||
+      (isObject(next) && next.status === "UNAVAILABLE" &&
+        (next.reason === "MODEL_NOT_CONFIGURED" || next.reason === "SERVICE_NOT_SUPPORTED"))) return null;
+  if (!isObject(next) || next.status !== "OK" || next.policy !== "next-day-v1" || !isObject(next.totals)) {
+    throw new HttpError(500, "Dự báo kỳ ngày đầy đủ không hợp lệ.");
+  }
+  const { d7, d14, d28 } = next.totals;
+  if (typeof d7 !== "number" || typeof d14 !== "number" || typeof d28 !== "number" ||
+      !Number.isFinite(d7) || !Number.isFinite(d14) || !Number.isFinite(d28) ||
+      d7 < 0 || d14 < d7 || d28 < d14) throw new HttpError(500, "Tổng dự báo không hợp lệ.");
+  return { d7, d14, d28 };
+}
+
 export function simulationForecast(today: string, latest: Run | null, forecast: Forecast | null) {
   const unavailable = (reason: string) => ({ status: "UNAVAILABLE" as const, reason });
   if (!latest) return unavailable("Chưa có lần phân tích dự báo.");
@@ -89,19 +105,11 @@ export function simulationForecast(today: string, latest: Run | null, forecast: 
   }
   if (forecast.status === "INSUFFICIENT_DATA") return unavailable("SKU chưa đủ dữ liệu để dự báo.");
   if (forecast.status !== "OK" || !isObject(forecast.result)) throw new HttpError(500, "Dữ liệu dự báo của SKU không hợp lệ.");
-  const next = forecast.result.nextDayForecast;
-  if (next === null || next === undefined ||
-      (isObject(next) && next.status === "UNAVAILABLE" &&
-        (next.reason === "MODEL_NOT_CONFIGURED" || next.reason === "SERVICE_NOT_SUPPORTED"))) {
+  const totals = nextDayForecastTotals(forecast.result);
+  if (!totals) {
     return unavailable("Không có dự báo cho kỳ ngày đầy đủ.");
   }
-  if (!isObject(next) || next.status !== "OK" || next.policy !== "next-day-v1" || !isObject(next.totals)) {
-    throw new HttpError(500, "Dự báo kỳ ngày đầy đủ không hợp lệ.");
-  }
-  const { d7, d14, d28 } = next.totals;
-  if (typeof d7 !== "number" || typeof d14 !== "number" || typeof d28 !== "number" ||
-      !Number.isFinite(d7) || !Number.isFinite(d14) || !Number.isFinite(d28) ||
-      d7 < 0 || d14 < d7 || d28 < d14) throw new HttpError(500, "Tổng dự báo không hợp lệ.");
+  const { d7, d14, d28 } = totals;
   const start = addDays(day(forecast.asOf), 2);
   const availableAt = forecast.updatedAt > latest.finishedAt ? forecast.updatedAt : latest.finishedAt;
   if (availableAt.getTime() >= Date.parse(`${start}T00:00:00+07:00`)) {
@@ -125,9 +133,7 @@ async function transactionToday(tx: Prisma.TransactionClient) {
   return rows[0];
 }
 
-export async function searchSimulationVariants(businessId: string, query: Record<string, unknown>) {
-  const search = query.search === undefined ? "" : query.search;
-  if (typeof search !== "string" || search.length > 100) throw new HttpError(400, "Tìm kiếm không hợp lệ.");
+function pagination(query: Record<string, unknown>) {
   const positiveInt = (value: unknown, fallback: number, max: number, name: string) => {
     if (value === undefined) return fallback;
     if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) throw new HttpError(400, `${name} không hợp lệ.`);
@@ -135,12 +141,48 @@ export async function searchSimulationVariants(businessId: string, query: Record
     if (!Number.isSafeInteger(parsed) || parsed > max) throw new HttpError(400, `${name} không hợp lệ.`);
     return parsed;
   };
-  const page = positiveInt(query.page, 1, 100000, "Trang");
-  const pageSize = positiveInt(query.pageSize, 25, 50, "Số dòng mỗi trang");
+  return { page: positiveInt(query.page, 1, 100000, "Trang"), pageSize: positiveInt(query.pageSize, 25, 50, "Số dòng mỗi trang") };
+}
+
+function searchTerm(value: unknown) {
+  if (value === undefined) return "";
+  if (typeof value !== "string" || value.length > 100) throw new HttpError(400, "Tìm kiếm không hợp lệ.");
+  return value.trim();
+}
+
+export async function searchSimulationCategories(businessId: string, query: Record<string, unknown>) {
+  const search = searchTerm(query.search);
+  const { page, pageSize } = pagination(query);
+  const rows = await prisma.category.findMany({
+    where: { businessId, ...(search ? { name: { contains: search, mode: "insensitive" } } : {}) },
+    select: { id: true, name: true, isActive: true, parent: { select: { name: true, businessId: true } } },
+    orderBy: [{ name: "asc" }, { id: "asc" }], skip: (page - 1) * pageSize, take: pageSize + 1,
+  });
+  return {
+    items: rows.slice(0, pageSize).map((row) => ({
+      id: row.id, name: row.name, isActive: row.isActive,
+      parentName: row.parent?.businessId === businessId ? row.parent.name : null,
+    })),
+    page, pageSize, hasMore: rows.length > pageSize,
+  };
+}
+
+export async function searchSimulationVariants(businessId: string, query: Record<string, unknown>) {
+  const search = searchTerm(query.search);
+  const { page, pageSize } = pagination(query);
+  const categoryId = query.categoryId;
+  if (categoryId !== undefined && categoryId !== "uncategorized" && (typeof categoryId !== "string" || !uuid.test(categoryId))) {
+    throw new HttpError(400, "Danh mục không hợp lệ.");
+  }
   const rows = await prisma.productVariant.findMany({
-    where: { businessId, template: { businessId }, ...(search.trim() ? { OR: [
-      { sku: { contains: search.trim(), mode: "insensitive" } },
-      { template: { name: { contains: search.trim(), mode: "insensitive" } } },
+    where: { businessId, template: {
+      businessId,
+      ...(categoryId === "uncategorized" ? { categoryId: null } : categoryId ? {
+        category: { businessId, OR: [{ id: categoryId }, { parent: { id: categoryId, businessId } }] },
+      } : {}),
+    }, ...(search ? { OR: [
+      { sku: { contains: search, mode: "insensitive" } },
+      { template: { name: { contains: search, mode: "insensitive" } } },
     ] } : {}) },
     select: { id: true, sku: true, isActive: true, template: { select: { name: true } } },
     orderBy: [{ sku: "asc" }, { id: "asc" }], skip: (page - 1) * pageSize, take: pageSize + 1,

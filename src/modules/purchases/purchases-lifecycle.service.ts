@@ -76,7 +76,14 @@ export class PurchasesLifecycleService {
       const hasReceived = order.purchaseOrderItems.some((item) => item.receivedQty > 0);
       if (action === "cancel" && (hasReceived || await tx.purchaseReceipt.count({ where: { businessId, poId: id, status: "RECEIVED" } }))) throw new HttpError(409, "Received orders cannot be cancelled. Close the remaining quantity instead.");
       if (action === "close" && (!hasReceived || order.purchaseOrderItems.every((item) => item.receivedQty === item.orderedQty))) throw new HttpError(409, "Only partially received orders can be closed short.");
-      return tx.purchaseOrder.update({ where: { id }, data: { status }, include: { purchaseOrderItems: true } });
+      const updated = await tx.purchaseOrder.update({ where: { id }, data: { status }, include: { purchaseOrderItems: true } });
+      if (action === "cancel") {
+        await tx.aiReplenishmentItem.updateMany({
+          where: { businessId, poId: id, status: "ORDERED" },
+          data: { status: "PENDING", poId: null, snoozeUntil: null, handledBy: null, handledAt: null },
+        });
+      }
+      return updated;
     });
   }
 

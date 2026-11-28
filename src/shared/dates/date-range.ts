@@ -27,3 +27,26 @@ export function dateRange(fromValue: unknown, toValue: unknown) {
 export function metricDate(value: string): Date {
   return new Date(`${value}T00:00:00.000Z`);
 }
+
+export function vietnamToday(now = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(now);
+}
+
+export function completedDaysRange(days: number) {
+  if (!Number.isSafeInteger(days) || days < 1) throw new RangeError("days must be a positive integer.");
+  const to = metricDate(vietnamToday());
+  to.setUTCDate(to.getUTCDate() - 1);
+  const from = new Date(to);
+  from.setUTCDate(from.getUTCDate() - days + 1);
+  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+}
+
+export function lastCompletedWeekRange(now = new Date()) {
+  const end = metricDate(vietnamToday(now));
+  end.setUTCDate(end.getUTCDate() - ((end.getUTCDay() + 6) % 7) - 1);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 6);
+  return { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) };
+}

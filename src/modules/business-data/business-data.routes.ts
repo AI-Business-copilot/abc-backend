@@ -6,7 +6,7 @@ import { requireSupabaseIdentity } from "../../shared/auth/supabase-auth.middlew
 import { businessDataService } from "./business-data.service";
 import { getBusinessMovement } from "./business-movement.service";
 import { getProductPerformance } from "./product-performance.service";
-import { getSimulationBasis, searchSimulationVariants, simulateProfit } from "./profit-simulation.service";
+import { getSimulationBasis, searchSimulationCategories, searchSimulationVariants, simulateProfit } from "./profit-simulation.service";
 
 const router = Router();
 router.use(requireSupabaseIdentity, requireBusinessScope);
@@ -22,6 +22,15 @@ router.post(
         req.body?.to,
       ),
     );
+  },
+);
+
+router.get(
+  "/profit-simulation/categories",
+  requirePermission("analytics.read"),
+  requirePermission("finance.read"),
+  async (req, res) => {
+    res.json(await searchSimulationCategories(String(res.locals.businessId), req.query));
   },
 );
 

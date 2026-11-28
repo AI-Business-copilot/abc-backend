@@ -53,13 +53,17 @@ export async function activeNotifications(scope: NotificationScope, now = new Da
     message: `${scrap.scrapCode}: ${scrap.scrapQty} đơn vị đang chờ bạn xem xét.`,
     href: `/inventory/scrap/${scrap.id}`, occurredAt: (scrap.createdAt ?? new Date(0)).toISOString(),
   });
-  for (const task of tasks) notifications.push({
-    id: `audit:${task.id}:${task.rejectedAt?.toISOString() ?? "assigned"}`, type: "AUDIT_ASSIGNED",
-    title: task.rejectedAt ? "Mục kiểm kê cần đếm lại" : "Bạn có mục kiểm kê được giao",
-    message: `Sản phẩm ${task.variant.sku} đang chờ bạn kiểm đếm.`,
-    href: `/inventory/audit/${task.auditId}/items/${task.id}`,
-    occurredAt: (task.rejectedAt ?? task.audit.countStartAt).toISOString(),
-  });
+  for (const task of tasks) {
+    const occurredAt = task.rejectedAt ?? task.audit.countStartAt;
+    if (!occurredAt) throw new Error(`In-progress stock audit task ${task.id} has no count start time.`);
+    notifications.push({
+      id: `audit:${task.id}:${task.rejectedAt?.toISOString() ?? "assigned"}`, type: "AUDIT_ASSIGNED",
+      title: task.rejectedAt ? "Mục kiểm kê cần đếm lại" : "Bạn có mục kiểm kê được giao",
+      message: `Sản phẩm ${task.variant.sku} đang chờ bạn kiểm đếm.`,
+      href: `/inventory/audit/${task.auditId}/items/${task.id}`,
+      occurredAt: occurredAt.toISOString(),
+    });
+  }
   return notifications.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt) || a.id.localeCompare(b.id));
 }
 

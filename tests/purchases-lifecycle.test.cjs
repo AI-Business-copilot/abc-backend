@@ -18,6 +18,9 @@ const tx = {
     findFirst: async ({ where }) => { calls.push(["order", where]); return order; },
     update: async ({ data }) => { calls.push(["orderWrite", data]); return { ...order, ...data }; },
   },
+  aiReplenishmentItem: {
+    updateMany: async ({ where, data }) => { calls.push(["replenishmentWrite", { where, data }]); return { count: 0 }; },
+  },
   supplierProduct: { findMany: async () => [{ variantId, minOrderQty: 1, orderMultiple: 1, isActive: true }] },
   productVariant: { findMany: async ({ where }) => { calls.push(["variants", where]); return [{ id: variantId }]; } },
   purchaseOrderItem: {
@@ -74,8 +77,12 @@ test("editing received PO, unknown fields or invalid dates fails before writes",
   assert.equal(calls.some(([key]) => ["updateItem", "deleteItems", "orderWrite"].includes(key)), false);
 });
 
-test("cancel only unreceived orders and allow repeating cancellation", async () => {
+test("cancel only unreceived orders, return linked suggestions to pending, and allow repeating cancellation", async () => {
   assert.equal((await service.finishOrder(businessId, "auth", id, "cancel")).status, "CANCELLED");
+  assert.deepEqual(calls.find(([key]) => key === "replenishmentWrite")[1], {
+    where: { businessId, poId: id, status: "ORDERED" },
+    data: { status: "PENDING", poId: null, snoozeUntil: null, handledBy: null, handledAt: null },
+  });
   order.status = "CANCELLED";
   assert.equal((await service.finishOrder(businessId, "auth", id, "cancel")).status, "CANCELLED");
   order.status = "PARTIALLY_RECEIVED"; order.purchaseOrderItems[0].receivedQty = 4;

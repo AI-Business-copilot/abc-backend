@@ -8,6 +8,7 @@ const id = "11111111-1111-4111-8111-111111111111";
 let transactionOptions;
 let productQuery;
 let listQuery;
+let categoryQuery;
 let insightQuery;
 let forecastQuery;
 let forecastRow;
@@ -26,9 +27,12 @@ require.cache[databasePath] = {
   exports: { prisma: {
     $transaction: async (callback, options) => { transactionOptions = options; return callback(tx); },
     productVariant: { findMany: async (query) => { listQuery = query; return Array.from({ length: 26 }, (_, index) => ({ id: `${index}`, sku: `SKU-${index}`, isActive: true, template: { name: "Áo" } })).slice(query.skip, query.skip + query.take); } },
+    category: { findMany: async (query) => { categoryQuery = query; return Array.from({ length: 10 }, (_, index) => ({
+      id: `${index}`, name: `Category ${index}`, isActive: true, parent: { name: "Parent", businessId: index === 8 ? "other-business" : "business-1" },
+    })).slice(query.skip, query.skip + query.take); } },
   } },
 };
-const { calculateComparison, calculateScenario, simulateProfit, simulationForecast, getSimulationBasis, searchSimulationVariants } = require("../src/modules/business-data/profit-simulation.service.ts");
+const { calculateComparison, calculateScenario, simulateProfit, simulationForecast, getSimulationBasis, searchSimulationCategories, searchSimulationVariants } = require("../src/modules/business-data/profit-simulation.service.ts");
 
 const baseline = { quantity: "100", price: "100000", unitCost: "60000", discountPercent: "10", operatingExpense: "1000000" };
 const scenario = { quantity: "110", price: "100000", unitCost: "60000", discountPercent: "5", operatingExpense: "1000000" };
@@ -50,6 +54,30 @@ test("calculates scenarios, cost assumptions and signed differences exactly", ()
   assert.equal(loss.changes.afterExpense, null);
   assert.equal(loss.scenario.grossProfit, "-6600000.00");
   assert.equal(loss.changes.grossProfit.percent, null);
+});
+
+test("category lookup and SKU filters are tenant-scoped, paginated and include direct children", async () => {
+  const first = await searchSimulationCategories("business-1", { search: " áo ", pageSize: "8" });
+  assert.equal(categoryQuery.where.businessId, "business-1");
+  assert.deepEqual(categoryQuery.where.name, { contains: "áo", mode: "insensitive" });
+  assert.equal(categoryQuery.take, 9);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.items[0].parentName, "Parent");
+  const second = await searchSimulationCategories("business-1", { page: "2", pageSize: "8" });
+  assert.equal(categoryQuery.skip, 8);
+  assert.equal(second.items.length, 2);
+  assert.equal(second.items[0].parentName, null);
+  assert.equal(second.hasMore, false);
+  await assert.rejects(searchSimulationCategories("business-1", { pageSize: "51" }), /không hợp lệ/);
+  await searchSimulationVariants("business-1", { categoryId: id, search: "áo" });
+  assert.deepEqual(listQuery.where.template, {
+    businessId: "business-1",
+    category: { businessId: "business-1", OR: [{ id }, { parent: { id, businessId: "business-1" } }] },
+  });
+  assert.equal(listQuery.where.OR.length, 2);
+  await searchSimulationVariants("business-1", { categoryId: "uncategorized" });
+  assert.deepEqual(listQuery.where.template, { businessId: "business-1", categoryId: null });
+  await assert.rejects(searchSimulationVariants("business-1", { categoryId: "invalid" }), /Danh mục không hợp lệ/);
 });
 
 test("rounds components once and rejects invalid or excessive input without defaulting", () => {

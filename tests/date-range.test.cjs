@@ -1,7 +1,7 @@
 require('ts-node/register/transpile-only');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseDate, dateRange, metricDate } = require('../src/shared/dates/date-range');
+const { parseDate, dateRange, metricDate, completedDaysRange } = require('../src/shared/dates/date-range');
 
 test('dates accept leap days and reject malformed or impossible calendar dates', () => {
   assert.equal(parseDate('2024-02-29', 'from'), '2024-02-29');
@@ -21,4 +21,13 @@ test('report ranges enforce order and the inclusive 366 day limit', () => {
 });
 test('metric dates use UTC midnight', () => {
   assert.equal(metricDate('2026-11-17').toISOString(), '2026-11-17T00:00:00.000Z');
+});
+test('completed days follow Vietnam midnight and calendar boundaries', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-03-01T16:59:59Z') });
+  assert.deepEqual(completedDaysRange(30), { from: '2026-01-30', to: '2026-02-28' });
+  t.mock.timers.setTime(Date.parse('2026-03-01T17:00:00Z'));
+  assert.deepEqual(completedDaysRange(30), { from: '2026-01-31', to: '2026-03-01' });
+  t.mock.timers.setTime(Date.parse('2025-12-31T17:00:00Z'));
+  assert.deepEqual(completedDaysRange(7), { from: '2025-12-25', to: '2025-12-31' });
+  assert.throws(() => completedDaysRange(0), RangeError);
 });
