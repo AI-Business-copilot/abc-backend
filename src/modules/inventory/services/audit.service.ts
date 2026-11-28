@@ -56,6 +56,15 @@ type ReassignItemBody = {
   secondCounterUserId?: unknown;
 };
 
+/** The body of the batch assignment: many rows, the same two people. */
+type ReassignItemsBatchBody = ReassignItemBody & {
+  /** The rows to put the people on. */
+  itemIds?: unknown;
+};
+
+/** How many rows one batch assignment may carry. */
+const MAX_BATCH_ASSIGN_ITEMS = 500;
+
 type RecordCountBody = {
   variantId?: unknown;
   lotItemId?: unknown;
@@ -446,6 +455,93 @@ async function assertBusinessOwner(db: DbClient, businessId: string, userId: str
 }
 
 /**
+ * Free the SKUs an audit was holding when it ends.
+ *
+ * A SKU that another running audit still holds stays locked: that audit still needs it. Both
+ * the variants and the lot items are handled the same way, so an audit can never unlock a
+ * stock another audit is counting.
+ *
+ * A full store audit locked every SKU of the shop, not only the ones it counted, so it also
+ * frees the ones it never touched.
+ */
+async function releaseAuditLocks(
+  tx: Prisma.TransactionClient,
+  businessId: string,
+  auditId: string,
+  variantIds: string[],
+  lotItemIds: string[],
+  lockAllVariants = false,
+) {
+  // A full store audit locked the whole shop, so the whole shop has to be freed again.
+  const lockedVariants = lockAllVariants
+    ? (await tx.productVariant.findMany({ where: { businessId }, select: { id: true } })).map((v) => v.id)
+    : variantIds;
+
+  if (lockedVariants.length === 0 && lotItemIds.length === 0) return;
+
+  const heldVariants = new Set<string>();
+  const heldLotItems = new Set<string>();
+
+  const filters: Prisma.StockAuditItemWhereInput[] = [];
+  if (lockedVariants.length > 0) filters.push({ variantId: { in: lockedVariants } });
+  if (lotItemIds.length > 0) filters.push({ lotItemId: { in: lotItemIds } });
+
+  const others = await tx.stockAudit.findMany({
+    where: {
+      businessId,
+      id: { not: auditId },
+      isLockedForAudit: true,
+      status: { in: ["IN_PROGRESS", "PENDING_APPROVAL"] },
+      stockAuditItems: { some: { OR: filters } },
+    },
+    select: {
+      stockAuditItems: {
+        where: { OR: filters },
+        select: { variantId: true, lotItemId: true },
+      },
+    },
+  });
+
+  for (const other of others) {
+    for (const item of other.stockAuditItems) {
+      if (item.variantId) heldVariants.add(item.variantId);
+      if (item.lotItemId) heldLotItems.add(item.lotItemId);
+    }
+  }
+
+  // Another full store audit freezes the whole shop, so every SKU stays locked while it runs.
+  // This audit ending must not free a SKU that audit still needs.
+  const otherFullStore = await tx.stockAudit.findFirst({
+    where: {
+      businessId,
+      id: { not: auditId },
+      isLockedForAudit: true,
+      status: { in: ["IN_PROGRESS", "PENDING_APPROVAL"] },
+      scopeType: "FULL_STORE",
+    },
+    select: { id: true },
+  });
+
+  const freeVariants = otherFullStore
+    ? []
+    : lockedVariants.filter((variantId) => !heldVariants.has(variantId));
+  if (freeVariants.length > 0) {
+    await tx.productVariant.updateMany({
+      where: { id: { in: freeVariants } },
+      data: { isLockedForAudit: false, updatedAt: new Date() },
+    });
+  }
+
+  const freeLotItems = lotItemIds.filter((lotItemId) => !heldLotItems.has(lotItemId));
+  if (freeLotItems.length > 0) {
+    await tx.productLotItem.updateMany({
+      where: { id: { in: freeLotItems } },
+      data: { isLockedForAudit: false },
+    });
+  }
+}
+
+/**
  * Only one of the row's two counters may count or submit it.
  *
  * The owner never counts: they assign the two counters, compare their numbers and resolve the
@@ -485,6 +581,57 @@ async function assertAssigneesAreStaff(db: DbClient, businessId: string, userIds
   if (invalid.length > 0) {
     throw new HttpError(400, "Người được giao phải là nhân viên (STAFF) đang hoạt động của cửa hàng.");
   }
+}
+
+/**
+ * The two people of a row, read off the request.
+ *
+ * Every row is counted twice, so the owner always names a second person, and that person has
+ * to be someone else: two people counting the same row is the point.
+ */
+function resolveAssignees(body: ReassignItemBody): {
+  assignedToUserId: string;
+  secondCounterUserId: string;
+} {
+  const assignedToUserId =
+    typeof body.assignedToUserId === "string" ? body.assignedToUserId.trim() : "";
+  if (!assignedToUserId) {
+    throw new HttpError(400, "Chưa chọn nhân viên.");
+  }
+
+  const secondCounterUserId =
+    typeof body.secondCounterUserId === "string" ? body.secondCounterUserId.trim() : "";
+  if (!secondCounterUserId) {
+    throw new HttpError(400, "Chưa chọn người kiểm kê thứ hai.");
+  }
+
+  if (secondCounterUserId === assignedToUserId) {
+    throw new HttpError(400, "Người kiểm kê thứ hai phải khác người được giao.");
+  }
+
+  return { assignedToUserId, secondCounterUserId };
+}
+
+/**
+ * Put the same two people on a set of rows.
+ *
+ * Changing the people means the old counts no longer belong to this row's counters, so the
+ * counts of the people who no longer hold the row are dropped.
+ */
+async function applyAssignment(
+  tx: Prisma.TransactionClient,
+  itemIds: string[],
+  assignedToUserId: string,
+  secondCounterUserId: string,
+) {
+  await tx.stockAuditItem.updateMany({
+    where: { id: { in: itemIds } },
+    data: { assignedToUserId, secondCounterUserId },
+  });
+
+  await tx.stockAuditItemCount.deleteMany({
+    where: { itemId: { in: itemIds }, counterUserId: { notIn: [assignedToUserId, secondCounterUserId] } },
+  });
 }
 
 /** Current on-hand quantity for a variant + lot item (0 when there is no balance row). */
@@ -677,9 +824,8 @@ async function normalizeAndValidateRows(
 /**
  * The rows an audit covers, generated from its scope.
  *
- * The scope columns existed but nothing ever wrote them, so "Theo ke" and "Theo danh muc" were
- * dead options and the owner had to type every row by hand. Now the scope decides the rows:
- * the lots that physically sit on a shelf position, or the lots of a category.
+ * The scope decides which rows the audit covers, so a scope that points at nothing is refused
+ * here instead of producing an audit with no rows.
  *
  * The rows come without counters. Nobody can be named here, because the owner does not know yet
  * which employees will count; they assign them on the audit detail page. That is why the rows
@@ -688,26 +834,39 @@ async function normalizeAndValidateRows(
 async function buildRowsFromScope(
   db: DbClient,
   businessId: string,
-  scopeType: "CATEGORY" | "SHELF",
+  scopeType: "FULL_STORE" | "CATEGORY" | "SHELF",
   scope: { categoryIds?: string[]; shelfCellId?: string | null },
 ): Promise<NormalizedRow[]> {
   const where: Prisma.ProductLotItemWhereInput =
     scopeType === "SHELF"
       ? { businessId, shelfCellId: scope.shelfCellId! }
-      : {
-          businessId,
-          variant: { template: { categoryId: { in: scope.categoryIds ?? [] } } },
-        };
+      : scopeType === "CATEGORY"
+        ? {
+            businessId,
+            variant: { template: { categoryId: { in: scope.categoryIds ?? [] } } },
+          }
+        : { businessId };
+
+  // A full store audit covers the whole shop, so it only counts what is still sellable: the lots
+  // that already expired have nothing left to count, and a quarantined lot is waiting for a
+  // scrap decision, so it is not on the shelf. The day is taken in Vietnam time, the same way
+  // the sale reads the expiry of a lot.
+  const today = new Date(new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10));
 
   const items = await db.productLotItem.findMany({
     where: {
       ...where,
       // A scrapped lot has no stock left to count.
-      status: { not: "SCRAPPED" },
+      status:
+        scopeType === "FULL_STORE"
+          ? { notIn: ["SCRAPPED", "QUARANTINED"] }
+          : { not: "SCRAPPED" },
       // A lot locked by another audit cannot be counted twice at the same time.
       isLockedForAudit: false,
       // Only the lots that still have stock on hand are worth counting.
       inventoryBalances: { some: { businessId, quantityOnHand: { gt: 0 } } },
+      // The lots that already expired are left out of a full store audit.
+      ...(scopeType === "FULL_STORE" ? { expirationDate: { gte: today } } : {}),
     },
     select: { id: true, variantId: true },
     orderBy: { expirationDate: "asc" },
@@ -871,18 +1030,29 @@ class AuditService {
       ? await normalizeAndValidateRows(prisma, businessId, body.items)
       : [];
 
-    // A scoped audit gets its rows from the stock itself: the lots on the shelf position, or the
-    // lots of the category. The rows come without counters, because the owner assigns them on
-    // the audit detail page.
-    if (!hasRows && scope.scopeType !== "FULL_STORE") {
+    // A scoped audit gets its rows from the stock itself: the lots on the shelf position, the
+    // lots of the category, or every lot of the shop. The rows come without counters, because
+    // the owner assigns them on the audit detail page.
+    if (!hasRows) {
       rows =
         scope.scopeType === "SHELF"
           ? await buildRowsFromScope(prisma, businessId, "SHELF", {
               shelfCellId: scope.shelfCellId,
             })
-          : await buildRowsFromScope(prisma, businessId, "CATEGORY", {
-              categoryIds: await resolveCategoryIds(prisma, businessId, scope.categoryId!),
-            });
+          : scope.scopeType === "CATEGORY"
+            ? await buildRowsFromScope(prisma, businessId, "CATEGORY", {
+                categoryIds: await resolveCategoryIds(prisma, businessId, scope.categoryId!),
+              })
+            : await buildRowsFromScope(prisma, businessId, "FULL_STORE", {});
+
+      // A full store audit with no stock to count would be an empty audit, so it is refused
+      // instead: the shop has nothing that can be counted right now.
+      if (scope.scopeType === "FULL_STORE" && rows.length === 0) {
+        throw new HttpError(
+          400,
+          "Cửa hàng không còn lô hàng nào còn tồn kho và còn hạn để kiểm kê.",
+        );
+      }
     }
 
     const affectedVariantIds = [...new Set(rows.map((r) => r.variantId))];
@@ -953,12 +1123,14 @@ class AuditService {
    */
   async startAudit(businessId: string, authUserId: string, auditId: string) {
     const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
 
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
       select: {
         id: true,
         status: true,
+        scopeType: true,
         stockAuditItems: {
           select: {
             id: true,
@@ -1014,6 +1186,10 @@ class AuditService {
     const variantIds = [...new Set(rows.map((r) => r.variantId))];
     const lotItemIds = [...new Set(rows.map((r) => r.lotItemId))];
 
+    // A full store audit covers the whole shop, so it freezes every SKU of the shop, not only
+    // the ones it counts. The stock that moves while the count runs would make the count wrong.
+    const lockAllVariants = audit.scopeType === "FULL_STORE";
+
     const started = await prisma.$transaction(async (tx) => {
       // The snapshot is read now, so the audit compares against the stock of this moment.
       for (const item of audit.stockAuditItems) {
@@ -1027,7 +1203,7 @@ class AuditService {
 
       // From now on the SKUs are frozen: no sale, purchase, scrap or return may move them.
       await tx.productVariant.updateMany({
-        where: { id: { in: variantIds } },
+        where: lockAllVariants ? { businessId } : { id: { in: variantIds } },
         data: { isLockedForAudit: true, updatedAt: new Date() },
       });
 
@@ -1166,6 +1342,7 @@ class AuditService {
         select: {
           id: true,
           status: true,
+          scopeType: true,
           stockAuditItems: { select: { variantId: true, lotItemId: true } },
         },
       });
@@ -1188,39 +1365,14 @@ class AuditService {
       ];
 
       // A SKU that another running audit also holds stays locked: that audit still needs it.
-      const heldByAnother = new Set<string>();
-      if (variantIds.length > 0) {
-        const others = await tx.stockAudit.findMany({
-          where: {
-            businessId,
-            id: { not: auditId },
-            isLockedForAudit: true,
-            status: { in: ["IN_PROGRESS", "PENDING_APPROVAL"] },
-            stockAuditItems: { some: { variantId: { in: variantIds } } },
-          },
-          select: { stockAuditItems: { select: { variantId: true } } },
-        });
-        for (const other of others) {
-          for (const item of other.stockAuditItems) {
-            heldByAnother.add(item.variantId);
-          }
-        }
-      }
-
-      const freeVariants = variantIds.filter((variantId) => !heldByAnother.has(variantId));
-      if (freeVariants.length > 0) {
-        await tx.productVariant.updateMany({
-          where: { id: { in: freeVariants } },
-          data: { isLockedForAudit: false, updatedAt: new Date() },
-        });
-      }
-
-      if (lotItemIds.length > 0) {
-        await tx.productLotItem.updateMany({
-          where: { id: { in: lotItemIds } },
-          data: { isLockedForAudit: false },
-        });
-      }
+      await releaseAuditLocks(
+        tx,
+        businessId,
+        auditId,
+        variantIds,
+        lotItemIds,
+        audit.scopeType === "FULL_STORE",
+      );
 
       return tx.stockAudit.update({
         where: { id: auditId },
@@ -1418,6 +1570,7 @@ class AuditService {
   /** Owner: add more employee + variant + lot rows to a draft or a running audit. */
   async addAuditItems(businessId: string, authUserId: string, auditId: string, body: AssignItemsBody) {
     const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
 
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
@@ -1467,26 +1620,15 @@ class AuditService {
   /** Owner: reassign an item to a different employee, and set the second counter. */
   async reassignAuditItem(
     businessId: string,
+    authUserId: string,
     auditId: string,
     itemId: string,
     body: ReassignItemBody,
   ) {
-    const assignedToUserId =
-      typeof body.assignedToUserId === "string" ? body.assignedToUserId.trim() : "";
-    if (!assignedToUserId) {
-      throw new HttpError(400, "Chưa chọn nhân viên.");
-    }
+    const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
 
-    // Every row is counted twice, so the owner always names a second person.
-    const secondCounterUserId =
-      typeof body.secondCounterUserId === "string" ? body.secondCounterUserId.trim() : "";
-    if (!secondCounterUserId) {
-      throw new HttpError(400, "Chưa chọn người kiểm kê thứ hai.");
-    }
-
-    if (secondCounterUserId === assignedToUserId) {
-      throw new HttpError(400, "Người kiểm kê thứ hai phải khác người được giao.");
-    }
+    const { assignedToUserId, secondCounterUserId } = resolveAssignees(body);
 
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
@@ -1517,17 +1659,87 @@ class AuditService {
 
     await assertAssigneesAreStaff(prisma, businessId, [assignedToUserId, secondCounterUserId]);
 
-    await prisma.stockAuditItem.update({
-      where: { id: itemId },
-      data: { assignedToUserId, secondCounterUserId },
+    await prisma.$transaction(async (tx) => {
+      await applyAssignment(tx, [itemId], assignedToUserId, secondCounterUserId);
     });
 
-    // Changing the people means the old counts no longer belong to this row's counters.
-    await prisma.stockAuditItemCount.deleteMany({
-      where: { itemId, counterUserId: { notIn: [assignedToUserId, secondCounterUserId] } },
+    return getFormattedItem(prisma, itemId, user.id, true);
+  }
+
+  /**
+   * Owner: put the same two people on many rows at once.
+   *
+   * A full store audit generates a row for every lot of the shop, so assigning the counters one
+   * row per request would mean hundreds of requests. This does the same thing in one.
+   */
+  async reassignAuditItems(
+    businessId: string,
+    authUserId: string,
+    auditId: string,
+    body: ReassignItemsBatchBody,
+  ) {
+    const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
+
+    const { assignedToUserId, secondCounterUserId } = resolveAssignees(body);
+
+    const itemIds = [
+      ...new Set(
+        (Array.isArray(body.itemIds) ? body.itemIds : [])
+          .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+          .map((id) => id.trim()),
+      ),
+    ];
+
+    if (itemIds.length === 0) {
+      throw new HttpError(400, "Chưa chọn dòng kiểm kê nào để gán.");
+    }
+
+    if (itemIds.length > MAX_BATCH_ASSIGN_ITEMS) {
+      throw new HttpError(
+        400,
+        `Mỗi lần gán tối đa ${MAX_BATCH_ASSIGN_ITEMS} dòng. Hãy chia nhỏ ra.`,
+      );
+    }
+
+    const audit = await prisma.stockAudit.findFirst({
+      where: { id: auditId, businessId },
+      select: { status: true },
     });
 
-    return getFormattedItem(prisma, itemId, null, true);
+    if (!audit) {
+      throw new HttpError(404, "Không tìm thấy đợt kiểm kê.");
+    }
+
+    // A draft is where the owner builds the rows, so they can be changed then too.
+    if (audit.status !== "DRAFT" && audit.status !== "IN_PROGRESS") {
+      throw new HttpError(409, "Chỉ có thể đổi người được giao khi đợt kiểm kê đang Nháp hoặc IN_PROGRESS.");
+    }
+
+    const items = await prisma.stockAuditItem.findMany({
+      where: { id: { in: itemIds }, auditId },
+      select: { id: true, itemStatus: true },
+    });
+
+    if (items.length !== itemIds.length) {
+      throw new HttpError(404, "Có dòng kiểm kê không tồn tại trong đợt kiểm kê này.");
+    }
+
+    const notInProgress = items.filter((item) => item.itemStatus !== "IN_PROGRESS");
+    if (notInProgress.length > 0) {
+      throw new HttpError(
+        409,
+        `${notInProgress.length} dòng không còn đang đếm. Chỉ gán lại được dòng đang IN_PROGRESS.`,
+      );
+    }
+
+    await assertAssigneesAreStaff(prisma, businessId, [assignedToUserId, secondCounterUserId]);
+
+    await prisma.$transaction(async (tx) => {
+      await applyAssignment(tx, itemIds, assignedToUserId, secondCounterUserId);
+    });
+
+    return { assigned: itemIds.length };
   }
 
   async updateCount(
@@ -2465,28 +2677,29 @@ class AuditService {
     }));
   }
 
+  /**
+   * Owner: close the audit and write the counted stock to the inventory.
+   *
+   * The route stays, but the work is done by `applyAudit`: closing an audit without applying it
+   * would leave the counted stock unwritten and the SKUs locked for good - the audit could not be
+   * applied afterwards (it needs IN_PROGRESS), not cancelled (it needs IN_PROGRESS either) and
+   * not deleted (it needs DRAFT).
+   */
   async approveAudit(businessId: string, authUserId: string, auditId: string) {
     const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
 
     const audit = await prisma.stockAudit.findFirst({
       where: { id: auditId, businessId },
-      include: {
+      select: {
+        id: true,
+        auditCode: true,
+        status: true,
         stockAuditItems: {
           select: {
             id: true,
-            auditId: true,
-            variantId: true,
-            lotItemId: true,
-            snapshotQty: true,
-            countedQty: true,
-            diffQty: true,
             discrepancyReason: true,
             itemStatus: true,
-            assignedToUserId: true,
-            submittedAt: true,
-            submittedBy: true,
-            approvedAt: true,
-            approvedBy: true,
           },
         },
       },
@@ -2504,10 +2717,8 @@ class AuditService {
       throw new HttpError(400, "Đợt kiểm kê chưa có dòng kiểm kê nào.");
     }
 
-    // Validate: all items must be APPROVED (or we can allow PENDING_APPROVAL for backward compatibility)
-    const nonApprovedItems = audit.stockAuditItems.filter(
-      (item) => item.itemStatus !== "APPROVED" && item.itemStatus !== "PENDING_APPROVAL",
-    );
+    // Only a row the owner has approved may be written to the stock.
+    const nonApprovedItems = audit.stockAuditItems.filter((item) => item.itemStatus !== "APPROVED");
 
     if (nonApprovedItems.length > 0) {
       throw new HttpError(
@@ -2526,34 +2737,30 @@ class AuditService {
       }
     }
 
-    const updated = await prisma.stockAudit.update({
-      where: { id: auditId },
-      data: {
-        status: "DONE",
-        approvedBy: user.id,
-        completedAt: new Date(),
-      },
-      select: {
-        id: true,
-        auditCode: true,
-        status: true,
-        approvedBy: true,
-      },
-    });
+    const applied = await this.applyAudit(businessId, authUserId, auditId);
 
     return {
-      id: updated.id,
-      auditCode: updated.auditCode,
-      status: updated.status,
+      id: applied.id,
+      auditCode: applied.auditCode,
+      status: applied.status,
       approvedBy: user.fullName || user.email,
     };
   }
 
   async applyAudit(businessId: string, authUserId: string, auditId: string) {
     const user = await resolveUser(authUserId);
+    await assertBusinessOwner(prisma, businessId, user.id);
     const lotStatusService = new LotStatusService();
 
     return prisma.$transaction(async (tx) => {
+      // Two applies running side by side would write the counted stock twice: the row is locked
+      // so the second request waits and then sees the audit is already DONE.
+      await tx.$queryRaw`
+        SELECT id FROM stock_audits
+         WHERE id = ${auditId}::uuid AND business_id = ${businessId}::uuid
+         FOR UPDATE
+      `;
+
       const audit = await tx.stockAudit.findFirst({
         where: { id: auditId, businessId },
         select: {
@@ -2561,6 +2768,7 @@ class AuditService {
           auditCode: true,
           status: true,
           auditType: true,
+          scopeType: true,
           stockAuditItems: {
             select: {
               id: true,
@@ -2575,6 +2783,7 @@ class AuditService {
               countedDamagedQty: true,
               diffQty: true,
               discrepancyReason: true,
+              itemStatus: true,
               variant: { select: { costPrice: true } },
               lotItem: {
                 select: {
@@ -2605,6 +2814,26 @@ class AuditService {
 
       if (audit.stockAuditItems.length === 0) {
         throw new HttpError(400, "Đợt kiểm kê chưa có dòng kiểm kê nào để áp dụng.");
+      }
+
+      // Only a row the owner has approved may be written to the stock. A row nobody counted
+      // still carries countedQty = 0, so applying it would zero the stock.
+      const notApproved = audit.stockAuditItems.filter((item) => item.itemStatus !== "APPROVED");
+      if (notApproved.length > 0) {
+        throw new HttpError(
+          409,
+          `${notApproved.length} dòng kiểm kê chưa được duyệt. Chỉ áp dụng được các dòng đã ở trạng thái APPROVED.`,
+        );
+      }
+
+      // Every row must say why it differs from the snapshot, so the ledger entry can be read.
+      for (const item of audit.stockAuditItems) {
+        if (!item.discrepancyReason) {
+          throw new HttpError(
+            400,
+            `Dòng kiểm kê ${item.id} chưa có lý do chênh lệch. Bắt buộc nhập lý do trước khi áp dụng.`,
+          );
+        }
       }
 
       // A scrap order that is still open is judged against the stock this apply is about to
@@ -2671,7 +2900,6 @@ class AuditService {
               ...(releasesQuarantine
                 ? { quarantineQty: null, quarantinedAt: null, quarantinedBy: null, quarantineNote: null }
                 : {}),
-              isLockedForAudit: false,
             },
           });
         }
@@ -2744,11 +2972,24 @@ class AuditService {
         await tx.inventoryLedger.createMany({ data: ledgerEntries });
       }
 
-      // Unlock all affected variants
-      await tx.productVariant.updateMany({
-        where: { id: { in: affectedVariantIds } },
-        data: { isLockedForAudit: false, updatedAt: new Date() },
-      });
+      // Unlock the SKUs this audit was holding. A SKU another running audit still holds stays
+      // locked: that audit still needs it. A full store audit froze the whole shop, so the
+      // whole shop is freed again.
+      const affectedLotItemIds = [
+        ...new Set(
+          audit.stockAuditItems
+            .map((item) => item.lotItemId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      await releaseAuditLocks(
+        tx,
+        businessId,
+        auditId,
+        affectedVariantIds,
+        affectedLotItemIds,
+        audit.scopeType === "FULL_STORE",
+      );
 
       // Mark audit as DONE
       const applied = await tx.stockAudit.update({
@@ -2757,6 +2998,7 @@ class AuditService {
           status: "DONE",
           completedAt: new Date(),
           isLockedForAudit: false,
+          approvedBy: user.id,
         },
         select: {
           id: true,

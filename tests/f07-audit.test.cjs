@@ -153,6 +153,12 @@ const db = {
       const code = args?.where?.auditCode;
       if (typeof code === "string") return state.auditWithCode;
       if (code && typeof code === "object") return state.lastAudit;
+      // A query that looks for another audit (an id that is not this one) finds the other
+      // audits, not the one the test is about.
+      const notThisOne = args?.where?.id?.not;
+      if (notThisOne) {
+        return state.audits.find((audit) => audit.id !== notThisOne) ?? null;
+      }
       return state.audit;
     },
     findMany: async (args) => {
@@ -199,6 +205,9 @@ const db = {
     update: async (args) => {
       calls.push(["itemUpdate", args]);
       return state.updatedItem;
+    },
+    updateMany: async (args) => {
+      calls.push(["itemUpdateMany", args]);
     },
     createMany: async (args) => {
       calls.push(["itemCreateMany", args]);
@@ -372,6 +381,8 @@ const db = {
     },
   },
   $transaction: async (work) => work(db),
+  /** The pessimistic row lock of an audit before it is applied. */
+  $queryRaw: async () => [],
 };
 
 const databasePath = require.resolve("../src/shared/infrastructure/database/prisma.client.ts");
@@ -517,18 +528,21 @@ test("audit creation produces a draft and locks nothing", async () => {
 });
 
 test("reassignment only moves an in-progress row to an active non-owner member", async () => {
-  await rejects(() => auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, {}), 400);
+  // Only the owner may change the people of a row.
+  state.membership = { role: { code: "OWNER" } };
+
+  await rejects(() => auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, {}), 400);
 
   // The second counter is required: every row is counted by two people.
   await rejects(
-    () => auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, { assignedToUserId: STAFF }),
+    () => auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, { assignedToUserId: STAFF }),
     400,
   );
 
   state.audit = null;
   await rejects(
     () =>
-      auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, {
+      auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, {
         assignedToUserId: STAFF,
         secondCounterUserId: STAFF_2,
       }),
@@ -538,7 +552,7 @@ test("reassignment only moves an in-progress row to an active non-owner member",
   state.audit = { id: AUDIT, status: "DONE" };
   await rejects(
     () =>
-      auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, {
+      auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, {
         assignedToUserId: STAFF,
         secondCounterUserId: STAFF_2,
       }),
@@ -549,7 +563,7 @@ test("reassignment only moves an in-progress row to an active non-owner member",
   state.item = null;
   await rejects(
     () =>
-      auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, {
+      auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, {
         assignedToUserId: STAFF,
         secondCounterUserId: STAFF_2,
       }),
@@ -559,7 +573,7 @@ test("reassignment only moves an in-progress row to an active non-owner member",
   state.item = { id: ITEM, itemStatus: "PENDING_APPROVAL" };
   await rejects(
     () =>
-      auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, {
+      auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, {
         assignedToUserId: STAFF,
         secondCounterUserId: STAFF_2,
       }),
@@ -570,7 +584,7 @@ test("reassignment only moves an in-progress row to an active non-owner member",
   state.staffMemberships = [];
   await rejects(
     () =>
-      auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, {
+      auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, {
         assignedToUserId: OWNER,
         secondCounterUserId: STAFF_2,
       }),
@@ -578,13 +592,13 @@ test("reassignment only moves an in-progress row to an active non-owner member",
   );
 
   state.staffMemberships = [{ userId: STAFF }, { userId: STAFF_2 }];
-  const result = await auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, {
+  const result = await auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, {
     assignedToUserId: STAFF,
     secondCounterUserId: STAFF_2,
   });
 
-  assert.equal(call("itemUpdate")[1].data.assignedToUserId, STAFF);
-  assert.equal(call("itemUpdate")[1].data.secondCounterUserId, STAFF_2);
+  assert.equal(call("itemUpdateMany")[1].data.assignedToUserId, STAFF);
+  assert.equal(call("itemUpdateMany")[1].data.secondCounterUserId, STAFF_2);
   assert.equal(result.id, ITEM);
 });
 
@@ -749,6 +763,8 @@ test("rejection wants a reason of at most 1000 characters and only accepts a sub
 });
 
 test("approving the last pending row applies the audit automatically", async () => {
+  // The last approval applies the audit, and only the owner may do that.
+  state.membership = { role: { code: "OWNER" } };
   state.item = { id: ITEM, itemStatus: "APPROVED" };
   await rejects(() => auditService.approveAuditItem(BUSINESS, "auth", AUDIT, ITEM), 409);
 
@@ -772,6 +788,8 @@ test("approving the last pending row applies the audit automatically", async () 
         lotNumber: "LOT-1",
         snapshotQty: 5,
         countedQty: 5,
+        discrepancyReason: "Kiểm kê",
+        itemStatus: "APPROVED",
         variant: { costPrice: 1 },
         lotItem: null,
       },
@@ -783,6 +801,9 @@ test("approving the last pending row applies the audit automatically", async () 
 });
 
 test("applying an audit sets balances and writes a ledger row only when the count differs", async () => {
+  // Only the owner may apply an audit.
+  state.membership = { role: { code: "OWNER" } };
+
   state.audit = { id: AUDIT, auditCode: "AUDIT_2026_0001", status: "DONE", auditType: "RE_AUDIT", stockAuditItems: [] };
   const done = await auditService.applyAudit(BUSINESS, "auth", AUDIT);
   assert.equal(done.status, "DONE");
@@ -808,6 +829,8 @@ test("applying an audit sets balances and writes a ledger row only when the coun
         lotNumber: "LOT-1",
         snapshotQty: 5,
         countedQty: 8,
+        discrepancyReason: "Hàng rơi",
+        itemStatus: "APPROVED",
         variant: { costPrice: 10 },
         lotItem: {
           id: LOT_ITEM,
@@ -825,6 +848,8 @@ test("applying an audit sets balances and writes a ledger row only when the coun
         newLotExpirationDate: new Date("2027-03-01"),
         snapshotQty: 0,
         countedQty: 0,
+        discrepancyReason: "Kiểm kê",
+        itemStatus: "APPROVED",
         variant: { costPrice: 4 },
         lotItem: null,
       },
@@ -856,6 +881,7 @@ test("applying an audit sets balances and writes a ledger row only when the coun
 });
 
 test("applying corrections unlocks a re-audit lot and preserves manual quarantine elsewhere", async () => {
+  state.membership = { role: { code: "OWNER" } };
   state.audit = {
     id: AUDIT,
     auditCode: "AUDIT_2026_0001",
@@ -869,6 +895,8 @@ test("applying corrections unlocks a re-audit lot and preserves manual quarantin
         newLotExpirationDate: new Date("2099-02-01"),
         snapshotQty: 3,
         countedQty: 3,
+        discrepancyReason: "Kiểm kê",
+        itemStatus: "APPROVED",
         variant: { costPrice: 5 },
         lotItem: {
           id: LOT_ITEM,
@@ -885,7 +913,8 @@ test("applying corrections unlocks a re-audit lot and preserves manual quarantin
 
   const update = call("lotItemUpdate")[1];
   assert.equal(update.data.expirationDate.toISOString().slice(0, 10), "2099-02-01");
-  assert.equal(update.data.isLockedForAudit, false);
+  // The lot is unlocked together with the variants, so another audit holding it keeps it locked.
+  assert.equal(call("lotItemUpdateMany")[1].data.isLockedForAudit, false);
   assert.equal(
     update.data.status,
     "HEALTHY",
@@ -898,6 +927,7 @@ test("applying corrections unlocks a re-audit lot and preserves manual quarantin
 });
 
 test("a re-audit keeps an expired lot quarantined and never revives a scrapped one", async () => {
+  state.membership = { role: { code: "OWNER" } };
   const expiredItem = (status) => ({
     id: ITEM,
     variantId: VARIANT,
@@ -906,6 +936,8 @@ test("a re-audit keeps an expired lot quarantined and never revives a scrapped o
     newLotExpirationDate: null,
     snapshotQty: 2,
     countedQty: 2,
+    discrepancyReason: "Kiểm kê",
+    itemStatus: "APPROVED",
     variant: { costPrice: 5 },
     lotItem: {
       id: LOT_ITEM,
@@ -929,7 +961,11 @@ test("a re-audit keeps an expired lot quarantined and never revives a scrapped o
   const quarantined = call("lotItemUpdate")[1];
   assert.equal("status" in quarantined.data, false, "expiry alone never releases a quarantine");
   assert.equal("quarantineQty" in quarantined.data, false, "the quarantine fields stay as they were");
-  assert.equal(quarantined.data.isLockedForAudit, false, "the re-audit still unlocks the lot");
+  assert.equal(
+    call("lotItemUpdateMany")[1].data.isLockedForAudit,
+    false,
+    "the re-audit still unlocks the lot",
+  );
 
   calls.length = 0;
   state.audit.stockAuditItems = [
@@ -942,6 +978,7 @@ test("a re-audit keeps an expired lot quarantined and never revives a scrapped o
 });
 
 test("an apply is refused while a counted lot item has a pending scrap order", async () => {
+  state.membership = { role: { code: "OWNER" } };
   state.audit = {
     id: AUDIT,
     auditCode: "AUDIT_2026_0001",
@@ -955,6 +992,8 @@ test("an apply is refused while a counted lot item has a pending scrap order", a
         newLotExpirationDate: null,
         snapshotQty: 2,
         countedQty: 2,
+        discrepancyReason: "Kiểm kê",
+        itemStatus: "APPROVED",
         variant: { costPrice: 5 },
         lotItem: {
           id: LOT_ITEM,
@@ -996,6 +1035,7 @@ test("item listing clamps pagination and can be limited to the caller", async ()
 });
 
 test("the second counter must be a different employee", async () => {
+  state.membership = { role: { code: "OWNER" } };
   state.audit = { id: AUDIT, status: "IN_PROGRESS" };
   state.staffMemberships = [{ userId: STAFF }, { userId: STAFF_2 }];
   state.lotRows = [{ id: LOT_ITEM, variantId: VARIANT, status: "HEALTHY", lot: { lotNumber: "LOT-1" } }];
@@ -1010,6 +1050,7 @@ test("the second counter must be a different employee", async () => {
 });
 
 test("every row needs a second counter", async () => {
+  state.membership = { role: { code: "OWNER" } };
   state.audit = { id: AUDIT, status: "IN_PROGRESS" };
   state.staffMemberships = [{ userId: STAFF }, { userId: STAFF_2 }];
   state.lotRows = [{ id: LOT_ITEM, variantId: VARIANT, status: "HEALTHY", lot: { lotNumber: "LOT-1" } }];
@@ -1025,7 +1066,7 @@ test("every row needs a second counter", async () => {
 
   await rejects(
     () =>
-      auditService.reassignAuditItem(BUSINESS, AUDIT, ITEM, {
+      auditService.reassignAuditItem(BUSINESS, "auth", AUDIT, ITEM, {
         assignedToUserId: STAFF,
       }),
     400,

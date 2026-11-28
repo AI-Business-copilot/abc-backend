@@ -281,8 +281,25 @@ export class InventoryController {
       const businessId = String(res.locals.businessId || "");
       const result = await auditService.reassignAuditItem(
         businessId,
+        authUserId(req),
         String(req.params.id),
         String(req.params.itemId),
+        req.body ?? {},
+      );
+      return res.json(result);
+    } catch (err: any) {
+      return fail(res, err);
+    }
+  }
+
+  /** Owner: put the same two people on many rows at once. */
+  async reassignAuditItems(req: Request, res: Response) {
+    try {
+      const businessId = String(res.locals.businessId || "");
+      const result = await auditService.reassignAuditItems(
+        businessId,
+        authUserId(req),
+        String(req.params.id),
         req.body ?? {},
       );
       return res.json(result);

@@ -39,6 +39,8 @@ router.delete("/audits/:id/items/:itemId", requirePermission("inventory.audit.cr
 
 // Owner: add employee + variant + lot rows, and reassign an item to another employee
 router.post("/audits/:id/items/assign", requirePermission("inventory.audit.create"), controller.addAuditItems.bind(controller));
+// Owner: put the same two people on many rows at once, for the audits that cover the whole shop.
+router.patch("/audits/:id/items/assign", requirePermission("inventory.audit.create"), controller.reassignAuditItems.bind(controller));
 router.patch("/audits/:id/items/:itemId/assign", requirePermission("inventory.audit.create"), controller.reassignAuditItem.bind(controller));
 
 router.post("/audits/:id/items", requirePermission("inventory.audit.count"), controller.recordCount.bind(controller));
